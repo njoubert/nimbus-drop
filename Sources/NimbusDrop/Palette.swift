@@ -4,17 +4,18 @@ import AppKit
 import SwiftUI
 
 /// The Nimbus colours, as the app icons draw them: the blue of the upload arrow and the green of
-/// the download arrow, and a red and an amber chosen to sit beside them. Each has a deeper
-/// variant for light mode, where the icon's glowing tones would wash out on white.
+/// the download arrow, and a red and an amber chosen to sit beside them. Light mode gets its own
+/// values: nearly as bright (the first, deeper set looked drab on white), a touch more saturated
+/// so they hold against a pale background.
 enum Palette {
     /// Sending: the upload blue (#3AA8FF in the icons).
-    static let send = dynamic(dark: 0x3AA8FF, light: 0x1783E0)
+    static let send = dynamic(dark: 0x3AA8FF, light: 0x1C96FF)
     /// Receiving: the download green (#3DE89C in the icons).
-    static let receive = dynamic(dark: 0x3DE89C, light: 0x12A66A)
+    static let receive = dynamic(dark: 0x3DE89C, light: 0x12CC82)
     /// Something stopped: a coral rather than the system's signal red.
-    static let failure = dynamic(dark: 0xFF6F61, light: 0xD9453A)
+    static let failure = dynamic(dark: 0xFF6F61, light: 0xFF5546)
     /// Something needs attention: the amber of Nimbus UPS Bar's outage bands (#FAB219).
-    static let warning = dynamic(dark: 0xFAB219, light: 0xC98A00)
+    static let warning = dynamic(dark: 0xFAB219, light: 0xF29D00)
 
     private static func dynamic(dark: Int, light: Int) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in

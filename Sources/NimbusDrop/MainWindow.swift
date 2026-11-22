@@ -54,7 +54,7 @@ struct MainView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 500, idealWidth: 560, minHeight: 460, idealHeight: 620)
+        .frame(minWidth: 500, idealWidth: 560, minHeight: 360, idealHeight: 470)
         .tint(Palette.send)
     }
 
@@ -369,9 +369,11 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         super.init()
         window.title = "Nimbus Drop"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.setContentSize(NSSize(width: 560, height: 620))
+        // Room for two rows of destinations with no drops showing; the person's own size and
+        // place are remembered from then on.
+        window.setContentSize(NSSize(width: 560, height: 470))
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("NimbusDropMain")
+        window.setFrameAutosaveName("NimbusDropMain2")
         if window.frame.origin == .zero { window.center() }
         window.delegate = self
     }

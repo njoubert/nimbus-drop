@@ -12,6 +12,7 @@ struct MainView: View {
     @State private var address = ""
     @State private var addressError: String?
     @State private var backgroundTargeted = false
+    @State private var dropsHeight: CGFloat = 120
     @FocusState private var addressFocused: Bool
 
     var body: some View {
@@ -25,7 +26,6 @@ struct MainView: View {
                             .font(.callout).foregroundStyle(.orange)
                     }
                     destinations
-                    if !model.rows.isEmpty { drops }
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -39,6 +39,18 @@ struct MainView: View {
                 if usable.count == 1 { model.send(files, to: usable[0]) } else { model.pendingURLs = files }
                 return true
             } isTargeted: { backgroundTargeted = $0 }
+            // The drops stay put under the destinations, however many of those there are: a
+            // transfer's progress must not scroll away. Past a few drops, they scroll on their own.
+            if !model.rows.isEmpty {
+                Divider()
+                ScrollView {
+                    drops.padding(.horizontal, 20).padding(.vertical, 12)
+                        .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
+                }
+                .onPreferenceChange(HeightKey.self) { dropsHeight = $0 }
+                // As tall as its drops, and no taller than about three of them.
+                .frame(height: min(max(dropsHeight, 40), 250))
+            }
             Divider()
             footer
         }
@@ -73,6 +85,12 @@ struct MainView: View {
             HStack {
                 Text("Destinations on this LAN").font(.title3.weight(.semibold))
                 Spacer()
+                Picker("View", selection: $model.listLayout) {
+                    Image(systemName: "square.grid.2x2").tag(false).help("Tiles")
+                    Image(systemName: "list.bullet").tag(true).help("List")
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize().controlSize(.small)
+                .help("Show destinations as tiles or as a compact list.")
                 Button { model.askingForAddress.toggle() } label: { Label("Add by Address…", systemImage: "plus") }
                     .controlSize(.small)
                     .help("Add a Mac by its IP address or host name, for when it is not found on its own.")
@@ -94,13 +112,24 @@ struct MainView: View {
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 34)
                 .background(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
+            } else if model.listLayout {
+                VStack(spacing: 0) {
+                    ForEach(Array(model.destinations.enumerated()), id: \.element.id) { index, peer in
+                        if index > 0 { Divider().padding(.leading, 40) }
+                        PeerRow(peer: peer, model: model, hint: backgroundTargeted && onlyOne)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.4)))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)], alignment: .leading, spacing: 12) {
-                    ForEach(model.destinations) { PeerTile(peer: $0, model: model, hint: backgroundTargeted && model.destinations.filter(\.isCompatible).count == 1) }
+                    ForEach(model.destinations) { PeerTile(peer: $0, model: model, hint: backgroundTargeted && onlyOne) }
                 }
             }
         }
     }
+
+    /// Files dragged over the window have exactly one place they could go.
+    private var onlyOne: Bool { model.destinations.filter(\.isCompatible).count == 1 }
 
     private var addressField: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -164,6 +193,11 @@ struct MainView: View {
     }
 }
 
+private struct HeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 /// One destination. A drop target, and a button for people who would rather pick files from a panel.
 private struct PeerTile: View {
     let peer: Peer
@@ -221,6 +255,62 @@ private struct PeerTile: View {
         .help(peer.isCompatible
               ? "Drag files or folders here to send them to \(peer.name)\(peer.appVersion.map { " (Nimbus Drop \($0))" } ?? ""), or click to choose them."
               : "\(peer.name) runs Nimbus Drop \(peer.appVersion ?? "of another version"), which speaks protocol \(peer.protocolText). This Mac speaks \(protocolVersionText). Update Nimbus Drop on both.")
+    }
+}
+
+/// One destination as a line in the compact list: the same drop target and button as a tile.
+private struct PeerRow: View {
+    let peer: Peer
+    let model: AppModel
+    var hint = false
+    @State private var targeted = false
+    @State private var hovered = false
+
+    private var lit: Bool { (targeted || hint) && peer.isCompatible }
+    private var silent: Bool { peer.isManual && peer.unreachable }
+
+    private var note: String {
+        if !peer.isCompatible { return "Needs an update (protocol \(peer.protocolText))" }
+        if silent { return "Not answering" }
+        if lit { return "Release to send" }
+        return peer.isManual ? "Added by address" : ""
+    }
+
+    var body: some View {
+        Button {
+            if model.pendingURLs.isEmpty { model.chooseAndSend(to: peer) } else { model.send(model.pendingURLs, to: peer) }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: lit ? "arrow.down.circle.fill" : (silent ? "questionmark.circle" : "laptopcomputer"))
+                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary)).frame(width: 20)
+                Text(peer.name).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                Text((peer.address ?? "finding address…") + (peer.isManual && peer.port != defaultPort ? ":\(peer.port ?? 0)" : ""))
+                    .font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(note).font(.caption).lineLimit(1)
+                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.orange)))
+                if peer.isManual, hovered {
+                    Button { model.removeManual(peer) } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary).help("Remove this address")
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(lit ? AnyShapeStyle(.tint.opacity(0.16)) : AnyShapeStyle(.quaternary.opacity(hovered ? 0.6 : 0)))
+            .contentShape(Rectangle())
+            .opacity(peer.isCompatible && !silent ? 1 : 0.6)
+        }
+        .buttonStyle(.plain)
+        .disabled(!peer.isCompatible)
+        .onHover { hovered = $0 }
+        .dropDestination(for: URL.self) { urls, _ in
+            let files = urls.filter(\.isFileURL)
+            guard !files.isEmpty, peer.isCompatible else { return false }
+            model.send(files, to: peer)
+            return true
+        } isTargeted: { targeted = $0 }
+        .help(peer.isCompatible
+              ? "Drag files or folders here to send them to \(peer.name), or click to choose them."
+              : "\(peer.name) speaks protocol \(peer.protocolText); this Mac speaks \(protocolVersionText). Update Nimbus Drop on both.")
     }
 }
 
@@ -293,9 +383,46 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Layout check
 
+    /// The window with `count` made-up destinations and one drop, at its default size and at a
+    /// wide one: how the grid copes with a busy network.
+    private static func dumpCrowd(to path: String, count: Int) -> Bool {
+        let kinds = ["macbookpro", "macbookair", "macstudio", "macmini", "imac", "render-node", "edit-bay", "front-desk"]
+        let peers = (0..<count).map { i -> Peer in
+            Peer(id: "\(i)", name: i % 5 == 4 ? "\(kinds[i % kinds.count])-with-a-long-name-\(i)" : "\(kinds[i % kinds.count])\(i / kinds.count + 1)",
+                 address: "192.168.1.\(20 + i * 3)", port: 47823)
+        }
+        let rows = [TransferRow(id: UUID(), direction: .send, peerName: "macstudio1", peerAddress: "192.168.1.26", title: "Christmas 2026",
+                                status: "13.1 GB of 31.2 GB · 921 Mbps · 8 connections · 2:37 left", fraction: 0.42, isActive: true,
+                                isIndeterminate: false, failed: false, canReveal: false),
+                    TransferRow(id: UUID(), direction: .receive, peerName: "edit-bay1", peerAddress: "192.168.1.38", title: "Scans",
+                                status: "1,204 files, 8.40 GB in 1:13 · 918 Mbps", fraction: 1, isActive: false,
+                                isIndeterminate: false, failed: false, canReveal: true)]
+        let base = path.hasSuffix(".png") ? String(path.dropLast(4)) : path
+        var ok = true
+        for (suffix, size, list) in [("", NSSize(width: 560, height: 620), false), ("-list", NSSize(width: 560, height: 620), true),
+                                     ("-wide", NSSize(width: 1000, height: 700), false)] {
+            let model = AppModel(demoPeers: peers, manual: [], rows: rows, listLayout: list)
+            let host = NSHostingView(rootView: MainView(model: model).background(Color(nsColor: .windowBackgroundColor)))
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = host
+            window.setContentSize(size)
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            host.layoutSubtreeIfNeeded()
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { ok = false; continue }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            let out = base + suffix + ".png"
+            do { try rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: out)); print("wrote \(out)") }
+            catch { ok = false }
+        }
+        return ok
+    }
+
     /// The window with made-up Macs and drops, off screen, as PNGs: dark, light, and empty.
-    static func dump(to path: String) -> Bool {
+    static func dump(to path: String, crowd: Int = 0) -> Bool {
         _ = NSApplication.shared
+        if crowd > 0 { return dumpCrowd(to: path, count: crowd) }
         var added = Peer(id: "3", name: "dads-imac", address: "192.168.1.77", port: 47823)
         added.isManual = true
         var old = Peer(id: "4", name: "macmini", address: "192.168.1.31", port: 47823, version: 1)
@@ -326,6 +453,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             window.setContentSize(NSSize(width: 560, height: 700))
             host.layoutSubtreeIfNeeded()
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            host.layoutSubtreeIfNeeded()
             guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { ok = false; continue }
             host.cacheDisplay(in: host.bounds, to: rep)
             let out = base + suffix + ".png"

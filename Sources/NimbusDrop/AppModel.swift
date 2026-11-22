@@ -40,6 +40,8 @@ final class AppModel: ObservableObject {
     /// Macs added by address, as last heard from.
     @Published var manual: [Peer] = []
     @Published var streams = Settings.streams
+    /// Destinations as a compact list (true) or a grid of tiles.
+    @Published var listLayout = Settings.listLayout { didSet { if live { Settings.listLayout = listLayout } } }
     @Published var openAtLogin = LoginItem.isEnabled
     /// "0.2.0", when the updater has that version downloaded and ready to install.
     @Published var updateReady: String?
@@ -78,7 +80,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Made-up contents for `--dump-window`; touches no network.
-    init(demoPeers: [Peer], manual: [Peer], rows: [TransferRow], receiving: Bool = true, askingForAddress: Bool = false) {
+    init(demoPeers: [Peer], manual: [Peer], rows: [TransferRow], receiving: Bool = true, askingForAddress: Bool = false, listLayout: Bool = false) {
         identity = Identity(name: "macbookpro", id: "demo")
         self.receiving = receiving
         addresses = [LocalHost.Address(interface: "en0", address: "192.168.1.129")]
@@ -87,6 +89,7 @@ final class AppModel: ObservableObject {
         self.rows = rows
         self.askingForAddress = askingForAddress
         live = false
+        self.listLayout = listLayout
     }
 
     // MARK: Lifecycle

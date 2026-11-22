@@ -22,6 +22,7 @@ import NimbusUpdater
 //                           --once exits after the first, --no-advertise stays off Bonjour
 //   --send TARGET PATH…     send to TARGET: a Mac's name as --peers shows it, HOST or HOST:PORT
 //   --peers                 the Macs found on the network in three seconds; exit
+//   --watch-peers           the same, live, with everything Bonjour reports (Ctrl-C to stop)
 //   --name NAME             the name to go by (and a separate identity) for --receive / --send
 //   --port N                the port to listen on / connect to (default 47823)
 //   --streams N             parallel connections for --send
@@ -95,6 +96,7 @@ while !args.isEmpty {
         guard rest.count >= 2 else { fputs("--send needs a target and at least one path\n", stderr); usage() }
         sendArgs = rest
     case "--peers": cli = .peers
+    case "--watch-peers": cli = .watchPeers
     case "--name": let v = takeValue(a); MainActor.assumeIsolated { CLI.name = v }
     case "--port": let v = UInt16(takeValue(a)); MainActor.assumeIsolated { CLI.port = v }
     case "--streams": let v = Int(takeValue(a)); MainActor.assumeIsolated { CLI.streams = v }
@@ -134,11 +136,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBar: StatusBarController!
     var updater: Updater?
     var window: MainWindowController?
+    var menu: MainMenu!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         NSApp.setActivationPolicy(.accessory)
-        MainMenu.install()
 
         // One copy only, the newest: two copies on one Mac would both announce it and split the
         // incoming drops between them. The development bundle counts as a copy too.
@@ -155,8 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let version = Updates.runningVersion {
             updater = Updater(config: Updates.config(currentVersion: version))
         }
-        statusBar = StatusBarController(model: model, updater: updater)
-        updater?.onChange = { [weak self] in self?.statusBar.updaterChanged() }
+        menu = MainMenu(model: model, updater: updater)
+        statusBar = StatusBarController(model: model)
+        model.installUpdate = { [weak self] in self?.menu.installUpdate() }
+        updater?.onChange = { [weak self] in self?.menu.updaterChanged() }
         updater?.start()
         model.start()
 
@@ -182,6 +186,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showWindow() {
         if window == nil { window = MainWindowController(model: model) }
         window?.show()
+    }
+
+    /// The menu bar item: open the window, or close it when it is already in front.
+    func toggleWindow() {
+        if let window, window.isFront { window.close() } else { showWindow() }
+    }
+
+    @objc func addByAddress() {
+        showWindow()
+        model.askingForAddress = true
     }
 
     /// Clicking the Dock icon, or opening the app again while it runs.

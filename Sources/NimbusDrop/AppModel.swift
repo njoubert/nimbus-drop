@@ -37,6 +37,22 @@ final class AppModel: ObservableObject {
     @Published var problem: String?
     /// Files dropped on the Dock icon, waiting for a Mac to be picked.
     @Published var pendingURLs: [URL] = []
+    /// Macs added by address, as last heard from.
+    @Published var manual: [Peer] = []
+    @Published var streams = Settings.streams
+    @Published var openAtLogin = LoginItem.isEnabled
+    /// "0.2.0", when the updater has that version downloaded and ready to install.
+    @Published var updateReady: String?
+    var installUpdate: (() -> Void)?
+    /// The "add by address" field is showing.
+    @Published var askingForAddress = false
+
+    /// Everything that can be sent to: what Bonjour found, then the Macs added by address that
+    /// Bonjour did not also find.
+    var destinations: [Peer] {
+        let found = Set(peers.map(\.id))
+        return peers + manual.filter { !found.contains($0.id) }
+    }
 
     /// Called after every change the status item cares about.
     var onChange: (() -> Void)?
@@ -61,13 +77,15 @@ final class AppModel: ObservableObject {
         live = true
     }
 
-    /// Made-up contents for `--dump-window` and `--dump-bar`; touches no network.
-    init(demoPeers: [Peer], rows: [TransferRow], receiving: Bool = true) {
+    /// Made-up contents for `--dump-window`; touches no network.
+    init(demoPeers: [Peer], manual: [Peer], rows: [TransferRow], receiving: Bool = true, askingForAddress: Bool = false) {
         identity = Identity(name: "macbookpro", id: "demo")
         self.receiving = receiving
         addresses = [LocalHost.Address(interface: "en0", address: "192.168.1.129")]
         peers = demoPeers
+        self.manual = manual
         self.rows = rows
+        self.askingForAddress = askingForAddress
         live = false
     }
 
@@ -86,6 +104,8 @@ final class AppModel: ObservableObject {
         }
         b.start()
         browser = b
+        manual = Settings.manualDestinations.map(Self.placeholder)
+        probeManual()
         applyReceiving()
         // Addresses change (Wi-Fi joins, a cable goes in) without anything telling us.
         let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
@@ -93,6 +113,7 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 let now = LocalHost.addresses
                 if now != self.addresses { self.addresses = now; self.onChange?() }
+                self.probeManual()
             }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -150,6 +171,13 @@ final class AppModel: ObservableObject {
     func send(_ urls: [URL], to peer: Peer) {
         guard live, !urls.isEmpty, let browser else { return }
         pendingURLs = []
+        if peer.isManual, let address = peer.address {
+            let session = SendSession(urls: urls, host: address, port: peer.port ?? defaultPort, peerName: peer.name,
+                                      identity: identity, streams: Settings.streams)
+            add(session)
+            session.start()
+            return
+        }
         // The other copy's port changes when it restarts, so look it up again each time.
         browser.resolve(peer.id) { [weak self] resolved in
             MainActor.assumeIsolated {
@@ -184,6 +212,89 @@ final class AppModel: ObservableObject {
                 if response == .OK { self?.send(p.urls, to: peer) }
             }
         }
+    }
+
+    // MARK: Macs added by address
+
+    /// "192.168.1.20", "macstudio.local", "10.0.0.5:47900".
+    nonisolated private static func parse(_ entry: String) -> (host: String, port: UInt16) {
+        let parts = entry.split(separator: ":")
+        if parts.count == 2, let port = UInt16(parts[1]) { return (String(parts[0]), port) }
+        return (entry, defaultPort)
+    }
+
+    /// How a Mac added by address looks before it has said who it is.
+    nonisolated private static func placeholder(_ entry: String) -> Peer {
+        let (host, port) = parse(entry)
+        var p = Peer(id: "manual:" + entry, name: host, address: host, port: port, version: nil)
+        p.isManual = true
+        p.unreachable = true
+        return p
+    }
+
+    /// Adds a Mac by address and asks it who it is. Returns why not, when the entry is unusable.
+    @discardableResult
+    func addManual(_ text: String) -> String? {
+        let entry = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !entry.isEmpty, !entry.contains(" "), !entry.contains("/") else { return "Enter an IP address or a host name." }
+        var list = Settings.manualDestinations
+        guard !list.contains(entry) else { return "\(entry) is already in the list." }
+        list.append(entry)
+        Settings.manualDestinations = list
+        manual.append(Self.placeholder(entry))
+        probeManual()
+        return nil
+    }
+
+    func removeManual(_ peer: Peer) {
+        guard let index = manual.firstIndex(where: { $0.id == peer.id }) else { return }
+        manual.remove(at: index)
+        var list = Settings.manualDestinations
+        if index < list.count { list.remove(at: index) }
+        Settings.manualDestinations = list
+    }
+
+    /// Asks each added Mac who it is, off the main thread; one that does not answer stays in
+    /// the list, marked, and is asked again in a few seconds.
+    private func probeManual() {
+        guard live else { return }
+        let entries = Settings.manualDestinations
+        let own = identity.id
+        DispatchQueue.global(qos: .utility).async {
+            let answers = entries.map { entry -> Peer in
+                let (host, port) = Self.parse(entry)
+                guard var peer = try? Probe.hello(host: host, port: port, timeout: 2) else { return Self.placeholder(entry) }
+                peer.isManual = true
+                if peer.id == own { peer.name += " (this Mac)" }
+                return peer
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard Settings.manualDestinations == entries, self.manual != answers else { return }
+                    self.manual = answers
+                }
+            }
+        }
+    }
+
+    // MARK: Settings the window shows
+
+    func setStreams(_ n: Int) {
+        Settings.streams = n
+        streams = Settings.streams
+    }
+
+    func setOpenAtLogin(_ on: Bool) {
+        do {
+            try LoginItem.setEnabled(on)
+            UserDefaults.standard.set(true, forKey: LoginItem.registeredDefaultsKey)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Could not change Open at Login"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+        openAtLogin = LoginItem.isEnabled
     }
 
     // MARK: Receiving
@@ -313,14 +424,18 @@ final class AppModel: ObservableObject {
             indeterminate = true
         case .transferring:
             let rate = meters[t.id]?.rate(bytes: p.doneBytes, now: now) ?? 0
-            status = "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) · \(Format.rate(rate))"
+            status = "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) · \(Format.bitRate(rate)) · \(Format.connections(p.connections))"
             if rate > 0 { status += " · \(Format.duration(Double(p.totalBytes - p.doneBytes) / rate)) left" }
+            let trouble = t.stats
+            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 { status += "\n" + Self.troubleText(trouble) }
         case .finishing: status = "Finishing…"; indeterminate = true
         case .completed:
             let seconds = max(0.001, (t.finishedAt ?? now).timeIntervalSince(t.transferStartedAt ?? t.startedAt))
             let moved = p.totalBytes - p.resumedBytes
-            status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.rate(Double(moved) / seconds))"
+            status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
             if p.resumedBytes > 0 { status += " · continued from \(Format.bytes(p.resumedBytes))" }
+            let trouble = t.stats
+            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 { status += "\n" + Self.troubleText(trouble) }
         case .declined(let why): status = why; failed = true
         case .failed(let why): status = why; failed = true
         case .cancelled: status = "Cancelled"; failed = true
@@ -329,6 +444,15 @@ final class AppModel: ObservableObject {
                            status: status, fraction: state == .completed ? 1 : p.fraction, isActive: !state.isFinal,
                            isIndeterminate: indeterminate, failed: failed,
                            canReveal: state == .completed && !t.savedURLs.isEmpty)
+    }
+
+    /// "2 connections lost and 1 damaged chunk re-sent": what the drop got past.
+    static func troubleText(_ s: TransferStats) -> String {
+        var parts: [String] = []
+        let lost = s.connectionFailures - s.damagedChunks
+        if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") lost") }
+        if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
+        return parts.joined(separator: ", ") + "; re-sent"
     }
 
     // MARK: Notifications

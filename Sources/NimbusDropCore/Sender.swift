@@ -9,6 +9,11 @@ import Foundation
 /// manifest, what the receiver already has); then `streams` data connections carry the chunks.
 /// Every stream takes the next unsent chunk from one shared list, so a single large file is
 /// spread across all of them and a folder of small files is too.
+///
+/// A data connection that dies, stalls or delivers a damaged chunk does not end the drop. When
+/// the sender has written everything it says so; the receiver answers with what is still
+/// missing, and the sender sends that on fresh connections. That repeats until the receiver has
+/// it all. Only the control connection going away, or a long silence, ends a drop early.
 public final class SendSession: Transfer, @unchecked Sendable {
     private let urls: [URL]
     private let host: String
@@ -22,6 +27,24 @@ public final class SendSession: Transfer, @unchecked Sendable {
     private var nextJob = 0
     private let jobLock = NSLock()
     private var scanned: ScannedDrop!
+
+    /// Frames from the receiver, read by one thread for the whole drop so that its reason for
+    /// stopping (declined, disk full, cancelled) is heard even while the streams are busy.
+    private let inbox = NSCondition()
+    private var frames: [(type: FrameType, body: Data)] = []
+    private var inboxError: Error?
+
+    /// One per live data connection, for the stall watch.
+    private final class Stream {
+        let socket: Socket
+        var lastProgress = Date()
+        init(_ socket: Socket) { self.socket = socket }
+    }
+    private var live: [Stream] = []
+    private var opened = 0
+
+    /// Tests only: the protocol major to claim.
+    var offerVersion = protocolVersion
 
     /// Tests only: fail the drop once this many chunks have been sent, as a dropped link would.
     var failAfterChunks: Int?
@@ -56,100 +79,197 @@ public final class SendSession: Transfer, @unchecked Sendable {
         let control = try Socket.connect(host: host, port: port)
         control.setNoDelay()
         track(control)
-        try control.send(.offer, Offer(version: protocolVersion, senderName: identity.name, senderID: identity.id,
+        try control.send(.offer, Offer(version: offerVersion, minor: protocolMinor, app: identity.appVersion, senderName: identity.name, senderID: identity.id,
                                        items: manifest.topLevelNames, fileCount: manifest.fileCount,
                                        totalBytes: manifest.totalBytes))
         setState(.waitingForAccept)
-        let answer = try control.readFrame()
+        Thread.detachNewThread { [self] in readControl(control) }
+        let answer = try nextFrame()
         switch answer.type {
         case .accept: break
         case .decline: finish(.declined(try decode(Reason.self, from: answer.body).message)); return
-        case .error: throw DropError(try decode(Reason.self, from: answer.body).message)
-        default: throw DropError("Unexpected answer from the other Mac")
+        default: throw DropError("Unexpected answer from \(peerName)")
         }
 
         try control.send(.manifest, manifest)
-        let reply = try control.readFrame()
-        if reply.type == .error { throw DropError(try decode(Reason.self, from: reply.body).message) }
-        guard reply.type == .plan else { throw DropError("Unexpected answer from the other Mac") }
-        let plan = try decode(Plan.self, from: reply.body)
-        buildJobs(manifest, plan)
+        var reply = try nextFrame()
+        guard reply.type == .plan else { throw DropError("Unexpected answer from \(peerName)") }
+        startWatchdog()
+        Thread.detachNewThread { [self] in watchStreams() }
 
-        setState(.transferring)
-        let count = min(streams, jobs.count)
-        var sockets: [Socket] = []
-        for _ in 0..<count {
-            let s = try Socket.connect(host: host, port: port)
-            track(s)
-            try s.send(.attach, Attach(token: plan.token))
-            sockets.append(s)
-        }
-        let group = DispatchGroup()
-        for s in sockets {
-            group.enter()
-            Thread.detachNewThread { [self] in
-                defer { group.leave() }
-                do { try runStream(s) } catch {
-                    // When the receiver stops a drop it says why on the control connection and
-                    // then closes everything; give that message a moment to win over this
-                    // stream's "connection lost".
-                    Thread.sleep(forTimeInterval: 0.3)
-                    fail(error)
+        var first = true
+        while true {
+            let plan = try decode(Plan.self, from: reply.body)
+            buildJobs(manifest, plan, first: first)
+            first = false
+            note { $0.rounds += 1 }
+            setState(.transferring)
+            if !jobs.isEmpty {
+                let sockets = try openStreams(token: plan.token)
+                let group = DispatchGroup()
+                for s in sockets {
+                    group.enter()
+                    Thread.detachNewThread { [self] in
+                        let stream = Stream(s)
+                        lock.withLock { live.append(stream) }
+                        update { $0.connections += 1 }
+                        // A stream that fails is this round's loss, not the drop's: what it did
+                        // not deliver is in the receiver's next answer.
+                        do { try runStream(stream) } catch {
+                            note { $0.connectionFailures += 1 }
+                            s.shutdown()
+                        }
+                        lock.withLock { live.removeAll { $0 === stream } }
+                        untrack(s)
+                        update { $0.connections -= 1 }
+                        group.leave()
+                    }
                 }
+                group.wait()
             }
-        }
-        // Once every stream has written its end marker, say so; the receiver then finishes up
-        // and answers on the control connection, which this thread is reading meanwhile.
-        DispatchQueue.global().async { [self] in
-            group.wait()
-            guard !isOver else { return }
+            if isOver { return }
             setState(.finishing)
-            do { try control.send(.done, Done(streams: count)) } catch { fail(error) }
-        }
-        let final = try control.readFrame()
-        switch final.type {
-        case .complete:
-            update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
-            finish(.completed)
-        case .error: throw DropError(try decode(Reason.self, from: final.body).message)
-        default: throw DropError("Unexpected answer from the other Mac")
+            try control.send(.done, Done(streams: lock.withLock { opened }))
+            reply = try nextFrame()
+            switch reply.type {
+            case .complete:
+                update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
+                finish(.completed)
+                return
+            case .plan: continue
+            default: throw DropError("Unexpected answer from \(peerName)")
+            }
         }
     }
 
-    /// Every chunk the receiver does not already hold, in manifest order.
-    private func buildJobs(_ manifest: Manifest, _ plan: Plan) {
+    // MARK: The control connection
+
+    private func readControl(_ control: Socket) {
+        while true {
+            do {
+                let frame = try control.readFrame()
+                touch()
+                if frame.type == .error {
+                    // The receiver's reason, said before it closes everything.
+                    let reason = DropError(try decode(Reason.self, from: frame.body).message)
+                    post(error: reason)
+                    fail(reason)
+                    return
+                }
+                inbox.lock()
+                frames.append(frame)
+                inbox.broadcast()
+                inbox.unlock()
+                if frame.type == .complete || frame.type == .decline { return }
+            } catch {
+                post(error: error)
+                fail(error)
+                return
+            }
+        }
+    }
+
+    private func post(error: Error) {
+        inbox.lock()
+        if inboxError == nil { inboxError = error }
+        inbox.broadcast()
+        inbox.unlock()
+    }
+
+    private func nextFrame() throws -> (type: FrameType, body: Data) {
+        inbox.lock()
+        defer { inbox.unlock() }
+        while frames.isEmpty {
+            if let inboxError { throw inboxError }
+            if isOver { throw DropError("Cancelled") }
+            inbox.wait(until: Date().addingTimeInterval(0.2))
+        }
+        return frames.removeFirst()
+    }
+
+    // MARK: The data connections
+
+    /// Opens up to `streams` connections. Some failing is fine; none opening is retried for a
+    /// while (the link may be coming back) as long as the control connection is still up.
+    private func openStreams(token: String) throws -> [Socket] {
+        let wanted = min(streams, jobs.count)
+        let started = Date()
+        var last: Error = DropError("Cannot connect to \(peerName)")
+        while !isOver {
+            var sockets: [Socket] = []
+            for _ in 0..<wanted {
+                do {
+                    let s = try Socket.connect(host: host, port: port)
+                    track(s)
+                    try s.send(.attach, Attach(token: token))
+                    lock.withLock { opened += 1 }
+                    sockets.append(s)
+                } catch { last = error }
+            }
+            if !sockets.isEmpty { return sockets }
+            guard Date().timeIntervalSince(started) < Tuning.connectRetrySeconds else { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        throw last
+    }
+
+    /// Closes any data connection that has moved nothing for `Tuning.stallSeconds`. Its thread
+    /// then fails, and its chunks go out again on another connection.
+    private func watchStreams() {
+        while !state.isFinal {
+            let now = Date()
+            for s in lock.withLock({ live }) where now.timeIntervalSince(lock.withLock { s.lastProgress }) > Tuning.stallSeconds {
+                s.socket.shutdown()
+            }
+            Thread.sleep(forTimeInterval: min(0.25, Tuning.stallSeconds / 8))
+        }
+    }
+
+    /// Every chunk the receiver does not hold, in manifest order; and the progress as it really
+    /// stands, which after a troubled round is less than what was written to the sockets.
+    private func buildJobs(_ manifest: Manifest, _ plan: Plan, first: Bool) {
         let complete = Set(plan.completeFiles)
         var partial: [Int: Set<Int>] = [:]
         for p in plan.partialFiles { partial[p.file] = Set(p.chunks) }
-        var resumed: Int64 = 0
+        var have: Int64 = 0
         var filesDone = 0
+        var list: [Job] = []
         for (i, e) in manifest.entries.enumerated() where e.kind == .file {
             let n = manifest.chunkCount(i)
             if n == 0 || complete.contains(i) {
-                resumed += e.size
+                have += e.size
                 filesDone += 1
                 continue
             }
-            let have = partial[i] ?? []
+            let got = partial[i] ?? []
             for c in 0..<n {
-                if have.contains(c) { resumed += Int64(manifest.chunkLength(file: i, chunk: c)) }
-                else { jobs.append(Job(file: Int32(i), chunk: Int32(c))) }
+                if got.contains(c) { have += Int64(manifest.chunkLength(file: i, chunk: c)) }
+                else { list.append(Job(file: Int32(i), chunk: Int32(c))) }
             }
         }
-        update { $0.resumedBytes = resumed; $0.doneBytes = resumed; $0.doneFiles = filesDone }
+        jobLock.withLock { jobs = list; nextJob = 0 }
+        update {
+            if first { $0.resumedBytes = have }
+            $0.doneBytes = have
+            $0.doneFiles = filesDone
+        }
     }
 
     private func takeJob() -> Job? {
         jobLock.lock()
         defer { jobLock.unlock() }
-        if let limit = failAfterChunks, chunksSent >= limit { return nil }
         guard nextJob < jobs.count else { return nil }
+        if let limit = failAfterChunks, chunksSent >= limit {
+            DispatchQueue.global().async { self.fail(DropError("Stopped by the test")) }
+            return nil
+        }
         chunksSent += 1
         nextJob += 1
         return jobs[nextJob - 1]
     }
 
-    private func runStream(_ socket: Socket) throws {
+    private func runStream(_ stream: Stream) throws {
+        let socket = stream.socket
         let manifest = scanned.manifest
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: ChunkHeader.size + manifest.chunkSize, alignment: 16384)
         defer { buffer.deallocate() }
@@ -163,22 +283,26 @@ public final class SendSession: Transfer, @unchecked Sendable {
             if openFile != file {
                 if fd >= 0 { close(fd) }
                 fd = open(scanned.sources[file], O_RDONLY)
-                guard fd >= 0 else { throw errnoError("Cannot open \(scanned.sources[file])") }
+                // A source that cannot be read is no fault of the link: it ends the drop.
+                guard fd >= 0 else { let e = errnoError("Cannot open \(scanned.sources[file])"); fail(e); throw e }
                 openFile = file
             }
             var got = 0
             let offset = Int64(chunk) * Int64(manifest.chunkSize)
             while got < length {
                 let n = pread(fd, buffer + ChunkHeader.size + got, length - got, offset + Int64(got))
-                if n > 0 { got += n }
-                else if n == 0 { throw DropError("\(manifest.entries[file].path) changed while it was being sent") }
-                else if errno != EINTR { throw errnoError("Cannot read \(scanned.sources[file])") }
+                if n > 0 { got += n } else if n < 0, errno == EINTR { continue } else {
+                    let e = n == 0 ? DropError("\(manifest.entries[file].path) changed while it was being sent")
+                                   : errnoError("Cannot read \(scanned.sources[file])")
+                    fail(e)
+                    throw e
+                }
             }
-            ChunkHeader(file: UInt32(file), chunk: UInt32(chunk), length: UInt32(length),
-                        crc: checksum(buffer + ChunkHeader.size, length)).write(to: buffer)
+            ChunkHeader.seal(buffer, file: UInt32(file), chunk: UInt32(chunk), length: length)
             var counted = -ChunkHeader.size
-            try socket.writeAll(buffer, ChunkHeader.size + length, slice: 1 << 20) { [self] n in
+            try socket.writeAll(buffer, ChunkHeader.size + length, slice: 256 << 10) { [self] n in
                 counted += n
+                lock.withLock { stream.lastProgress = Date() }
                 if counted > 0 {
                     let add = Int64(counted)
                     counted = 0
@@ -187,11 +311,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
             }
             if chunk == manifest.chunkCount(file) - 1 { update { $0.doneFiles += 1 } }
         }
-        if let limit = failAfterChunks, jobLock.withLock({ chunksSent >= limit }) {
-            throw DropError("Stopped by the test")
-        }
         if isOver { return }
-        ChunkHeader(file: ChunkHeader.endMarker, chunk: 0, length: 0, crc: 0).write(to: buffer)
+        ChunkHeader.seal(buffer, file: ChunkHeader.endMarker, chunk: 0, length: 0)
         try socket.writeAll(buffer, ChunkHeader.size)
     }
 }

@@ -16,8 +16,10 @@ final class Ledger: @unchecked Sendable {
     /// Chunks still missing, per manifest entry.
     private var remaining: [Int32]
     private var fd: Int32 = -1
-    private(set) var doneBytes: Int64 = 0
-    private(set) var doneFiles = 0
+    private var _doneBytes: Int64 = 0
+    private var _doneFiles = 0
+    var doneBytes: Int64 { lock.withLock { _doneBytes } }
+    var doneFiles: Int { lock.withLock { _doneFiles } }
 
     private static func pack(_ file: Int, _ chunk: Int) -> UInt64 { UInt64(file) << 32 | UInt64(chunk) }
 
@@ -66,9 +68,9 @@ final class Ledger: @unchecked Sendable {
     }
 
     private func account(_ file: Int, _ chunk: Int) {
-        doneBytes += Int64(manifest.chunkLength(file: file, chunk: chunk))
+        _doneBytes += Int64(manifest.chunkLength(file: file, chunk: chunk))
         remaining[file] -= 1
-        if remaining[file] == 0 { doneFiles += 1 }
+        if remaining[file] == 0 { _doneFiles += 1 }
     }
 
     /// Notes a chunk as written. Returns whether that completed its file.

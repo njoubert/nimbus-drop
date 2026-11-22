@@ -170,8 +170,9 @@ public enum Naming {
     }
 }
 
-/// CRC-32 of a chunk (zlib's, which uses the CPU's CRC instructions on Apple silicon).
+/// CRC-32 (zlib's, which uses the CPU's CRC instructions on Apple silicon). `seed` continues an
+/// earlier checksum, so a header and its chunk are covered as one.
 @inline(__always)
-func checksum(_ p: UnsafeRawPointer, _ count: Int) -> UInt32 {
-    UInt32(truncatingIfNeeded: crc32(0, p.assumingMemoryBound(to: UInt8.self), uInt(count)))
+func checksum(_ p: UnsafeRawPointer, _ count: Int, seed: UInt32 = 0) -> UInt32 {
+    UInt32(truncatingIfNeeded: crc32(uLong(seed), p.assumingMemoryBound(to: UInt8.self), uInt(count)))
 }

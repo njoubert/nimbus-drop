@@ -56,6 +56,8 @@ public final class DropListener: @unchecked Sendable {
             socket.setNoDelay()
             let session = ReceiveSession(control: socket, offer: offer, listener: self)
             session.run()
+        case .hello:
+            try? socket.send(.hello, Hello(name: identity.name, id: identity.id, version: protocolVersion, minor: protocolMinor, app: identity.appVersion))
         case .attach:
             guard let attach = try? decode(Attach.self, from: first.body),
                   let session = lock.withLock({ sessions[attach.token] }) else { return }
@@ -70,11 +72,18 @@ public final class DropListener: @unchecked Sendable {
 }
 
 /// One incoming drop: first a question for the person at this Mac, then the transfer.
+///
+/// The transfer runs in rounds (see `SendSession`): a data connection that is lost or carries a
+/// damaged chunk is closed and what it did not deliver is asked for again, on the same accepted
+/// drop, without asking the person twice.
 public final class ReceiveSession: Transfer, @unchecked Sendable {
     public let senderID: String
     /// What the sender says it is sending, for the prompt.
     public let offeredFiles: Int
     public let offeredBytes: Int64
+    /// The sender's app version and protocol version ("0.3.1", "2.0"), as it stated them.
+    public let senderAppVersion: String
+    public let senderProtocol: String
 
     /// Called once if the sender gives up while this Mac is still deciding.
     public var onWithdrawn: (@Sendable () -> Void)?
@@ -89,8 +98,11 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private var manifest: Manifest!
     private var ledger: Ledger!
     private var itemsRoot: URL!
-    private let streamsCondition = NSCondition()
-    private var streamsEnded = 0
+    /// The data connections: those attached now, and how many have come and gone in all.
+    private let streams = NSCondition()
+    private var active: [Socket] = []
+    private var finished = 0
+    private var roundStartBytes: Int64 = 0
 
     init(control: Socket, offer: Offer, listener: DropListener) {
         self.control = control
@@ -99,6 +111,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         offeredFiles = offer.fileCount
         offeredBytes = offer.totalBytes
         version = offer.version
+        senderAppVersion = offer.app ?? "an older version"
+        senderProtocol = "\(offer.version)" + (offer.minor.map { ".\($0)" } ?? "")
         super.init(direction: .receive, state: .waitingForAccept, peerName: offer.senderName, peerAddress: control.peerAddress)
         setItems(offer.items)
         update { $0.totalBytes = offer.totalBytes; $0.totalFiles = offer.fileCount }
@@ -120,9 +134,12 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     }
 
     private func conduct() throws {
+        // The major decides; a different minor is by definition something both sides can ignore.
         guard version == protocolVersion else {
-            try control.send(.decline, Reason(message: "\(listener?.identity.name ?? "The other Mac") runs a different version of Nimbus Drop"))
-            finish(.declined("The sender runs a different version of Nimbus Drop"))
+            let mine = listener?.identity
+            try control.send(.decline, Reason(message: "\(mine?.name ?? "The other Mac") runs Nimbus Drop \(mine?.appVersion ?? "?") (protocol \(protocolVersionText)) "
+                + "and cannot take a drop from protocol \(senderProtocol). Update Nimbus Drop on both Macs."))
+            finish(.declined("\(peerName) runs Nimbus Drop \(senderAppVersion) (protocol \(senderProtocol)); this Mac speaks protocol \(protocolVersionText). Update Nimbus Drop on both Macs."))
             return
         }
         guard let listener, let offer = listener.onOffer else {
@@ -171,6 +188,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
 
         let empties = manifest.entries.indices.filter { manifest.entries[$0].kind == .file && manifest.chunkCount($0) == 0 }.count
         update { $0.resumedBytes = ledger.doneBytes; $0.doneBytes = ledger.doneBytes; $0.doneFiles = ledger.doneFiles + empties }
+        roundStartBytes = ledger.doneBytes
         let needed = manifest.totalBytes - ledger.doneBytes
         if let free = try? destination.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage,
            free < needed {
@@ -182,21 +200,30 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         defer { listener.unregister(token: token) }
         try control.send(.plan, ledger.plan(token: token))
         setState(.transferring)
+        startWatchdog()
 
-        let next = try control.readFrame()
-        if next.type == .error { throw DropError(try decode(Reason.self, from: next.body).message) }
-        guard next.type == .done else { throw DropError("Unexpected message from the sender") }
-        let expected = try decode(Done.self, from: next.body).streams
-
-        // The sender wrote every end marker before it said done; the stream threads here may
-        // still be writing their last chunks to disk.
-        streamsCondition.lock()
-        let deadline = Date().addingTimeInterval(120)
-        while streamsEnded < expected, !isOver, streamsCondition.wait(until: deadline) {}
-        let ended = streamsEnded
-        streamsCondition.unlock()
-        if isOver { return }
-        guard ended >= expected, ledger.isComplete else { throw DropError("The drop arrived incomplete") }
+        // Rounds. The sender writes what it was asked for and says done; if connections died or
+        // chunks arrived damaged along the way, something is missing, and the answer is a new
+        // plan rather than a failure. It ends when everything is here, or when round after
+        // round delivers nothing.
+        var idle = 0
+        while true {
+            let next = try control.readFrame()
+            touch()
+            if next.type == .error { throw DropError(try decode(Reason.self, from: next.body).message) }
+            guard next.type == .done else { throw DropError("Unexpected message from \(peerName)") }
+            let roundStart = lock.withLock { roundStartBytes }
+            settle(opened: try decode(Done.self, from: next.body).streams)
+            if isOver { return }
+            if ledger.isComplete { break }
+            idle = ledger.doneBytes > roundStart ? 0 : idle + 1
+            guard idle < Tuning.idleRounds else { throw DropError("The drop arrived incomplete; send it again to continue it") }
+            note { $0.rounds += 1 }
+            let have = ledger.doneBytes
+            lock.withLock { roundStartBytes = have }
+            update { $0.doneBytes = have }
+            try control.send(.plan, ledger.plan(token: token))
+        }
 
         setState(.finishing)
         let saved = try finalize(partial: partial, destination: destination)
@@ -204,6 +231,31 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
         try? control.send(.complete, Complete(saved: saved.map(\.lastPathComponent)))
         finish(.completed)
+    }
+
+    /// After the sender says done: wait for the data connections it opened to finish here too
+    /// (their last chunks may still be on the wire or on their way to disk), then close whatever
+    /// is left so that nothing writes into the drop once it is judged.
+    private func settle(opened: Int) {
+        streams.lock()
+        var quietSince = Date()
+        var lastBytes = progress.doneBytes
+        while finished < opened, !isOver {
+            streams.wait(until: Date().addingTimeInterval(0.05))
+            let bytes = progress.doneBytes
+            if bytes != lastBytes { lastBytes = bytes; quietSince = Date() }
+            // A connection the sender counts but that never got here (reset on the way) will
+            // never finish; one that is here but silent has stalled.
+            let patience = active.isEmpty ? Tuning.settleSeconds : Tuning.stallSeconds
+            if Date().timeIntervalSince(quietSince) > patience { break }
+        }
+        let left = active
+        streams.unlock()
+        for s in left { s.shutdown() }
+        streams.lock()
+        let deadline = Date().addingTimeInterval(10)
+        while !active.isEmpty, streams.wait(until: deadline) {}
+        streams.unlock()
     }
 
     /// Folders, symlinks and empty files, before any data. Existing ones (a resume) are left.
@@ -226,16 +278,36 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     }
 
     /// One data connection: read a chunk, check it, write it where it belongs, note it.
+    ///
+    /// Trouble with the connection (it closed, it stalled, what it carried is damaged) ends this
+    /// connection only; the chunks it did not deliver are asked for again. Trouble with the disk
+    /// ends the drop.
     func runStream(_ socket: Socket) {
         track(socket)
-        do { try receive(socket) } catch {
+        streams.lock()
+        active.append(socket)
+        streams.unlock()
+        update { $0.connections += 1 }
+        do { try receive(socket) } catch let fault as StreamFault {
+            note {
+                $0.connectionFailures += 1
+                if fault == .damaged { $0.damagedChunks += 1 }
+            }
+            socket.shutdown()
+        } catch {
             if !isOver { try? control.send(.error, Reason(message: (error as? DropError)?.message ?? error.localizedDescription)) }
             fail(error)
         }
-        streamsCondition.lock()
-        streamsCondition.broadcast()
-        streamsCondition.unlock()
+        untrack(socket)
+        update { $0.connections -= 1 }
+        streams.lock()
+        active.removeAll { $0 === socket }
+        finished += 1
+        streams.broadcast()
+        streams.unlock()
     }
+
+    private enum StreamFault: Error { case lost, damaged }
 
     private func receive(_ socket: Socket) throws {
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: manifest.chunkSize, alignment: 16384)
@@ -246,22 +318,24 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         defer { if fd >= 0 { close(fd) } }
 
         while true {
-            try headerBytes.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, ChunkHeader.size) }
+            do { try headerBytes.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, ChunkHeader.size) } }
+            catch { throw StreamFault.lost }
             let header = headerBytes.withUnsafeBytes { ChunkHeader(from: $0.baseAddress!) }
             if header.file == ChunkHeader.endMarker {
-                streamsCondition.lock()
-                streamsEnded += 1
-                streamsCondition.unlock()
+                guard header.length == 0, headerBytes.withUnsafeBytes({ header.verifies(head: $0.baseAddress!, payload: $0.baseAddress!) }) else {
+                    throw StreamFault.damaged
+                }
                 return
             }
+            // A header that makes no sense is taken for damage: its length cannot be trusted,
+            // so neither can anything after it on this connection.
             let file = Int(header.file), chunk = Int(header.chunk), length = Int(header.length)
             guard file < manifest.entries.count, chunk < manifest.chunkCount(file),
-                  length == manifest.chunkLength(file: file, chunk: chunk) else {
-                throw DropError("The sender sent a chunk that is not in the drop")
-            }
-            try socket.readExactly(buffer, length) { [self] n in update { $0.doneBytes += Int64(n) } }
-            guard checksum(buffer, length) == header.crc else {
-                throw DropError("A chunk of \(manifest.entries[file].path) arrived damaged; send the drop again to continue it")
+                  length == manifest.chunkLength(file: file, chunk: chunk) else { throw StreamFault.damaged }
+            do { try socket.readExactly(buffer, length) { [self] n in update { $0.doneBytes += Int64(n) } } }
+            catch { throw StreamFault.lost }
+            guard headerBytes.withUnsafeBytes({ header.verifies(head: $0.baseAddress!, payload: buffer) }) else {
+                throw StreamFault.damaged
             }
             if openFile != file {
                 if fd >= 0 { close(fd) }

@@ -254,6 +254,80 @@ final class DropTests: XCTestCase {
         XCTAssertTrue(why.contains("Cannot connect"), why)
     }
 
+    // MARK: Finding each other
+
+    func testAMacAddedByAddressSaysWhoItIs() throws {
+        let l = try listen { _ in }
+        defer { l.stop() }
+        let peer = try Probe.hello(host: "127.0.0.1", port: l.port)
+        XCTAssertEqual(peer.name, "receiver")
+        XCTAssertEqual(peer.id, "receiver-id")
+        XCTAssertTrue(peer.isCompatible)
+        XCTAssertThrowsError(try Probe.hello(host: "127.0.0.1", port: 1, timeout: 1))
+    }
+
+    func testAResultThatLosesItsTXTRecordIsStillTheSameMac() {
+        // What macOS reports when Wi-Fi is switched off with Ethernet still up (2026-11-22):
+        // every result again, with no TXT record. The Macs must stay in the list.
+        var table = PeerTable()
+        let air = ["id": "air-id", "name": "macbookairm4", "v": "2"], me = ["id": "me", "name": "macbookpro", "v": "2"]
+        var out = table.apply([.init(key: "air._nimbusdrop", txt: air), .init(key: "me._nimbusdrop", txt: me)], selfID: "me")
+        XCTAssertEqual(out.resolve, ["air-id"])
+        XCTAssertFalse(out.missingTXT)
+        XCTAssertEqual(table.peers.keys.sorted(), ["air-id"], "this Mac is not in its own list")
+        table.setAddress("air-id", address: "192.168.1.143", port: 47823)
+
+        out = table.apply([.init(key: "air._nimbusdrop", txt: nil), .init(key: "me._nimbusdrop", txt: nil)], selfID: "me")
+        XCTAssertTrue(out.missingTXT, "which asks for a fresh browse")
+        XCTAssertEqual(out.resolve, [])
+        XCTAssertEqual(table.peers["air-id"]?.address, "192.168.1.143")
+        XCTAssertEqual(table.peers.keys.sorted(), ["air-id"], "and this Mac has not crept into its own list")
+
+        // A result never seen with a record is nobody yet; one that goes away is gone.
+        out = table.apply([.init(key: "stranger._nimbusdrop", txt: nil)], selfID: "me")
+        XCTAssertTrue(table.peers.isEmpty)
+        XCTAssertTrue(out.missingTXT)
+    }
+
+    func testAPeerAnnouncingAnotherProtocolVersionIsMarked() {
+        var table = PeerTable()
+        _ = table.apply([.init(key: "old", txt: ["id": "old-id", "name": "old", "v": "1"]),
+                         .init(key: "newer", txt: ["id": "newer-id", "name": "newer", "v": "\(protocolVersion).7", "app": "9.1.0"])], selfID: "me")
+        XCTAssertEqual(table.peers["old-id"]?.isCompatible, false, "another major cannot exchange drops")
+        XCTAssertEqual(table.peers["old-id"]?.protocolText, "1")
+        XCTAssertEqual(table.peers["newer-id"]?.isCompatible, true, "another minor can")
+        XCTAssertEqual(table.peers["newer-id"]?.protocolText, "\(protocolVersion).7")
+        XCTAssertEqual(table.peers["newer-id"]?.appVersion, "9.1.0")
+    }
+
+    func testAnOfferFromAnotherProtocolMajorIsDeclinedWithBothVersionsNamed() throws {
+        let src = try makeTree()
+        let dst = try destination()
+        let asked = Box(false)
+        let l = try DropListener(identity: Identity(name: "receiver", id: "receiver-id", appVersion: "0.4.0"), preferredPort: 0)
+        l.onOffer = { asked.value = true; $0.accept(destination: dst) }
+        l.start()
+        defer { l.stop() }
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "receiver",
+                            identity: Identity(name: "sender", id: "sender-id", appVersion: "0.9.0"), chunkSize: chunk)
+        s.offerVersion = protocolVersion + 1
+        s.start()
+        wait(s)
+        guard case .declined(let why) = s.state else { return XCTFail("\(s.state)") }
+        XCTAssertTrue(why.contains("0.4.0") && why.contains("protocol \(protocolVersionText)") && why.contains("protocol \(protocolVersion + 1).\(protocolMinor)"), why)
+        XCTAssertFalse(asked.value, "the person is not asked about a drop that cannot be taken")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dst.path), [])
+    }
+
+    func testTheHelloCarriesBothVersions() throws {
+        let l = try DropListener(identity: Identity(name: "receiver", id: "receiver-id", appVersion: "0.4.0"), preferredPort: 0)
+        l.start()
+        defer { l.stop() }
+        let peer = try Probe.hello(host: "127.0.0.1", port: l.port)
+        XCTAssertEqual(peer.appVersion, "0.4.0")
+        XCTAssertEqual(peer.protocolText, protocolVersionText)
+    }
+
     // MARK: The manifest
 
     func testAManifestThatReachesOutsideIsRefused() {
@@ -307,6 +381,11 @@ final class DropTests: XCTestCase {
         XCTAssertEqual(Format.duration(3729), "1:02:09")
         XCTAssertEqual(Format.files(1), "1 file")
         XCTAssertEqual(Format.files(1204), "1,204 files")
+        XCTAssertEqual(Format.bitRate(115_000_000), "920 Mbps")
+        XCTAssertEqual(Format.bitRate(387_000_000), "3.10 Gbps")
+        XCTAssertEqual(Format.bitRate(80_000), "640 kbps")
+        XCTAssertEqual(Format.connections(1), "1 connection")
+        XCTAssertEqual(Format.connections(8), "8 connections")
     }
 }
 

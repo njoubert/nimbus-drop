@@ -15,6 +15,17 @@ public enum Format {
     /// "812 MB/s".
     public static func rate(_ bytesPerSecond: Double) -> String { bytes(Int64(max(0, bytesPerSecond))) + "/s" }
 
+    /// A network rate in bits: "940 Mbps", "1.24 Gbps", "640 kbps".
+    public static func bitRate(_ bytesPerSecond: Double) -> String {
+        let units = ["bps", "kbps", "Mbps", "Gbps"]
+        var value = max(0, bytesPerSecond) * 8, unit = 0
+        while value >= 1000, unit < units.count - 1 { value /= 1000; unit += 1 }
+        return String(format: value >= 100 || unit == 0 ? "%.0f %@" : (value >= 10 ? "%.1f %@" : "%.2f %@"), value, units[unit])
+    }
+
+    /// "1 connection", "8 connections".
+    public static func connections(_ n: Int) -> String { "\(n) \(n == 1 ? "connection" : "connections")" }
+
     /// "0:31", "12:05", "1:02:09".
     public static func duration(_ seconds: Double) -> String {
         let s = Int(max(0, seconds.rounded()))

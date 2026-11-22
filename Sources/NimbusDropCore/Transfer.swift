@@ -7,9 +7,12 @@ import Foundation
 public struct Identity: Equatable, Sendable {
     public var name: String
     public var id: String
-    public init(name: String, id: String) {
+    /// The app's version, for the other side to show; "dev" for a bare binary.
+    public var appVersion: String
+    public init(name: String, id: String, appVersion: String = "dev") {
         self.name = name
         self.id = id
+        self.appVersion = appVersion
     }
 }
 
@@ -42,8 +45,20 @@ public struct TransferProgress: Equatable, Sendable {
     public var resumedBytes: Int64 = 0
     public var totalFiles = 0
     public var doneFiles = 0
+    /// Data connections open right now.
+    public var connections = 0
 
     public var fraction: Double { totalBytes > 0 ? min(1, Double(doneBytes) / Double(totalBytes)) : (doneFiles >= totalFiles ? 1 : 0) }
+}
+
+/// What went wrong along the way without stopping the drop.
+public struct TransferStats: Equatable, Sendable {
+    /// Times the sender was told what is still missing and sent it: 1 for a drop with no trouble.
+    public var rounds = 0
+    /// Data connections that died or were closed for stalling.
+    public var connectionFailures = 0
+    /// Chunks (or their headers) that arrived damaged and were thrown away.
+    public var damagedChunks = 0
 }
 
 /// One drop, in either direction. Thread-safe: the engine's threads write it, the UI polls it.
@@ -64,6 +79,8 @@ public class Transfer: @unchecked Sendable, Identifiable {
     private var _finishedAt: Date?
     private var _transferStartedAt: Date?
     private var sockets: [Socket] = []
+    private var _stats = TransferStats()
+    private var lastActivity = Date()
     var cancelRequested = false
 
     /// Called on an engine thread whenever the state changes.
@@ -85,6 +102,7 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// Receiver only, once completed: where each top-level item ended up.
     public var savedURLs: [URL] { lock.withLock { _savedURLs } }
     public var finishedAt: Date? { lock.withLock { _finishedAt } }
+    public var stats: TransferStats { lock.withLock { _stats } }
     /// When bytes started moving (after the scan and the other side's answer).
     public var transferStartedAt: Date? { lock.withLock { _transferStartedAt } }
 
@@ -107,14 +125,43 @@ public class Transfer: @unchecked Sendable, Identifiable {
         onChange?()
     }
 
+    /// Changes the progress, which also counts as a sign of life.
     func update(_ body: (inout TransferProgress) -> Void) {
         lock.lock()
         body(&_progress)
+        lastActivity = Date()
         lock.unlock()
+    }
+
+    func note(_ body: (inout TransferStats) -> Void) { lock.withLock { body(&_stats) } }
+
+    /// A message arrived, or something else showed the other side is there.
+    func touch() { lock.withLock { lastActivity = Date() } }
+
+    var idleSeconds: Double { lock.withLock { Date().timeIntervalSince(lastActivity) } }
+
+    /// Gives the drop up when nothing has moved and nothing has been said for too long. TCP's
+    /// own timeouts catch a peer that is gone; they do not catch one that is there and frozen
+    /// (a stopped process, a full disk that blocks, a middlebox that swallows everything).
+    func startWatchdog() {
+        Thread.detachNewThread { [weak self] in
+            while let self, !self.state.isFinal {
+                let state = self.state
+                // While the receiver puts a large drop in place the sender hears nothing; allow for it.
+                let limit = Tuning.stallSeconds * (state == .finishing ? 10 : 3)
+                if state == .transferring || (state == .finishing && self.direction == .send), self.idleSeconds > limit {
+                    self.fail(DropError("\(self.peerName) stopped responding; send the drop again to continue it"))
+                    return
+                }
+                Thread.sleep(forTimeInterval: min(0.25, Tuning.stallSeconds / 8))
+            }
+        }
     }
 
     func setItems(_ items: [String]) { lock.withLock { _items = items } }
     func setSaved(_ urls: [URL]) { lock.withLock { _savedURLs = urls } }
+
+    func untrack(_ socket: Socket) { lock.withLock { sockets.removeAll { $0 === socket } } }
 
     func track(_ socket: Socket) {
         lock.lock()

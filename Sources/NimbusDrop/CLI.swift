@@ -12,6 +12,7 @@ enum CLI {
         case receive(dir: String, once: Bool)
         case send(target: String, paths: [String])
         case peers
+        case watchPeers
         case print
         case checkUpdate
         case preflight(app: String)
@@ -45,6 +46,16 @@ enum CLI {
             let found = browse(seconds: 3) { _ in false }
             if found.isEmpty { Swift.print("no other Macs found") }
             for p in found { Swift.print("\(p.name)  \(p.address ?? "unresolved")\(p.port.map { ":\($0)" } ?? "")  [\(p.id)]") }
+            return 0
+
+        case .watchPeers:
+            let browser = PeerBrowser(selfID: identity.id)
+            browser.onTrace = { Swift.print("  \($0)") }
+            browser.onChange = { peers in
+                Swift.print("\(Date().formatted(date: .omitted, time: .standard))  " + (peers.isEmpty ? "nobody" : peers.map { "\($0.name) \($0.address ?? "unresolved")" }.joined(separator: ", ")))
+            }
+            browser.start()
+            RunLoop.main.run()
             return 0
 
         case .receive(let dir, let once):
@@ -154,8 +165,11 @@ enum CLI {
                 // The first look after bytes start moving has no earlier figure to measure from.
             } else if state == .transferring {
                 let rate = Double(p.doneBytes - last) / now.timeIntervalSince(lastTime)
-                Swift.print(String(format: "%3.0f%%  %@ / %@  %@  %d/%d files", p.fraction * 100, Format.bytes(p.doneBytes),
-                                   Format.bytes(p.totalBytes), Format.rate(rate), p.doneFiles, p.totalFiles))
+                let trouble = t.stats
+                Swift.print(String(format: "%3.0f%%  %@ / %@  %@ (%@)  %@  %d/%d files", p.fraction * 100, Format.bytes(p.doneBytes),
+                                   Format.bytes(p.totalBytes), Format.bitRate(rate), Format.rate(rate), Format.connections(p.connections),
+                                   p.doneFiles, p.totalFiles)
+                    + (trouble.connectionFailures > 0 ? "  \(trouble.connectionFailures) lost, \(trouble.damagedChunks) damaged, round \(trouble.rounds)" : ""))
             }
             last = p.doneBytes; lastTime = now
         }
@@ -164,7 +178,9 @@ enum CLI {
         case .completed:
             let seconds = max(0.001, (t.finishedAt ?? Date()).timeIntervalSince(t.transferStartedAt ?? t.startedAt))
             let moved = p.totalBytes - p.resumedBytes
-            Swift.print("done: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) in \(String(format: "%.1f", seconds)) s = \(Format.rate(Double(moved) / seconds))")
+            let trouble = t.stats
+            Swift.print("done: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(moved) / seconds)) (\(Format.rate(Double(moved) / seconds)))"
+                + (trouble.connectionFailures > 0 ? "; got past \(trouble.connectionFailures) lost connections (\(trouble.damagedChunks) from damaged chunks) in \(trouble.rounds) rounds" : ""))
             return 0
         case .declined(let why): Swift.print("declined: \(why)"); return 3
         case .failed(let why): Swift.print("failed: \(why)"); return 1

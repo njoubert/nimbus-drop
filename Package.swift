@@ -25,6 +25,14 @@ let package = Package(
             ]
         ),
         .testTarget(name: "NimbusDropCoreTests", dependencies: ["NimbusDropCore"]),
+        // A middleman for testing only, never part of the app: a TCP proxy that sits between a
+        // sender and a receiver and misbehaves on cue (throttles, stalls, drops connections,
+        // flips bits). It knows nothing of the protocol.
+        .target(name: "NimbusDropChaos"),
+        // The same proxy from the command line, to put between two real Macs.
+        .executableTarget(name: "nimbus-chaos", dependencies: ["NimbusDropChaos"]),
+        // Whole drops sent through the proxy: what the protocol does when the network turns bad.
+        .testTarget(name: "NimbusDropChaosTests", dependencies: ["NimbusDropCore", "NimbusDropChaos"]),
         // The menu bar item, the window, the save prompt and the command line. build.sh wraps
         // the binary into Nimbus Drop.app.
         .executableTarget(

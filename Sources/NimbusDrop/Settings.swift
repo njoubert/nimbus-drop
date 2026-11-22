@@ -17,7 +17,10 @@ enum Settings {
         return id
     }
 
-    static var identity: Identity { Identity(name: LocalHost.name, id: deviceID) }
+    static var identity: Identity {
+        Identity(name: LocalHost.name, id: deviceID,
+                 appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")
+    }
 
     /// On unless the person turned it off; remembered across launches.
     static var receiving: Bool {
@@ -30,6 +33,12 @@ enum Settings {
         get { let n = d.integer(forKey: "streams"); return n == 0 ? defaultStreams : max(1, min(32, n)) }
         set { d.set(newValue, forKey: "streams"); NotificationCenter.default.post(name: didChange, object: nil) }
     }
+    /// Macs added by address ("192.168.1.20" or "host:port"), for when Bonjour does not find them.
+    static var manualDestinations: [String] {
+        get { d.stringArray(forKey: "manualDestinations") ?? [] }
+        set { d.set(newValue, forKey: "manualDestinations") }
+    }
+
     static let defaultStreams = 8
     static let streamChoices = [1, 2, 4, 8, 16]
 }

@@ -59,7 +59,7 @@ final class OfferPanel: NSObject, NSWindowDelegate {
     /// The panel's contents as a PNG, for `--dump-offer`.
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
-        let view = OfferView(sender: "macbookairm4", address: "192.168.1.143", title: "Christmas 2026",
+        let view = OfferView(sender: "macbookairm4", address: "192.168.1.143", title: "2026-05-03 - M10 - Canon 28mm LTE evening walk",
                              detail: "1,204 files, 31.2 GB", decline: {}, accept: {})
         let host = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
@@ -85,20 +85,21 @@ private struct OfferView: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "arrow.down.circle.fill").font(.system(size: 44)).foregroundStyle(.tint)
+            Image(systemName: "arrow.down.circle.fill").font(.system(size: 44)).foregroundStyle(Palette.receive)
+                .shadow(color: Palette.receive.opacity(0.5), radius: 8)
             VStack(spacing: 4) {
-                Text("\(sender) wants to send you").font(.headline)
-                Text("“\(title)”").font(.title3.weight(.semibold)).multilineTextAlignment(.center).lineLimit(3)
+                Text("\(sender) (\(address))").font(.headline).textSelection(.enabled)
+                Text("wants to send you").foregroundStyle(.secondary)
+                // A long name wraps rather than being cut short: it is what is being agreed to.
+                Text("“\(title)”").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+                    .lineLimit(4).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
                 Text(detail).font(.body.monospacedDigit())
             }
-            Text("From \(sender) at \(address)").font(.system(.callout, design: .monospaced))
-                .textSelection(.enabled).foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Button("Decline", action: decline).keyboardShortcut(.cancelAction).frame(maxWidth: .infinity)
                 Button("Accept…", action: accept).keyboardShortcut(.defaultAction).frame(maxWidth: .infinity)
             }
             .controlSize(.large)
-            Text("Accepting asks where to save it. Nothing is written before that.").font(.caption).foregroundStyle(.secondary)
         }
         .padding(22)
         .frame(width: 380)

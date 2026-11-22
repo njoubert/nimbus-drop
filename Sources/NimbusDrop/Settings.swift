@@ -39,6 +39,12 @@ enum Settings {
         set { d.set(newValue, forKey: "manualDestinations") }
     }
 
+    /// Destinations as a compact list rather than a grid of tiles.
+    static var listLayout: Bool {
+        get { d.bool(forKey: "listLayout") }
+        set { d.set(newValue, forKey: "listLayout") }
+    }
+
     static let defaultStreams = 8
     static let streamChoices = [1, 2, 4, 8, 16]
 }

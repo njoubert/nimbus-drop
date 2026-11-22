@@ -85,7 +85,8 @@ private struct OfferView: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "arrow.down.circle.fill").font(.system(size: 44)).foregroundStyle(.tint)
+            Image(systemName: "arrow.down.circle.fill").font(.system(size: 44)).foregroundStyle(Palette.receive)
+                .shadow(color: Palette.receive.opacity(0.5), radius: 8)
             VStack(spacing: 4) {
                 Text("\(sender) (\(address))").font(.headline).textSelection(.enabled)
                 Text("wants to send you").foregroundStyle(.secondary)

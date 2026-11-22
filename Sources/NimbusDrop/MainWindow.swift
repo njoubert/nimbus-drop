@@ -23,7 +23,7 @@ struct MainView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     if let problem = model.problem {
                         Label(problem, systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout).foregroundStyle(.orange)
+                            .font(.callout).foregroundStyle(Palette.warning)
                     }
                     destinations
                 }
@@ -55,6 +55,7 @@ struct MainView: View {
             footer
         }
         .frame(minWidth: 500, idealWidth: 560, minHeight: 460, idealHeight: 620)
+        .tint(Palette.send)
     }
 
     private var header: some View {
@@ -70,7 +71,7 @@ struct MainView: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 Toggle("Receive drops", isOn: Binding(get: { model.receiving }, set: { model.setReceiving($0) }))
-                    .toggleStyle(.switch)
+                    .toggleStyle(.switch).tint(Palette.receive)
                 // Said only when it is off, which is the state that explains a surprise.
                 if !model.receiving {
                     Text("Hidden: nobody can send to this Mac").font(.caption).foregroundStyle(.secondary)
@@ -143,7 +144,7 @@ struct MainView: View {
                 Button("Cancel") { model.askingForAddress = false; address = ""; addressError = nil }
             }
             Text(addressError ?? "The other Mac needs Nimbus Drop running with Receive drops on. Port \(String(defaultPort)) unless you add “:port”.")
-                .font(.caption).foregroundStyle(addressError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                .font(.caption).foregroundStyle(addressError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.failure))
         }
         .onAppear { addressFocused = true }
     }
@@ -229,7 +230,7 @@ private struct PeerTile: View {
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 Text(caption)
                     .font(.caption2).multilineTextAlignment(.center)
-                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.orange)))
+                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.warning)))
             }
             .frame(maxWidth: .infinity).padding(.vertical, 16).padding(.horizontal, 8)
             .background(RoundedRectangle(cornerRadius: 12).fill(lit ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.quaternary.opacity(hovered ? 0.9 : 0.5))))
@@ -288,7 +289,7 @@ private struct PeerRow: View {
                     .font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 8)
                 Text(note).font(.caption).lineLimit(1)
-                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.orange)))
+                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.warning)))
                 if peer.isManual, hovered {
                     Button { model.removeManual(peer) } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("Remove this address")
@@ -317,12 +318,16 @@ private struct PeerRow: View {
 private struct DropRow: View {
     let row: TransferRow
     let model: AppModel
+    /// Blue going out, green coming in, as in the icon.
+    private var colour: Color { row.direction == .send ? Palette.send : Palette.receive }
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: row.failed ? "exclamationmark.circle.fill" : (row.direction == .send ? "arrow.up.circle.fill" : "arrow.down.circle.fill"))
                 .font(.system(size: 22))
-                .foregroundStyle(row.failed ? AnyShapeStyle(.red) : (row.isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.green)))
+                .foregroundStyle(row.failed ? Palette.failure : colour)
+                // The glow the icons give their arrows, while the drop is moving.
+                .shadow(color: row.isActive && !row.failed ? colour.opacity(0.55) : .clear, radius: 5)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
                     Text(row.title).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
@@ -331,10 +336,13 @@ private struct DropRow: View {
                     Text(row.peerAddress).font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary).lineLimit(1)
                 }
                 if row.isActive {
-                    if row.isIndeterminate { ProgressView().progressViewStyle(.linear) } else { ProgressView(value: row.fraction) }
+                    Group {
+                        if row.isIndeterminate { ProgressView().progressViewStyle(.linear) } else { ProgressView(value: row.fraction) }
+                    }
+                    .tint(colour)
                 }
                 Text(row.status).font(.caption.monospacedDigit())
-                    .foregroundStyle(row.failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(row.failed ? AnyShapeStyle(Palette.failure) : AnyShapeStyle(.secondary))
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)

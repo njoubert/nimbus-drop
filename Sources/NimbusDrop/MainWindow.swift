@@ -59,8 +59,10 @@ struct MainView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Toggle("Receive drops", isOn: Binding(get: { model.receiving }, set: { model.setReceiving($0) }))
                     .toggleStyle(.switch)
-                Text(model.receiving ? "Other Macs on this network can see this one" : "Hidden: nobody can send to this Mac")
-                    .font(.caption).foregroundStyle(.secondary)
+                // Said only when it is off, which is the state that explains a surprise.
+                if !model.receiving {
+                    Text("Hidden: nobody can send to this Mac").font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 14)

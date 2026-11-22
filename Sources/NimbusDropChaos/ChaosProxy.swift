@@ -251,11 +251,12 @@ public final class ChaosProxy: @unchecked Sendable {
             let rate = lock.withLock { conditions.bytesPerSecond }
             let want = rate.map { max(256, min(capacity, $0 / 20)) } ?? capacity
             let n = read(from, buffer, want)
-            if n == 0 { clean = true; break }
-            if n < 0 { if errno == EINTR { continue }; break }
-
+            if n < 0, errno == EINTR { continue }
+            // A link that swallows everything swallows the news that a connection closed, too:
+            // neither bytes nor an end of stream get across until it lifts.
             while lock.withLock({ conditions.blackhole && !c.dead && !stopped }) { usleep(20_000) }
-            if lock.withLock({ c.dead }) { break }
+            if n == 0 { clean = true; break }
+            if n < 0 || lock.withLock({ c.dead }) { break }
             let wait = charge(n)
             if wait > 0 { Thread.sleep(forTimeInterval: wait) }
             if towardTarget { damage(c, buffer, n) }

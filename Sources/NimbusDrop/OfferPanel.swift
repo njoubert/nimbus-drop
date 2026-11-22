@@ -18,7 +18,6 @@ final class OfferPanel: NSObject, NSWindowDelegate {
         super.init()
         let view = OfferView(sender: session.peerName, address: session.peerAddress, title: session.title,
                              detail: "\(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))",
-                             version: "Nimbus Drop \(session.senderAppVersion)",
                              decline: { [weak self] in self?.finish(false) },
                              accept: { [weak self] in self?.finish(true) })
         panel.contentViewController = NSHostingController(rootView: view)
@@ -29,8 +28,11 @@ final class OfferPanel: NSObject, NSWindowDelegate {
         panel.delegate = self
     }
 
-    func show() {
+    /// Shows the panel; `cascade` steps it down and right so several offers do not hide each other.
+    func show(cascade: Int = 0) {
         panel.center()
+        let step = CGFloat(cascade % 8) * 28
+        panel.setFrameOrigin(NSPoint(x: panel.frame.origin.x + step, y: panel.frame.origin.y - step))
         panel.makeKeyAndOrderFront(nil)
     }
 
@@ -58,7 +60,7 @@ final class OfferPanel: NSObject, NSWindowDelegate {
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
         let view = OfferView(sender: "macbookairm4", address: "192.168.1.143", title: "Christmas 2026",
-                             detail: "1,204 files, 31.2 GB", version: "Nimbus Drop 0.1.0", decline: {}, accept: {})
+                             detail: "1,204 files, 31.2 GB", decline: {}, accept: {})
         let host = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua)
@@ -78,7 +80,6 @@ private struct OfferView: View {
     let address: String
     let title: String
     let detail: String
-    let version: String
     let decline: () -> Void
     let accept: () -> Void
 
@@ -90,11 +91,8 @@ private struct OfferView: View {
                 Text("“\(title)”").font(.title3.weight(.semibold)).multilineTextAlignment(.center).lineLimit(3)
                 Text(detail).font(.body.monospacedDigit())
             }
-            VStack(spacing: 2) {
-                Text("From \(sender) at \(address)").font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                Text(version).font(.caption).foregroundStyle(.tertiary)
-            }
-            .foregroundStyle(.secondary)
+            Text("From \(sender) at \(address)").font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled).foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Button("Decline", action: decline).keyboardShortcut(.cancelAction).frame(maxWidth: .infinity)
                 Button("Accept…", action: accept).keyboardShortcut(.defaultAction).frame(maxWidth: .infinity)

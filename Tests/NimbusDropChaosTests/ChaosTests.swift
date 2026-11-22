@@ -153,6 +153,8 @@ final class ChaosTests: XCTestCase {
     // MARK: Bandwidth
 
     func testANarrowLinkIsSlowNotBroken() throws {
+        // With a generous limit on standing still, slow must not be mistaken for stalled.
+        Tuning.stallSeconds = 15
         let src = try makeTree(megabytes: 4)
         proxy.set { $0.bytesPerSecond = 2 << 20 }
         let s = send(src)
@@ -164,6 +166,7 @@ final class ChaosTests: XCTestCase {
     }
 
     func testBandwidthFallingOffACliffMidDrop() throws {
+        Tuning.stallSeconds = 15
         let src = try makeTree(megabytes: 8)
         // Unlimited, then at 3 MB the link collapses to 1 % of a gigabit-ish pace, then recovers.
         proxy.whenForwarded(bytes: 3 << 20) { $0.set { $0.bytesPerSecond = 600 << 10 } }
@@ -322,13 +325,16 @@ final class ChaosTests: XCTestCase {
         proxy.set { $0.bytesPerSecond = 6 << 20 }
         proxy.whenForwarded(bytes: 2 << 20) { $0.set { $0.blackhole = true } }
         let s = send(src)
-        // Nothing is ever closed: only the engine's own watch can end this. The sender allows
-        // ten stall periods of silence once it has said "done", so about fifteen seconds here.
-        let took = wait(s, timeout: 40)
+        // Nothing is ever closed, and nothing gets across to say so: only each side's own watch
+        // can end this. Three stall periods of silence while bytes should be moving, ten once
+        // the sender has said "done" and is waiting to hear back.
+        let took = wait(s, timeout: 60)
         guard case .failed(let why) = s.state else { return XCTFail("expected the drop to be given up, got \(s.state)") }
         XCTAssertTrue(why.contains("stopped responding"), why)
-        XCTAssertLessThan(took, 30)
-        guard case .failed = try receiverSide().state else { return XCTFail("the receiver is still waiting") }
+        XCTAssertLessThan(took, 45)
+        let r = try receiverSide()
+        guard case .failed(let theirs) = r.state else { return XCTFail("the receiver is still waiting: \(r.state)") }
+        XCTAssertTrue(theirs.contains("stopped responding"), theirs)
         try assertNothingFinished()
         proxy.kill(.all)
         try assertResendFinishes(src)

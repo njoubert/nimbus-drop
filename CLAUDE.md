@@ -222,6 +222,11 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
 - The tests set `Tuning` in `setUp` (a 60 s stall becomes 1.5 s) and put it back in `tearDown`.
   A test that needs a cut to land mid-drop has to send more than the kernel will buffer: with
   8 MB everything is in flight before the first trigger fires.
+- `blackhole` holds back the end of a stream as well as its bytes. It did not at first, and on a
+  slower machine (CI) the receiver's give-up reached the sender as "The connection closed"
+  through a link that was meant to carry nothing.
+- A test that asserts no connection was closed for stalling must give connections room
+  (`Tuning.stallSeconds = 15`): under a low cap the bucket can starve one of four for seconds.
 - `nimbus-chaos --to HOST:PORT --listen P [setting…] [--at WHEN setting…]…` is the same proxy
   for two real Macs; `--at` takes seconds (`5s`) or bytes carried (`400MB`).
 
@@ -240,6 +245,13 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   dropped everyone, for good. `PeerTable` now remembers who was behind each result, and a result
   without its record triggers a fresh browse (`restartSoon`), which also re-resolves addresses.
   `--watch-peers` prints everything Bonjour reports, for the next surprise of this kind.
+- **Each offer owns its questions** (`AppModel.asking`, by drop id): its Accept panel, then its
+  folder chooser, independent of any other drop. A sender giving up removes exactly its own. The
+  first version queued offers behind one shared "a question is open" flag, and a withdrawn offer
+  left the flag set: no later offer was ever shown (found by the owner, 2026-11-22).
+- **Checking prompts on the owner's screen competes with the owner.** Counting "Incoming Drop"
+  windows while they are at the keyboard gives nonsense (they click Accept). Say so before
+  sending test offers to a Mac someone is using, and prefer the Air.
 - **A status item with no menu** takes its click through `button.target`/`action`; a click when
   the window is already key closes it, so the icon toggles.
 - **A peer's port changes when its copy restarts** (the preferred port is taken while the old

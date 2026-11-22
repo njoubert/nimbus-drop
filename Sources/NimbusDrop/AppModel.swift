@@ -65,10 +65,9 @@ final class AppModel: ObservableObject {
     private var announced = Set<UUID>()
     private var timer: Timer?
     private var activity: NSObjectProtocol?
-    private var prompts: [ReceiveSession] = []
-    private var panel: NSOpenPanel?
-    private var question: OfferPanel?
-    private var panelSession: ReceiveSession?
+    private struct Asking { var question: OfferPanel?; var chooser: NSOpenPanel? }
+    /// The questions open right now, by drop.
+    private var asking: [UUID: Asking] = [:]
     private let live: Bool
 
     init() {
@@ -300,66 +299,49 @@ final class AppModel: ObservableObject {
 
     // MARK: Receiving
 
+    /// Each incoming drop asks its own two questions, independently of any other: "do you want
+    /// this?" in a small panel that says who is sending, what, how many files and how big;
+    /// then, only after Accept, "where do you want to save it?" in a folder chooser. Declining
+    /// either declines that drop. A second drop that arrives while the first is still being
+    /// decided gets its own panel beside it, and they can be answered in any order.
     private func offered(_ session: ReceiveSession) {
         add(session)
-        session.onWithdrawn = { [weak self, weak session] in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self, let session else { return }
-                    self.prompts.removeAll { $0 === session }
-                    if self.panelSession === session {
-                        self.question?.dismiss()
-                        self.panel?.cancel(nil)
-                    }
-                }
-            }
+        let id = session.id
+        session.onWithdrawn = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.withdraw(id) } }
         }
-        prompts.append(session)
-        askNext()
-    }
-
-    /// Two questions, one at a time: "do you want this?" in a small panel that says who is
-    /// sending, what, how many files and how big; then, only after Accept, "where do you want
-    /// to save it?" in a folder chooser. Declining either declines the drop. Further offers
-    /// wait their turn.
-    private func askNext() {
-        guard question == nil, panel == nil else { return }
-        prompts.removeAll { $0.state != .waitingForAccept }
-        guard let session = prompts.first else { return }
-        prompts.removeFirst()
-        panelSession = session
-
         let q = OfferPanel(session: session) { [weak self] accepted in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.question = nil
+                self.asking[id]?.question = nil
                 if accepted, session.state == .waitingForAccept {
                     self.askWhere(session)
                 } else {
                     session.decline("\(self.identity.name) declined")
-                    self.panelSession = nil
-                    self.askNext()
+                    self.asking[id] = nil
                 }
             }
         }
-        question = q
+        let place = asking.count
+        asking[id] = Asking(question: q, chooser: nil)
         NSApp.activate(ignoringOtherApps: true)
         NSSound(named: "Glass")?.play()
-        q.show()
+        q.show(cascade: place)
     }
 
     private func askWhere(_ session: ReceiveSession) {
+        let id = session.id
         let p = NSOpenPanel()
-        p.title = "Save Incoming Drop"
+        p.title = "Save “\(session.title)” from \(session.peerName)"
         p.canChooseFiles = false
         p.canChooseDirectories = true
         p.canCreateDirectories = true
         p.allowsMultipleSelection = false
         p.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        p.message = "Where do you want to save “\(session.title)” from \(session.peerName)?"
+        p.message = "Where do you want to save “\(session.title)” (\(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))) from \(session.peerName)?"
         p.prompt = "Save Here"
         p.level = .modalPanel
-        panel = p
+        asking[id] = Asking(question: nil, chooser: p)
         NSApp.activate(ignoringOtherApps: true)
         p.begin { [weak self] response in
             MainActor.assumeIsolated {
@@ -369,13 +351,23 @@ final class AppModel: ObservableObject {
                 } else {
                     session.decline("\(self.identity.name) declined")
                 }
-                self.panel = nil
-                self.panelSession = nil
-                self.askNext()
+                self.asking[id] = nil
             }
         }
         p.makeKeyAndOrderFront(nil)
     }
+
+    /// The sender gave up while its question was open: take the question away. (An earlier
+    /// version dismissed the panel but went on believing a question was open, and every later
+    /// offer waited behind it: 2026-11-22.)
+    private func withdraw(_ id: UUID) {
+        guard let open = asking.removeValue(forKey: id) else { return }
+        open.question?.dismiss()
+        open.chooser?.cancel(nil)
+    }
+
+    /// Questions on screen right now, for `--print`-style checks and the tests of the future.
+    var openQuestions: Int { asking.count }
 
     // MARK: The list
 

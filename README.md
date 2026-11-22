@@ -40,7 +40,8 @@ while a drop moves. The app has a Dock icon and its own menu only while the wind
 other Macs running Nimbus Drop can offer it files. Nothing is written until you say so. An offer raises a small
 panel that says who is sending (host name and IP address), what, how many files and how big,
 with *Decline* and *Accept*. Accept, and a folder chooser asks where to save it, starting in
-`~/Downloads`; cancelling that declines too. Turn
+`~/Downloads`; cancelling that declines too. Several drops arriving at once each get their
+own panel and can be answered in any order. Turn
 receiving off and this Mac disappears from everyone's list.
 
 **Sending.** Under *Destinations on this LAN* every Mac found is a tile showing its host name

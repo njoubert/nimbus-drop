@@ -303,13 +303,30 @@ beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 - A tile for a Mac on another protocol major (rendered by `--dump-window`, never seen live).
 - The Local Network prompt on a first launch, and the window's message when it is denied.
 - The Login Item after a restart; the app starting in the menu bar only when launched that way.
-- A signed, notarized build (`./build.sh dmg`); no release has been published, so the updater
-  has nothing to find and CI has no `update-health` job yet (add the siblings' once v0.1.0 is out).
+- 0.1.0 installed from its DMG on a Mac that has never run the app: the first launch, the Local
+  Network prompt, the Login Item registering itself. And the updater, which has had nothing to
+  update to yet.
 
 ## Release and distribution
 
 Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count,
 `./build.sh release NOTES.md` builds the stapled app, the DMG and the updater's zip, tags
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
-from the git-ignored `.signing` (copied from a sibling on this machine). No releases yet. No
-`SocialCard.swift` yet; port it from a sibling when the first release goes out.
+from the git-ignored `.signing` (copied from a sibling on this machine).
+
+Releases: **0.1.0 on 2026-11-22** (DMG + zip, Developer ID, notarized, protocol 2.0). It was
+published step by step rather than with `build.sh release`: `./build.sh dmg`, check the
+artefacts (`spctl` on the app, on the DMG, on the app inside the mounted DMG, and on the app
+unpacked from the zip; `stapler validate`; `--preflight`), then tag, push, `gh release create`.
+Since then CI's `update-health` job fails a run when the published release loses its zip or no
+longer matches the declared bundle id and team.
+
+- **"A required agreement is missing or has expired" (HTTP 403) from `notarytool`** means the
+  owner has an Apple Developer agreement to accept at developer.apple.com/account; nothing in
+  the repo is wrong. After they accept it, it takes minutes to take effect and not all at once:
+  on 2026-11-22 `notarytool history` succeeded about four minutes later while `submit` was still
+  refused for a little longer. Check with a real `submit` before starting a build that needs two.
+- `build.sh app` signs before it notarizes, so a notarization failure still leaves a correctly
+  signed bundle in `dist/` to inspect (`spctl` says `Unnotarized Developer ID`).
+- The next release is the first one the auto-updater will carry people to; nobody has seen the
+  update flow in this app yet. No `SocialCard.swift` yet; port it from a sibling.

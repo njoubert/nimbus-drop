@@ -125,6 +125,10 @@ ownership. Symlinks are sent as symlinks. Sockets, devices and pipes are skipped
 
 ## Setting up
 
+Download the disk image from the [latest release](https://github.com/njoubert/nimbus-drop/releases/latest),
+open it, and drag Nimbus Drop onto Applications. It is signed with a Developer ID and notarized by
+Apple, so it opens without a warning.
+
 Both Macs need Nimbus Drop running, Apple silicon and macOS 15 or later, on the same network.
 The first launch asks for **Local Network** access; allow it, or the Macs cannot see each other
 (System Settings › Privacy & Security › Local Network to change it later). Launched from

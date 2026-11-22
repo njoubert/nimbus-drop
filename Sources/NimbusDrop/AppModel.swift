@@ -67,6 +67,7 @@ final class AppModel: ObservableObject {
     private var activity: NSObjectProtocol?
     private var prompts: [ReceiveSession] = []
     private var panel: NSOpenPanel?
+    private var question: OfferPanel?
     private var panelSession: ReceiveSession?
     private let live: Bool
 
@@ -306,7 +307,10 @@ final class AppModel: ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self, let session else { return }
                     self.prompts.removeAll { $0 === session }
-                    if self.panelSession === session { self.panel?.cancel(nil) }
+                    if self.panelSession === session {
+                        self.question?.dismiss()
+                        self.panel?.cancel(nil)
+                    }
                 }
             }
         }
@@ -314,28 +318,49 @@ final class AppModel: ObservableObject {
         askNext()
     }
 
-    /// "Where do you want to save this?" One prompt at a time; the rest wait their turn.
+    /// Two questions, one at a time: "do you want this?" in a small panel that says who is
+    /// sending, what, how many files and how big; then, only after Accept, "where do you want
+    /// to save it?" in a folder chooser. Declining either declines the drop. Further offers
+    /// wait their turn.
     private func askNext() {
-        guard panel == nil else { return }
+        guard question == nil, panel == nil else { return }
         prompts.removeAll { $0.state != .waitingForAccept }
         guard let session = prompts.first else { return }
         prompts.removeFirst()
+        panelSession = session
 
+        let q = OfferPanel(session: session) { [weak self] accepted in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.question = nil
+                if accepted, session.state == .waitingForAccept {
+                    self.askWhere(session)
+                } else {
+                    session.decline("\(self.identity.name) declined")
+                    self.panelSession = nil
+                    self.askNext()
+                }
+            }
+        }
+        question = q
+        NSApp.activate(ignoringOtherApps: true)
+        NSSound(named: "Glass")?.play()
+        q.show()
+    }
+
+    private func askWhere(_ session: ReceiveSession) {
         let p = NSOpenPanel()
-        p.title = "Incoming Drop"
+        p.title = "Save Incoming Drop"
         p.canChooseFiles = false
         p.canChooseDirectories = true
         p.canCreateDirectories = true
         p.allowsMultipleSelection = false
         p.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        p.message = "\(session.peerName) (\(session.peerAddress)) wants to send you “\(session.title)”: "
-            + "\(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes)).\nWhere do you want to save it?"
+        p.message = "Where do you want to save “\(session.title)” from \(session.peerName)?"
         p.prompt = "Save Here"
         p.level = .modalPanel
         panel = p
-        panelSession = session
         NSApp.activate(ignoringOtherApps: true)
-        NSSound(named: "Glass")?.play()
         p.begin { [weak self] response in
             MainActor.assumeIsolated {
                 guard let self else { return }

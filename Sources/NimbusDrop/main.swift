@@ -15,6 +15,7 @@ import NimbusUpdater
 //   --render-dmg-background DIR [--signed]   write the disk image's background PNGs and exit
 //   --dump-bar PATH         render the status item's states to PATH (a strip), exit
 //   --dump-window PATH      render the window with made-up Macs and drops to PATH (+ -light, -empty), exit
+//   --dump-offer PATH       render the "do you want this drop?" panel to PATH, exit
 //   --show-window           open the window at launch (the app otherwise starts in the menu bar only)
 //
 // The engine without the app:
@@ -83,6 +84,7 @@ while !args.isEmpty {
     case "--signed": dmgSigned = true
     case "--dump-bar": dumpBarPath = takeValue(a)
     case "--dump-window": dumpWindowPath = takeValue(a)
+    case "--dump-offer": let v = takeValue(a); exit(MainActor.assumeIsolated { OfferPanel.dump(to: v) ? 0 : 1 })
     case "--show-window": showWindowAtLaunch = true
     case "--receive":
         receiveDir = "."

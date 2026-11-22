@@ -169,7 +169,7 @@ enum CLI {
                 Swift.print(String(format: "%3.0f%%  %@ / %@  %@ (%@)  %@  %d/%d files", p.fraction * 100, Format.bytes(p.doneBytes),
                                    Format.bytes(p.totalBytes), Format.bitRate(rate), Format.rate(rate), Format.connections(p.connections),
                                    p.doneFiles, p.totalFiles)
-                    + (trouble.connectionFailures > 0 ? "  \(trouble.connectionFailures) lost, \(trouble.damagedChunks) damaged, round \(trouble.rounds)" : ""))
+                    + (trouble.connectionFailures > 0 ? "  \(trouble.connectionFailures) lost\(trouble.damagedChunks > 0 ? " (\(trouble.damagedChunks) for damaged chunks)" : ""), round \(trouble.rounds)" : ""))
             }
             last = p.doneBytes; lastTime = now
         }
@@ -180,7 +180,7 @@ enum CLI {
             let moved = p.totalBytes - p.resumedBytes
             let trouble = t.stats
             Swift.print("done: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(moved) / seconds)) (\(Format.rate(Double(moved) / seconds)))"
-                + (trouble.connectionFailures > 0 ? "; got past \(trouble.connectionFailures) lost connections (\(trouble.damagedChunks) from damaged chunks) in \(trouble.rounds) rounds" : ""))
+                + (trouble.connectionFailures > 0 ? "; got past \(trouble.connectionFailures) lost connections\(trouble.damagedChunks > 0 ? " (\(trouble.damagedChunks) for damaged chunks)" : "") in \(trouble.rounds) rounds" : ""))
             return 0
         case .declined(let why): Swift.print("declined: \(why)"); return 3
         case .failed(let why): Swift.print("failed: \(why)"); return 1

@@ -1,7 +1,7 @@
 # Nimbus Drop — notes for agents
 
-A macOS app that sends files and folders to another Mac on the LAN: a menu bar item, a small
-window, and a headless command line. Pure SwiftPM, no Xcode project, one dependency:
+A macOS app that sends files and folders to another Mac on the LAN: a menu bar icon that opens
+a small window (there is no dropdown; the window is the app), and a headless command line. Pure SwiftPM, no Xcode project, one dependency:
 `NimbusUpdater` (https://github.com/njoubert/nimbus-updater, MIT, ours). A sibling of
 `../nimbus-ups-bar`, `../nimbus-net-bar` and `../nimbus-leviton-bar`: same build pipeline, same
 conventions; their CLAUDE.md files cover the shared traps (DMG layout, notarization, the updater,
@@ -19,8 +19,8 @@ rest: how to work here, how the engine is put together, and what was measured.
   its paths become paths here. `Manifest.validate()` is the gate; a change to it, or to how the
   receiver builds paths, without a case in `testAManifestThatReachesOutsideIsRefused` is not
   finished. Nothing existing is ever overwritten: collisions get a "keep both" name.
-- **Nothing is written before the person accepts.** The app's only way to accept is the folder
-  chooser. `--receive` (the CLI) accepts everything and is for a machine the owner controls.
+- **Nothing is written before the person accepts.** The app asks twice: Accept or Decline, then
+  where to save; declining either declines the drop. `--receive` (the CLI) accepts everything and is for a machine the owner controls.
 - **Grill me relentlessly** before building a feature: every question whose answer would change
   the work, with the facts already checked. Decisions, not options.
 - **Be concise.** Short reports, the salient facts only.
@@ -28,6 +28,15 @@ rest: how to work here, how the engine is put together, and what was measured.
   claiming done. Shellcheck at its default severity. Never disable a hook to get past it.
 - **`swift test` must pass**, and a change to the protocol, the ledger or the naming without a
   test is not finished. The tests run whole drops over loopback; they are cheap.
+- **A change to how the engine copes with trouble gets a chaos test**, and the test gets a
+  mutation check: break the thing it guards (drop a checksum, stop replacing connections) and
+  watch it fail. The first header-corruption test passed against a build with the header
+  checksum removed, because a misdirected chunk was later overwritten by the right one; only
+  the exact, deliberate flips in `testAChunkRedirectedByOneFlippedBitIsNotWritten` caught it.
+- **The one outcome that must never happen is wrong bytes in the destination.** A drop may stop;
+  it may not arrive altered. Every chaos test asserts one or the other.
+- **The wire is versioned.** Anything that changes what two copies say to each other is a new
+  `protocolVersion` (breaking) or `protocolMinor` (ignorable by an older copy); see The protocol.
 - **Licence headers.** Every new Swift file starts with `// Copyright (C) 2026 Niels Joubert` /
   `// SPDX-License-Identifier: GPL-3.0-or-later`. GPL-3.0-or-later; don't vendor incompatible code.
 - **It talks to the LAN, and to GitHub only for updates.** README must keep saying exactly this.
@@ -36,9 +45,9 @@ rest: how to work here, how the engine is put together, and what was measured.
 
 ## Workflow
 
-- **Changes go up as pull requests** once the first version is in: branch from `main`, push,
-  `gh pr create`; the owner reviews and merges. (The initial scaffold was committed straight to
-  `main`, with the owner's say-so, on 2026-11-22.)
+- **Changes go up as pull requests**: branch from `main`, push, `gh pr create`; the owner
+  reviews and merges. (The initial scaffold was committed straight to `main`, with the owner's
+  say-so, on 2026-11-22.)
 - **Check that a push arrived**: compare `git rev-parse HEAD` with
   `git ls-remote origin refs/heads/<branch>`.
 - **A PR that touches anything the owner sees gets a screenshot**: `--dump-window`, `--dump-bar`,
@@ -49,30 +58,46 @@ rest: how to work here, how the engine is put together, and what was measured.
 
 ```
 Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopback.
-  Wire.swift                DropError; Socket (blocking TCP: connect, listen, exact read/write,
-                            keepalive, shutdown-to-cancel); control frames; the messages; ChunkHeader
+  Wire.swift                DropError; protocolVersion / protocolMinor; Tuning (the engine's
+                            patience, shortened by the tests); Socket (blocking TCP: connect,
+                            listen, exact read/write, keepalive, shutdown-to-cancel); control
+                            frames with their two CRCs; the messages; ChunkHeader (seal, verifies)
   Manifest.swift            Manifest (+ validate, key, chunk arithmetic); Scanner (walks what is
                             being sent); Naming.unique ("keep both"); checksum (zlib CRC-32)
   Ledger.swift              which chunks are on the receiver's disk: the resume record
-  Transfer.swift            Identity, TransferState, TransferProgress; Transfer, the base both
-                            sessions share (thread-safe state, progress, cancel)
-  Sender.swift              SendSession: scan → offer → manifest → plan → N stream threads
-  Receiver.swift            DropListener (accept loop, routes offers and data streams);
-                            ReceiveSession (decision, tree, streams, finalize)
-  Discovery.swift           Advertiser (dns_sd register); PeerBrowser (NWBrowser + resolve to IPv4)
+  Transfer.swift            Identity (name, id, app version), TransferState, TransferProgress,
+                            TransferStats; Transfer, the base both sessions share (thread-safe
+                            state, progress, cancel, the silence watchdog)
+  Sender.swift              SendSession: scan → offer → manifest → rounds of (plan → N stream
+                            threads → done); replaces failed connections; closes stalled ones
+  Receiver.swift            DropListener (accept loop; routes offers, data streams, hellos);
+                            ReceiveSession (decision, tree, streams, rounds, settle, finalize)
+  Discovery.swift           Advertiser (dns_sd register); Probe.hello (who is at this address);
+                            PeerTable (pure: who is on the network, from what Bonjour reports);
+                            PeerBrowser (NWBrowser + resolve to IPv4 + restart on trouble)
   Host.swift                LocalHost: the Bonjour host name, the IPv4 addresses
-  Format.swift              bytes, rates, durations, file counts
+  Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
+Sources/NimbusDropChaos/    testing only, never in the app
+  ChaosProxy.swift          a TCP proxy that throttles, stalls, cuts connections, refuses new
+                            ones and flips bits, on triggers by bytes carried or by time. Knows
+                            nothing of the protocol.
+Sources/nimbus-chaos/       the proxy from the command line, to put between two real Macs
 Sources/NimbusDrop/         the app
   main.swift                flags, AppDelegate, one-copy rule, Login Item on first launch
-  CLI.swift                 --receive / --send / --peers / --print / --check-update / --preflight
-  AppModel.swift            peers, transfer rows, the receiving switch, the save prompt,
-                            notifications, the sleep hold; the menu and the window both read it
-  StatusBarController.swift the status item and its menu; --dump-bar
-  MainWindow.swift          the window (SwiftUI in an NSWindow), MainMenu, --dump-window
-  Settings.swift            UserDefaults: deviceID, receiving, streams
+  CLI.swift                 --receive / --send / --peers / --watch-peers / --print /
+                            --check-update / --preflight
+  AppModel.swift            destinations (found + added by address), transfer rows, the receiving
+                            switch, the save prompt, notifications, the sleep hold
+  StatusBarController.swift the status item: no menu, a click opens (or closes) the window; --dump-bar
+  MainMenu.swift            the app's own menu bar while the window is open: version, updates,
+                            Receive Drops, Open at Login, Parallel Connections
+  MainWindow.swift          the window (SwiftUI in an NSWindow): header, destinations and Add by
+                            Address, drops, the settings footer; --dump-window
+  Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  15 tests: whole drops, decline, collisions, resume, cancel, a hostile
-                            manifest, chunk arithmetic, naming, formatting
+Tests/NimbusDropCoreTests/  20 tests: whole drops, decline, collisions, resume, cancel, a hostile
+                            manifest, version mismatch, hello, the peer table, arithmetic, naming
+Tests/NimbusDropChaosTests/ 22 tests: whole drops through ChaosProxy (about 85 s)
 build.sh                    build / test / run / stop / app / dmg / release / install / uninstall /
                             status / icon / clean
 ```
@@ -117,31 +142,59 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 1)
+## The protocol (version 2.0)
 
-Control connection, sender → receiver. Frames are `[u32 length][u8 type][JSON]`, big-endian.
+Control connection, sender → receiver. A frame is
+`[u32 length][u32 CRC of the length][u8 type][JSON][u32 CRC of type + JSON]`, big-endian.
 
 ```
 sender                               receiver
-offer {version, name, id, items, fileCount, totalBytes}
+offer {version, minor, app, name, id, items, fileCount, totalBytes}
+                                     another major: decline, naming both versions; nobody is asked
                                      (the person decides)
                                      accept {}  |  decline {message}
 manifest {chunkSize, entries[]}
                                      validate, find or make the partial folder, read its ledger
                                      plan {token, completeFiles[], partialFiles[{file, chunks[]}]}
 N data connections, each: attach {token}, then
-  [u32 file][u32 chunk][u32 length][u32 crc] + bytes, repeated;
-  file = 0xFFFFFFFF ends the stream
-done {streams}
-                                     wait for N end markers, check the ledger is complete,
-                                     set times and modes, rename into place
-                                     complete {saved[]}
+  [u32 file][u32 chunk][u32 length][u32 crc] + bytes, repeated;      crc covers the first twelve
+  file = 0xFFFFFFFF ends the stream                                   header bytes and the chunk
+done {streams: data connections opened so far}
+                                     settle: wait for those connections to finish, close the rest
+                                     everything here → set times and modes, rename, complete {saved[]}
+                                     something missing → plan {…} again, and the sender goes round
 error {message} from either side, at any point, ends the drop
+hello {} → hello {name, id, version, minor, app}: "who is at this address?", then close
 ```
 
-- A change to any message or to the chunk header is a new `protocolVersion`; a receiver declines
-  a version it does not speak. Two Macs on different versions cannot exchange drops, so bump it
-  only when the wire really changes.
+- **Versions.** `protocolVersion` (major, now 2) changes when two copies can no longer exchange
+  a drop; `protocolMinor` when something is added that an older copy ignores (JSON decoding skips
+  unknown fields). The app version rides along for people to read and never decides anything.
+  The same three are in the Bonjour TXT record (`v=2.0`, `app=…`), the offer and the hello.
+  **Frozen for good**, because it is how any two versions find out that they differ: the control
+  frame layout and the `version` field of `Offer` and `Hello`. (Version 1, 2026-11-22, was never
+  released; it had neither frame CRCs nor rounds and its frames do not parse here.)
+- **Why two CRCs on a frame:** a flipped bit in the JSON is a wrong file name or size; a flipped
+  bit in the length leaves the reader waiting for bytes that never come. Both happened in the
+  chaos tests before the checks existed (the first as a wrong drop delivered).
+- **Why the chunk CRC covers the header:** one flipped bit in the file or chunk index sends
+  intact bytes to the wrong, already-written place. A CRC over the bytes alone passes them.
+- **Rounds.** A data connection that dies, stalls or carries damage ends alone: the receiver
+  counts it (`TransferStats`), throws away the chunk in hand, and closes it (after damage the
+  framing cannot be trusted). The sender replaces a failed connection at once (`carry`), up to
+  three replacements that deliver nothing. After `done` the receiver's `settle` waits for the
+  connections the sender opened, then closes any still attached so nothing writes into a drop
+  being judged. Missing chunks go in the next plan. `Tuning.idleRounds` (5) rounds in a row that
+  deliver nothing end the drop.
+- **Patience (`Tuning`).** A data connection silent for `stallSeconds` (60) is closed by the
+  sender. A drop with no byte and no message for 3× that is given up by either side; a sender
+  waiting for `complete` allows 10×, because the receiver may be putting a million files in
+  place. TCP's own timeouts (keepalive 10 s + 3×5 s on a read, `TCP_RXT_CONNDROPTIME` 30 s on a
+  write) catch a peer that is gone; the watchdog is for one that is there and frozen, which TCP
+  will wait on for ever (a zero window is answered politely).
+- **The last answer can be lost.** If the control connection dies after the receiver has
+  everything, the receiver finishes correctly and the sender reports a failure. No protocol
+  closes that gap. Sending again then delivers a second copy ("keep both").
 - **The drop's key** is SHA-256 over the sender's id, the chunk size and every entry's path,
   kind, size, mtime and link. Same key + same destination folder = a resume. The partial folder
   is `<first item>.<key, 12 hex>.nimbusdrop-partial/` holding `items/` (the tree being built)
@@ -150,11 +203,27 @@ error {message} from either side, at any point, ends the drop
   cache, and nothing is fsynced (that would cost the speed this exists for). On load a record is
   kept only if its file is still there and long enough.
 - **Cancel** is a best-effort `error` frame, then `shutdown()` on every socket 0.3 s later, so
-  the other side reads "Cancelled on the other Mac" rather than "The connection closed". For the
-  same reason a sender's stream thread waits 0.3 s before reporting its own failure: the
-  receiver's reason, arriving on the control connection, should win.
-- **A dead peer** is noticed by TCP keepalive (10 s idle, 3 probes 5 s apart) on a read and by
-  `TCP_RXT_CONNDROPTIME` (30 s) on a write.
+  the other side reads "Cancelled on the other Mac" rather than "The connection closed". The
+  sender reads the control connection on a thread of its own for the whole drop, so a reason
+  sent mid-transfer is heard.
+
+## The chaos harness
+
+`ChaosProxy` (in `NimbusDropChaos`) sits between a sender and a receiver. Connections are
+numbered as they arrive: 0 is the drop's control connection, the rest are data. Conditions
+change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `after(seconds:)`;
+`kill(.data)`, `killOneData()`, `plantFlip(connection:offset:bit:)` act at once.
+
+- **Real:** bandwidth (a shared token bucket), cut connections, refused connections, stalls
+  (`blackhole`: nothing moves, nothing closes), corruption (after TCP's checksum is satisfied).
+- **Imitated:** packet loss. Above TCP there are no packets; `loss` charges a timeout per lost
+  1460-byte segment, which is what loss looks like to an application. Real per-packet loss needs
+  `dnctl`/`pfctl` and root; sudo on this machine wants a password, so it has not been run.
+- The tests set `Tuning` in `setUp` (a 60 s stall becomes 1.5 s) and put it back in `tearDown`.
+  A test that needs a cut to land mid-drop has to send more than the kernel will buffer: with
+  8 MB everything is in flight before the first trigger fires.
+- `nimbus-chaos --to HOST:PORT --listen P [setting…] [--at WHEN setting…]…` is the same proxy
+  for two real Macs; `--at` takes seconds (`5s`) or bytes carried (`400MB`).
 
 ## Platform facts (checked 2026-11-22, macOS 27)
 
@@ -165,6 +234,14 @@ error {message} from either side, at any point, ends the drop
   (`NWProtocolIP.Options.version = .v4`), read `currentPath.remoteEndpoint`, cancel. The listener
   therefore sees connections that open and close without a word; `DropListener.serve` gives a
   connection ten seconds to send a first frame and drops it silently otherwise.
+- **An interface going away strips every browse result of its TXT record** (Wi-Fi switched off
+  with Ethernet still up, found by the owner 2026-11-22): `NWBrowser` reports each result again
+  with `metadata == .none`. The browser used to identify peers by that record alone and so
+  dropped everyone, for good. `PeerTable` now remembers who was behind each result, and a result
+  without its record triggers a fresh browse (`restartSoon`), which also re-resolves addresses.
+  `--watch-peers` prints everything Bonjour reports, for the next surprise of this kind.
+- **A status item with no menu** takes its click through `button.target`/`action`; a click when
+  the window is already key closes it, so the icon toggles.
 - **A peer's port changes when its copy restarts** (the preferred port is taken while the old
   socket lingers, or a second copy is running), so `AppModel.send` resolves again every time.
 - **A Mac with two interfaces on one subnet** (Wi-Fi and Ethernet) shows whichever address the
@@ -182,23 +259,36 @@ error {message} from either side, at any point, ends the drop
 
 ## Measured (2026-11-22, release build)
 
-MacBook Pro → MacBook Air M4, gigabit Ethernet, 8 connections: 9.29 GB in 10,401 files in
-81.0 s = 115 MB/s (the wire), checksums identical on both sides. Killed at 25 % and re-sent:
-"continuing: 1.60 GB already there", the remaining 4.40 GB at 116 MB/s, file identical.
+MacBook Pro → MacBook Air M4, gigabit Ethernet, 8 connections, 9.29 GB in 10,401 files:
+protocol 1, 81.0 s = 115 MB/s; protocol 2 (frame CRCs, header-covered chunk CRC), 80.2 s =
+927 Mbps (116 MB/s). Checksums identical on both sides each time. The wire is the limit either
+way. Killed at 25 % and re-sent (protocol 1): "continuing: 1.60 GB already there", file identical.
 
-Loopback on the MacBook Pro (source in the page cache), one 6 GB file: 3.87 GB/s with 1
-connection, 3.49 with 4, 3.21 with 8, 2.97 with 16. More connections do not help when the
+The same 9.29 GB through `nimbus-chaos` on the LAN (`corrupt=400M`, 5 MB/s between 600 and
+680 MB, `kill=one` at 1.5 GB, `kill=data` at 3 GB, 0.2 % loss between 5 and 5.6 GB): 25 bits
+flipped, 32 connections lost, arrived identical in 173 s. That run showed connections decaying
+from 8 to 1 within a round; with replacement (`carry`) a 6 GB file through 18 flips and 27 lost
+connections held 8 throughout and took 67.6 s, identical.
+
+Loopback on the MacBook Pro (source in the page cache), one 6 GB file. Protocol 2: 4.76 GB/s
+(38 Gbps) with 1 connection, 2.97 GB/s with 8. Protocol 1: 3.87 with 1, 3.49 with 4, 3.21 with
+8, 2.97 with 16 (the first figure moves with what else the Mac is doing; the checksums cost
+nothing that shows). More connections do not help when the
 memory bus is the limit; they are there for real links and for small files. 400 × 8 MB files:
 3.1 GB/s. 10,000 files of 4 to 14 KB: 0.9 s, about 11,000 files a second, finalize included.
 
-**Not measured yet:** Wi-Fi, 10 GbE, a drop larger than the receiver's RAM (whether `F_NOCACHE`
-on either side helps there), and whether an explicit socket buffer size beats macOS's
-auto-tuning on a fast link. Measure before tuning any of them.
+**Not measured yet:** Wi-Fi, 10 GbE, a drop larger than the receiver's
+RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
+beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 
 ## Not verified by a person yet (as of 2026-11-22)
 
-- Accepting a drop in the app's folder chooser and seeing it land; the notification afterwards.
-- A drag from Finder onto a tile; a drop on the Dock icon followed by a click on a tile.
+- Accepting a drop (the Accept / Decline panel, then the folder chooser) and seeing it land;
+  the notification afterwards.
+- A drag from Finder onto a tile, and beside the tiles; a drop on the Dock icon followed by a
+  click on a tile. The menu bar icon opening and closing the window.
+- Add by Address in the window (the engine side, `Probe.hello`, is tested; the field is not).
+- A tile for a Mac on another protocol major (rendered by `--dump-window`, never seen live).
 - The Local Network prompt on a first launch, and the window's message when it is denied.
 - The Login Item after a restart; the app starting in the menu bar only when launched that way.
 - A signed, notarized build (`./build.sh dmg`); no release has been published, so the updater

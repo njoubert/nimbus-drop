@@ -38,6 +38,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
     private final class Stream {
         let socket: Socket
         var lastProgress = Date()
+        /// Chunks written in full on this connection.
+        var chunks = 0
         init(_ socket: Socket) { self.socket = socket }
     }
     private var live: [Stream] = []
@@ -110,18 +112,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 for s in sockets {
                     group.enter()
                     Thread.detachNewThread { [self] in
-                        let stream = Stream(s)
-                        lock.withLock { live.append(stream) }
-                        update { $0.connections += 1 }
-                        // A stream that fails is this round's loss, not the drop's: what it did
-                        // not deliver is in the receiver's next answer.
-                        do { try runStream(stream) } catch {
-                            note { $0.connectionFailures += 1 }
-                            s.shutdown()
-                        }
-                        lock.withLock { live.removeAll { $0 === stream } }
-                        untrack(s)
-                        update { $0.connections -= 1 }
+                        carry(s, token: plan.token)
                         group.leave()
                     }
                 }
@@ -211,6 +202,36 @@ public final class SendSession: Transfer, @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.5)
         }
         throw last
+    }
+
+    /// One of the round's data connections, and its replacements. A connection that fails is
+    /// this round's loss, not the drop's: what it did not deliver is in the receiver's next
+    /// answer. So that the drop does not limp on with fewer and fewer connections, a failed one
+    /// is replaced at once, until the chunks run out or replacements stop getting anywhere.
+    private func carry(_ first: Socket, token: String) {
+        var socket = first
+        var fruitless = 0
+        while true {
+            let stream = Stream(socket)
+            lock.withLock { live.append(stream) }
+            update { $0.connections += 1 }
+            var failed = false
+            do { try runStream(stream) } catch {
+                failed = true
+                note { $0.connectionFailures += 1 }
+                socket.shutdown()
+            }
+            lock.withLock { live.removeAll { $0 === stream } }
+            untrack(socket)
+            update { $0.connections -= 1 }
+            fruitless = stream.chunks == 0 ? fruitless + 1 : 0
+            guard failed, !isOver, fruitless < 3, jobLock.withLock({ nextJob < jobs.count }) else { return }
+            guard let next = try? Socket.connect(host: host, port: port) else { return }
+            track(next)
+            guard (try? next.send(.attach, Attach(token: token))) != nil else { next.shutdown(); untrack(next); return }
+            lock.withLock { opened += 1 }
+            socket = next
+        }
     }
 
     /// Closes any data connection that has moved nothing for `Tuning.stallSeconds`. Its thread
@@ -309,6 +330,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                     update { $0.doneBytes += add }
                 }
             }
+            stream.chunks += 1
             if chunk == manifest.chunkCount(file) - 1 { update { $0.doneFiles += 1 } }
         }
         if isOver { return }

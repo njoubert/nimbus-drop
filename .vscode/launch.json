@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:nimbus-drop}",
+            "name": "Debug NimbusDrop",
+            "target": "NimbusDrop",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug NimbusDrop"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:nimbus-drop}",
+            "name": "Release NimbusDrop",
+            "target": "NimbusDrop",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release NimbusDrop"
+        }
+    ]
+}

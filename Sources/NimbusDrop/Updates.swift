@@ -1,0 +1,39 @@
+// Copyright (C) 2026 Niels Joubert
+// SPDX-License-Identifier: GPL-3.0-or-later
+import Foundation
+import NimbusUpdater
+
+/// This app's side of `NimbusUpdater`: the facts that identify it, in one place. Identical in
+/// shape to the sibling apps'.
+enum Updates {
+    static let repo = "njoubert/nimbus-drop"
+    static let bundleID = "com.njoubert.nimbusdrop"
+    /// What `build.sh run` gives the development bundle. A development copy under the release's
+    /// identifier took over the installed copy's Login Items record (macOS follows the bundle
+    /// identifier to whichever copy last asked about it), and launchd then refused the installed
+    /// binary at login (2026-10-11).
+    static let devBundleID = bundleID + ".dev"
+    /// Both, for the one-copy rule: a development copy and the installed one never run at once.
+    static let bundleIDs = [bundleID, devBundleID]
+    /// The Developer ID team the release is signed with; a download signed by anyone else is
+    /// refused. Shared with the other Nimbus apps (one Apple ID, one team).
+    static let teamID = "93A96TD57U"
+    static let appName = "Nimbus Drop"
+    static let executableName = "NimbusDrop"
+
+    static func config(currentVersion: SemanticVersion) -> UpdaterConfig {
+        UpdaterConfig(repo: repo, bundleID: bundleID, teamID: teamID, appName: appName,
+                      executableName: executableName, currentVersion: currentVersion,
+                      announcesReadyUpdates: true)
+    }
+
+    static var runningVersion: SemanticVersion? { SemanticVersion.ofBundle() }
+
+    static var installedVersion: SemanticVersion? {
+        let plist = URL(fileURLWithPath: "/Applications/\(appName).app/Contents/Info.plist")
+        guard let data = try? Data(contentsOf: plist),
+              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let short = info["CFBundleShortVersionString"] as? String else { return nil }
+        return SemanticVersion(short)
+    }
+}

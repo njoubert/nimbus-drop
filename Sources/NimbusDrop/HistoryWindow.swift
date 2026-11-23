@@ -90,6 +90,10 @@ private struct HistoryRow: View {
             }
         }
         .padding(.vertical, 3)
+        // The whole row opens where a received drop was saved, while it is still there.
+        .contentShape(Rectangle())
+        .onTapGesture { if !saved.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(saved) } }
+        .help(saved.isEmpty ? "" : "Click to show it in Finder")
     }
 }
 

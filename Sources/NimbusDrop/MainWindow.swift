@@ -381,6 +381,7 @@ private struct PeerRow: View {
 private struct DropRow: View {
     let row: TransferRow
     let model: AppModel
+    @State private var hovered = false
     /// Blue going out, green coming in, as in the icon.
     private var colour: Color { row.direction == .send ? Palette.send : Palette.receive }
 
@@ -422,6 +423,12 @@ private struct DropRow: View {
         }
         .font(.system(size: 13))
         .padding(.horizontal, 12).padding(.vertical, 10)
+        // A received drop: the whole card opens where it was saved, not only the magnifier.
+        .background(row.canReveal && hovered ? AnyShapeStyle(.quaternary.opacity(0.6)) : AnyShapeStyle(.clear))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture { if row.canReveal { model.reveal(row.id) } }
+        .help(row.canReveal ? "Click to show it in Finder" : "")
     }
 }
 

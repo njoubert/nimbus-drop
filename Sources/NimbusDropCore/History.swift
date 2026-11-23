@@ -27,6 +27,7 @@ public struct HistoryEntry: Codable, Identifiable, Equatable, Sendable {
     public var damagedChunks: Int?
     public var reconnects: Int?
     public var retransmittedChunks: Int?
+    public var skippedLinks: Int?
 
     public init(id: UUID = UUID(), date: Date, sent: Bool, title: String, peerName: String, peerAddress: String,
                 files: Int, bytes: Int64, seconds: Double?, outcome: Outcome, detail: String?, savedPaths: [String]) {

@@ -24,10 +24,10 @@ final class Ledger: @unchecked Sendable {
     private static func pack(_ file: Int, _ chunk: Int) -> UInt64 { UInt64(file) << 32 | UInt64(chunk) }
 
     /// Opens (or starts) the ledger at `url`. A record counts only if the file it speaks of is
-    /// still there under `root` and long enough to hold that chunk; the rest are forgotten.
-    init(url: URL, manifest: Manifest, root: URL) throws {
+    /// still there in the tree, an ordinary file long enough to hold that chunk; the rest are forgotten.
+    init(url: URL, manifest: Manifest, tree: SafeTree) throws {
         self.manifest = manifest
-        remaining = manifest.entries.indices.map { Int32(manifest.chunkCount($0)) }
+        remaining = manifest.entries.indices.map { Int32(clamping: manifest.chunkCount($0)) }
 
         var kept: [(Int, Int)] = []
         if let data = try? Data(contentsOf: url) {
@@ -39,9 +39,7 @@ final class Ledger: @unchecked Sendable {
                     guard file < manifest.entries.count, chunk < manifest.chunkCount(file) else { continue }
                     let onDisk: Int64
                     if let s = sizes[file] { onDisk = s } else {
-                        var st = stat()
-                        onDisk = lstat(root.appendingPathComponent(manifest.entries[file].path).path, &st) == 0
-                            && st.st_mode & S_IFMT == S_IFREG ? Int64(st.st_size) : -1
+                        onDisk = tree.fileSize(manifest.entries[file].path) ?? -1
                         sizes[file] = onDisk
                     }
                     let end = Int64(chunk) * Int64(manifest.chunkSize) + Int64(manifest.chunkLength(file: file, chunk: chunk))

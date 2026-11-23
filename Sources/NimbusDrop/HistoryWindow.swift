@@ -94,6 +94,9 @@ private struct HistoryRow: View {
                     .foregroundStyle(entry.outcome == .completed ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.failure))
                     .lineLimit(2)
                 if let trouble { Text(trouble).font(.caption).foregroundStyle(.tertiary) }
+                if let links = AppModel.linksText(TransferStats(skippedLinks: entry.skippedLinks ?? 0)) {
+                    Text(links).font(.caption).foregroundStyle(.tertiary)
+                }
             }
             Spacer(minLength: 8)
             Text(when).font(.caption).foregroundStyle(.secondary)

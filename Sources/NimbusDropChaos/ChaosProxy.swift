@@ -61,6 +61,11 @@ public final class ChaosProxy: @unchecked Sendable {
     private let listenFD: Int32
 
     private let lock = NSLock()
+    /// Held while a byte-count trigger's action runs; every pump passes through it before
+    /// carrying its next block. Without it "at 3 MB the link collapses" is a race: over loopback
+    /// the other pumps can carry the whole rest of a small drop in the milliseconds before the
+    /// action takes effect (it did, on a loaded CI runner, 2026-11-22).
+    private let gate = NSLock()
     private var conditions = Conditions()
     private var _stats = Stats()
     private var connections: [Connection] = []
@@ -281,6 +286,8 @@ public final class ChaosProxy: @unchecked Sendable {
             while lock.withLock({ conditions.blackhole && !c.dead && !stopped }) { usleep(20_000) }
             if n == 0 { clean = true; break }
             if n < 0 || lock.withLock({ c.dead }) { break }
+            gate.lock()
+            gate.unlock()
             let wait = charge(n)
             if wait > 0 { Thread.sleep(forTimeInterval: wait) }
             if towardTarget { damage(c, buffer, n) }
@@ -362,8 +369,12 @@ public final class ChaosProxy: @unchecked Sendable {
         let total = _stats.bytesToTarget
         let due = byteTriggers.filter { $0.at <= total }
         byteTriggers.removeAll { $0.at <= total }
+        // Taken before the count is released, so no pump gets past the trigger point by more
+        // than the block it already has in hand.
+        if !due.isEmpty { gate.lock() }
         lock.unlock()
         for t in due { t.action(self) }
+        if !due.isEmpty { gate.unlock() }
     }
 
     // SplitMix64: small, seedable, good enough to decide which segment is unlucky.

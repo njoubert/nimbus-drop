@@ -39,6 +39,12 @@ enum Settings {
         set { d.set(newValue, forKey: "manualDestinations") }
     }
 
+    /// Take drops only from the local network: on unless the person turned it off.
+    static var localOnly: Bool {
+        get { d.object(forKey: "localOnly") as? Bool ?? true }
+        set { d.set(newValue, forKey: "localOnly") }
+    }
+
     /// Destinations as a compact list rather than a grid of tiles.
     static var listLayout: Bool {
         get { d.bool(forKey: "listLayout") }

@@ -23,6 +23,8 @@ enum CLI {
     static var port: UInt16?
     static var streams: Int?
     static var advertise = true
+    /// Set by `--any-network`: take drops from addresses beyond the local network too.
+    static var anyNetwork = false
     /// Set by `--only`: the extensions to send.
     static var only: [String]?
 
@@ -66,6 +68,7 @@ enum CLI {
             let listener: DropListener
             do { listener = try DropListener(identity: identity, preferredPort: port ?? defaultPort) }
             catch { fputs("\(error)\n", stderr); return 1 }
+            listener.localOnly = !anyNetwork
             let advertiser = advertise ? try? Advertiser(identity: identity, port: listener.port) : nil
             let finished = DispatchSemaphore(value: 0)
             listener.onOffer = { session in
@@ -79,7 +82,7 @@ enum CLI {
                 }
             }
             listener.start()
-            Swift.print("receiving as \(identity.name) on port \(listener.port)\(advertiser == nil ? " (not announced)" : ""), saving to \(destination.path)")
+            Swift.print("receiving as \(identity.name) on port \(listener.port)\(advertiser == nil ? " (not announced)" : "")\(anyNetwork ? ", from any address" : ""), saving to \(destination.path)")
             withExtendedLifetime(advertiser) { RunLoop.main.run() }
             return 0
 

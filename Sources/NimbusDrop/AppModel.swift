@@ -52,6 +52,8 @@ final class AppModel: ObservableObject {
     /// Macs added by address, as last heard from.
     @Published var manual: [Peer] = []
     @Published var streams = Settings.streams
+    /// Take drops only from addresses on this Mac's own subnets.
+    @Published var localOnly = Settings.localOnly
     /// Destinations as a compact list (true) or a grid of tiles.
     @Published var listLayout = Settings.listLayout { didSet { if live { Settings.listLayout = listLayout } } }
     @Published var openAtLogin = LoginItem.isEnabled
@@ -198,13 +200,14 @@ final class AppModel: ObservableObject {
         if receiving {
             do {
                 let l = try DropListener(identity: identity)
+                l.localOnly = localOnly
                 l.onOffer = { [weak self] session in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.offered(session) } }
                 }
                 l.start()
                 listener = l
                 advertiser = try Advertiser(identity: identity, port: l.port)
-                DropLog.write("receiving as \(identity.name) on port \(l.port); addresses \(LocalHost.addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", "))")
+                DropLog.write("receiving as \(identity.name) on port \(l.port), \(localOnly ? "from the local network only" : "from any address"); addresses \(LocalHost.addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", "))")
             } catch {
                 listenProblem = (error as? DropError)?.message ?? error.localizedDescription
                 DropLog.write("cannot receive: \(listenProblem ?? "")", .error)
@@ -417,6 +420,13 @@ final class AppModel: ObservableObject {
 
     // MARK: Settings the window shows
 
+    func setLocalOnly(_ on: Bool) {
+        Settings.localOnly = on
+        localOnly = on
+        listener?.localOnly = on
+        DropLog.write(on ? "now receiving from the local network only" : "now receiving from any address")
+    }
+
     func setStreams(_ n: Int) {
         Settings.streams = n
         streams = Settings.streams
@@ -615,6 +625,7 @@ final class AppModel: ObservableObject {
         entry.damagedChunks = stats.damagedChunks
         entry.reconnects = stats.reconnects
         entry.retransmittedChunks = stats.retransmittedChunks
+        entry.skippedLinks = stats.skippedLinks
         historyStore?.add(entry)
         history = historyStore?.entries ?? []
     }
@@ -632,7 +643,7 @@ final class AppModel: ObservableObject {
         var out: [String] = []
         func line(_ label: String, _ text: String) { out.append(label.padding(toLength: 13, withPad: " ", startingAt: 0) + text) }
         line("This Mac", "\(identity.name) · \(addresses.isEmpty ? "no network" : addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", ")) · Nimbus Drop \(identity.appVersion) · protocol \(protocolVersionText)")
-        line("Receiving", (receiving ? "on" + (listener.map { ", port \($0.port)" } ?? ", NOT LISTENING") : "off")
+        line("Receiving", (receiving ? "on" + (listener.map { ", port \($0.port), \(localOnly ? "local network only" : "from any address")" } ?? ", NOT LISTENING") : "off")
              + " · open at login: \(LoginItem.statusDescription)" + (problem.map { " · PROBLEM: \($0)" } ?? ""))
         line("Discovery", "\(browser?.problem.map { "PROBLEM: \($0)" } ?? "browsing") · \(destinations.count) \(destinations.count == 1 ? "destination" : "destinations")")
         for p in destinations {
@@ -699,6 +710,7 @@ final class AppModel: ObservableObject {
             status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
             if p.resumedBytes > 0 { status += " · continued from \(Format.bytes(p.resumedBytes))" }
             if let trouble = Self.troubleText(t.stats) { status += "\n" + trouble }
+            if let links = Self.linksText(t.stats) { status += "\n" + links }
         case .declined(let why): status = why; failed = true
         case .failed(let why): status = why; failed = true
         case .cancelled: status = "Cancelled"; failed = true
@@ -720,6 +732,13 @@ final class AppModel: ObservableObject {
         if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
         if s.retransmittedChunks > 0 { parts.append("\(s.retransmittedChunks) \(s.retransmittedChunks == 1 ? "chunk" : "chunks") retransmitted") }
         return parts.isEmpty ? nil : "Recovered: " + parts.joined(separator: ", ")
+    }
+
+    /// "2 links that pointed outside the drop were left out", when any were.
+    static func linksText(_ s: TransferStats) -> String? {
+        guard s.skippedLinks > 0 else { return nil }
+        return s.skippedLinks == 1 ? "1 link that pointed outside the drop was left out"
+                                   : "\(s.skippedLinks) links that pointed outside the drop were left out"
     }
 
     // MARK: Notifications

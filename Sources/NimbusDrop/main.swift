@@ -25,7 +25,8 @@ import NimbusUpdater
 //
 // The engine without the app:
 //   --receive [DIR]         take every drop into DIR (default: the current folder) without asking;
-//                           --once exits after the first, --no-advertise stays off Bonjour
+//                           --once exits after the first, --no-advertise stays off Bonjour,
+//                           --any-network takes drops from beyond the local subnet too
 //   --send TARGET PATH…     send to TARGET: a Mac's name as --peers shows it, HOST or HOST:PORT
 //   --peers                 the Macs found on the network in three seconds; exit
 //   --watch-peers           the same, live, with everything Bonjour reports (Ctrl-C to stop)
@@ -104,6 +105,7 @@ while !args.isEmpty {
         if let next = args.first, !next.hasPrefix("-") { receiveDir = args.removeFirst() }
     case "--once": receiveOnce = true
     case "--no-advertise": MainActor.assumeIsolated { CLI.advertise = false }
+    case "--any-network": MainActor.assumeIsolated { CLI.anyNetwork = true }
     case "--send":
         // Everything up to the next flag: the target, then what to send.
         var rest: [String] = []

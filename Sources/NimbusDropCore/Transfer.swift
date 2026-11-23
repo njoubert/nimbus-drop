@@ -68,11 +68,15 @@ public struct TransferStats: Equatable, Sendable {
     public var chunks = 0
     /// Attempts to reconnect, whether or not they got through.
     public var reconnectAttempts = 0
+    /// Symlinks in the drop that pointed outside it and were not recreated (a receiver).
+    public var skippedLinks = 0
     /// Chunks that had to be sent a second time (the first copy was lost with its connection or
     /// arrived damaged). The measure of what trouble cost: everything else went once.
     public var retransmittedChunks = 0
 
-    public init(rounds: Int = 0, connectionFailures: Int = 0, damagedChunks: Int = 0, reconnects: Int = 0, retransmittedChunks: Int = 0) {
+    public init(rounds: Int = 0, connectionFailures: Int = 0, damagedChunks: Int = 0, reconnects: Int = 0, retransmittedChunks: Int = 0,
+                skippedLinks: Int = 0) {
+        self.skippedLinks = skippedLinks
         self.rounds = rounds; self.connectionFailures = connectionFailures
         self.damagedChunks = damagedChunks; self.reconnects = reconnects
         self.retransmittedChunks = retransmittedChunks

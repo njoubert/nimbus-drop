@@ -16,9 +16,17 @@ rest: how to work here, how the engine is put together, and what was measured.
   loopback and over the LAN (below). Do not add a copy, a lock per byte or a syscall per small
   write there without a number.
 - **Never write outside what the person chose.** A manifest is input from another machine and
-  its paths become paths here. `Manifest.validate()` is the gate; a change to it, or to how the
-  receiver builds paths, without a case in `testAManifestThatReachesOutsideIsRefused` is not
-  finished. Nothing existing is ever overwritten: collisions get a "keep both" name.
+  its paths become paths here. There are two gates and both must hold: `Manifest.validate()`
+  (the text) and `SafeTree` (the disk). **Every file operation a receiver performs on a drop
+  goes through `SafeTree`**; a `open`, `mkdir`, `symlink`, `chmod` or `stat` on a path built from
+  a manifest anywhere else is a vulnerability, as it was until 0.2.2 (see Security). A change
+  to either gate without an attack in `SecurityTests.swift` is not finished. Nothing existing
+  is ever overwritten: collisions get a "keep both" name.
+- **Everything from the other machine is hostile until checked**: names (through
+  `Sanitize.label` before they are shown or logged), numbers (bounded in `validate` before any
+  arithmetic; Swift traps on overflow and a trap is a crash), sizes (a frame from a connection
+  not yet let in is held to `firstFrameBytes`), and counts (`Tuning.strangers`,
+  `pendingOffers`, `streamsPerDrop`).
 - **Nothing is written before the person accepts.** The Accept panel's answers are Save to
   Downloads (one click), Save to… (then the folder chooser; cancelling it declines) and Decline. `--receive` (the CLI) accepts everything and is for a machine the owner controls.
 - **Grill me relentlessly** before building a feature: every question whose answer would change
@@ -64,6 +72,8 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
                             frames with their two CRCs; the messages; ChunkHeader (seal, verifies)
   Manifest.swift            Manifest (+ validate, key, chunk arithmetic); Scanner (walks what is
                             being sent); Naming.unique ("keep both"); checksum (zlib CRC-32)
+  SafeTree.swift            every file operation a receiver performs on a drop, confined to its
+                            folder (openat, no symlinks followed); see Security
   Ledger.swift              which chunks are on the receiver's disk: the resume record
   Transfer.swift            Identity (name, id, app version), TransferState, TransferProgress,
                             TransferStats; Transfer, the base both sessions share (thread-safe
@@ -262,6 +272,52 @@ hello {} → hello {name, id, version, minor, app}: "who is at this address?", t
   sender reads the control connection on a thread of its own for the whole drop, so a reason
   sent mid-transfer is heard.
 
+## Security (reviewed 2026-11-22)
+
+The question asked was: can someone on the network get code running on a Mac through this?
+Until 0.2.2, yes, with one accepted drop.
+
+- **The hole (0.1.0 to 0.2.1).** `validate` required every path to be unique and to have a
+  folder of the manifest for a parent, comparing strings. A Mac's volume is case-insensitive.
+  A manifest with `Photos/x` (a symlink to `../../../../Library/LaunchAgents`) and `Photos/X`
+  (a folder) and `Photos/X/evil.plist` (a file) passed; `mkdir("…/X")` returned EEXIST, which
+  was taken for "already made"; and the file was opened through the symlink (`O_NOFOLLOW`
+  guards only the last component). One accept wrote a LaunchAgent. The same end could be
+  reached across two drops sharing a partial folder, whose name carried only 48 bits of the key.
+  `testASymlinkAndAFolderThatDifferOnlyInCaseDoNotWriteOutsideTheDrop` is the attack; it wrote
+  the file before the fix.
+- **The fix.** `validate` compares names as the disk does (`Manifest.folded`: case, and how
+  accents are composed). `SafeTree` does every operation by walking from the drop's root with
+  `openat(O_NOFOLLOW | O_DIRECTORY)`, and what is already in place must be exactly what the
+  manifest says (a folder that exists must be a folder, a file must be an ordinary file with one
+  link). Partial folders are named with 128 bits of the key. Either gate alone stops the attack.
+- **Consent means what was shown.** The manifest must match the offer (file count, bytes,
+  top-level names) or the drop is refused; before, a "1 file, 5 bytes" offer could be followed
+  by anything. The accept button has no Return key: the panel takes the keyboard, and a person
+  typing elsewhere would have accepted with the Return they were about to press.
+- **Crashes were reachable** (after an accept): a size near `Int64.max`, a date of `1e300`, both
+  into arithmetic that traps. Bounded in `validate` now.
+- **A stranger's reach** (no accept needed) was: a frame header promising 512 MB, allocated on
+  the spot; a connection kept open for ever a byte at a time; any number of offers, each a panel
+  on screen. Now 1 MB, ten seconds in all, 64 at once, and two questions per address.
+- **Not defended, by design, and said so in the README:** no encryption, no authentication of
+  either end. A name is a claim (Bonjour, the offer, the hello); the address is real. Someone
+  on the path can read a drop, and with the token they see go by could attach a data connection
+  or resume a control connection of a drop in progress.
+- **Decided by the owner the same day, in 0.2.2:** everything received is quarantined
+  (`Quarantine.value()` has macOS itself make the attribute once per drop, by marking a scratch
+  file through `URLResourceValues.quarantineProperties` and reading it back:
+  `0081;<time>;Nimbus\x20Drop;<uuid>`; `SafeTree.finish` puts it on every file and folder with
+  `fsetxattr`, so an app bundle's folder carries it); a symlink that points out of its drop is
+  not recreated (`Manifest.linkStaysInside`: relative, `..` only at the start and no more than
+  there are folders to climb; the receiver counts them in `stats.skippedLinks`); and the
+  listener takes connections only from the local network unless Settings says otherwise
+  (`LocalNetwork.isLocal`: this Mac, link-local, or the same subnet as one of its interfaces;
+  anything else is closed unread, logged once per address). `--any-network` for the CLI.
+- The updater's own checks (Developer ID team, HTTPS) live in nimbus-updater and were not part
+  of this review. The app is not sandboxed: anything that got code running would have the
+  user's whole account, which is why the gates above are what they are.
+
 ## The chaos harness
 
 `ChaosProxy` (in `NimbusDropChaos`) sits between a sender and a receiver. Connections are
@@ -401,6 +457,10 @@ nothing that shows). More connections do not help when the
 memory bus is the limit; they are there for real links and for small files. 400 × 8 MB files:
 3.1 GB/s. 10,000 files of 4 to 14 KB: 0.9 s, about 11,000 files a second, finalize included.
 
+After the security changes (0.2.2): 10,000 small files in 1.1 s over loopback (the quarantine
+mark is an `open` and an `fsetxattr` per file; `SafeTree` alone measured no cost), 200 × 8 MB at
+4.6 GB/s.
+
 **Not measured yet:** Wi-Fi, 10 GbE, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
@@ -430,7 +490,8 @@ Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
 from the git-ignored `.signing` (copied from a sibling on this machine).
 
-Releases: **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
+Releases: **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
+**0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
 or counts itself as waiting; chunks retransmitted, counted; Internals; log levels), **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
 service, Settings) and **0.1.0 on 2026-11-22** (DMG + zip, Developer ID, notarized, protocol 2.0). 0.1.0 was
 published step by step rather than with `build.sh release`: `./build.sh dmg`, check the

@@ -44,6 +44,8 @@ final class MainMenu: NSObject, NSMenuDelegate {
         let windowItem = NSMenuItem()
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        window.addItem(.separator())
+        window.addItem(withTitle: "Drop History", action: #selector(AppDelegate.showHistory), keyEquivalent: "y")
         windowItem.submenu = window
         main.addItem(windowItem)
         NSApp.mainMenu = main

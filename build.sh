@@ -371,7 +371,7 @@ case "$cmd" in
     ;;
 
   uninstall)
-    rm -rf "$HOME/Library/Caches/$BUNDLE_ID"
+    rm -rf "$HOME/Library/Caches/$BUNDLE_ID" "$HOME/Library/Application Support/$BUNDLE_ID"
     rm -rf "$INSTALL_DIR/.$NAME-old.app" "$INSTALL_DIR/.$NAME-update.app"
     if [ -e "$INSTALLED" ]; then
       stop_all

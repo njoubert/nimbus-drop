@@ -33,6 +33,14 @@ struct SettingsView: View {
                 Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
                     .disabled(Bundle.main.bundleIdentifier == nil)
             }
+            Section("History") {
+                HStack {
+                    Text("Finished drops leave the window after a minute. The history keeps them, on this Mac only.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show History…") { AppDelegate.shared?.showHistory() }
+                }
+            }
             Section("Updates") {
                 if let updater, updater.canInstall {
                     Toggle("Check for updates automatically", isOn: $automatic)

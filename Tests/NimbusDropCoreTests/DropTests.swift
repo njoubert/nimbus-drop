@@ -326,6 +326,32 @@ final class DropTests: XCTestCase {
         XCTAssertEqual(s.state, .failed("Nothing to send"))
     }
 
+    // MARK: History
+
+    func testHistoryIsKeptNewestFirstCappedAndSurvivesABadFile() throws {
+        let url = root.appendingPathComponent("support/history.json")
+        var store = HistoryStore(url: url)
+        XCTAssertTrue(store.entries.isEmpty, "no file yet is an empty history")
+        func entry(_ n: Int) -> HistoryEntry {
+            HistoryEntry(date: Date(timeIntervalSince1970: Double(1_700_000_000 + n)), sent: n % 2 == 0, title: "drop \(n)", peerName: "air",
+                         peerAddress: "192.168.1.143", files: n, bytes: Int64(n) * 1000, seconds: 1.5, outcome: n == 3 ? .failed : .completed,
+                         detail: n == 3 ? "The connection closed" : nil, savedPaths: n % 2 == 0 ? [] : ["/tmp/drop \(n)"])
+        }
+        for n in 1...3 { store.add(entry(n)) }
+        let again = HistoryStore(url: url)
+        XCTAssertEqual(again.entries.map(\.title), ["drop 3", "drop 2", "drop 1"])
+        XCTAssertEqual(again.entries, store.entries, "what was written is what is read")
+
+        for n in 4...(HistoryStore.limit + 10) { store.add(entry(n)) }
+        XCTAssertEqual(HistoryStore(url: url).entries.count, HistoryStore.limit)
+        XCTAssertEqual(HistoryStore(url: url).entries.first?.title, "drop \(HistoryStore.limit + 10)")
+
+        store.clear()
+        XCTAssertTrue(HistoryStore(url: url).entries.isEmpty)
+        try Data("not json".utf8).write(to: url)
+        XCTAssertTrue(HistoryStore(url: url).entries.isEmpty, "a damaged file is an empty history, not a crash")
+    }
+
     // MARK: Finding each other
 
     func testAMacAddedByAddressSaysWhoItIs() throws {

@@ -62,6 +62,11 @@ final class AppModel: ObservableObject {
     @Published var scanning: String?
     /// A drop with several kinds of file, waiting for the person to say which to send.
     @Published var kindQuestion: KindQuestion?
+    /// Every drop that has ended, newest first, kept across launches.
+    @Published var history: [HistoryEntry] = []
+    private var historyStore: HistoryStore?
+    /// A finished drop leaves the window this long after it ended; the History window keeps it.
+    static let lingerSeconds: Double = 60
     /// The "add by address" field is showing.
     @Published var askingForAddress = false
 
@@ -126,6 +131,11 @@ final class AppModel: ObservableObject {
         }
         b.start()
         browser = b
+        // Beside the preferences, under the bundle's own name, so the development copy keeps its own.
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "NimbusDrop", isDirectory: true)
+        historyStore = HistoryStore(url: support.appendingPathComponent("history.json"))
+        history = historyStore?.entries ?? []
         manual = Settings.manualDestinations.map(Self.placeholder)
         probeManual()
         applyReceiving()
@@ -514,24 +524,67 @@ final class AppModel: ObservableObject {
 
     private func refresh() {
         let now = Date()
+        for t in transfers where t.state.isFinal && announced.insert(t.id).inserted {
+            announce(t)
+            record(t)
+        }
+        // A drop that ended a minute ago has been seen; it leaves the window. History has it.
+        let stale = transfers.filter { t in t.finishedAt.map { now.timeIntervalSince($0) > Self.lingerSeconds } ?? false }
+        if !stale.isEmpty {
+            let ids = Set(stale.map(\.id))
+            transfers.removeAll { ids.contains($0.id) }
+            for id in ids { meters[id] = nil; sends[id] = nil }
+        }
         rows = transfers.map { row(for: $0, now: now) }
         let active = transfers.contains { !$0.state.isFinal }
 
-        // Poll while anything is moving; hold the Mac awake for as long.
-        if active, timer == nil {
-            let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
+        // Poll while anything is listed: quickly while it moves, once a second while finished
+        // drops wait out their minute. The Mac is held awake only while something moves.
+        let interval = active ? 0.25 : 1.0
+        if transfers.isEmpty {
+            timer?.invalidate()
+            timer = nil
+        } else if timer == nil || timer?.timeInterval != interval {
+            timer?.invalidate()
+            let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
             RunLoop.main.add(t, forMode: .common)
             timer = t
+        }
+        if active, activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
                                                              reason: "A drop is under way")
-        } else if !active, let t = timer {
-            t.invalidate()
-            timer = nil
-            if let a = activity { ProcessInfo.processInfo.endActivity(a) }
+        } else if !active, let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
             activity = nil
         }
-        for t in transfers where t.state.isFinal && announced.insert(t.id).inserted { announce(t) }
         onChange?()
+    }
+
+    /// Writes a drop that has ended into the history. An offer that was withdrawn before anyone
+    /// here answered it never became a drop, and is left out.
+    private func record(_ t: Transfer) {
+        let outcome: HistoryEntry.Outcome
+        var detail: String?
+        switch t.state {
+        case .completed: outcome = .completed
+        case .declined(let why): outcome = .declined; detail = why
+        case .failed(let why):
+            if t.direction == .receive, t.transferStartedAt == nil { return }
+            outcome = .failed; detail = why
+        case .cancelled: outcome = .cancelled
+        default: return
+        }
+        let p = t.progress
+        let seconds = t.transferStartedAt.map { (t.finishedAt ?? Date()).timeIntervalSince($0) }
+        historyStore?.add(HistoryEntry(date: t.finishedAt ?? Date(), sent: t.direction == .send, title: t.title, peerName: t.peerName,
+                                       peerAddress: t.peerAddress, files: p.totalFiles, bytes: p.totalBytes, seconds: seconds,
+                                       outcome: outcome, detail: detail, savedPaths: t.savedURLs.map(\.path)))
+        history = historyStore?.entries ?? []
+    }
+
+    func clearHistory() {
+        historyStore?.clear()
+        history = []
     }
 
     private func row(for t: Transfer, now: Date) -> TransferRow {

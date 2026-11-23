@@ -48,6 +48,9 @@ final class StatusBarController: NSObject {
         login.state = LoginItem.isEnabled ? .on : .off
         if Bundle.main.bundleIdentifier == nil { login.action = nil }
         menu.addItem(login)
+        let history = NSMenuItem(title: "History…", action: #selector(openHistory), keyEquivalent: "")
+        history.target = self
+        menu.addItem(history)
         menu.addItem(settings)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Nimbus Drop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
@@ -59,6 +62,7 @@ final class StatusBarController: NSObject {
 
     @objc private func openWindow() { AppDelegate.shared?.showWindow() }
     @objc private func openSettings() { AppDelegate.shared?.showSettings() }
+    @objc private func openHistory() { AppDelegate.shared?.showHistory() }
     @objc private func toggleReceiving() { model.setReceiving(!model.receiving) }
     @objc private func toggleLogin() { model.setOpenAtLogin(!LoginItem.isEnabled) }
 

@@ -67,6 +67,12 @@ using and the time left, and lets you stop it. If connections were lost or damag
 caught along the way, it says how many. A received drop has a *Show in Finder* button. Both Macs
 get a notification when a drop finishes or stops, and neither sleeps while one is under way.
 
+**Finished drops clear themselves** from the window a minute after they end, failures too.
+*History* (right-click the menu bar icon, the Window menu, or Settings) keeps the record: what,
+to or from whom, when, how big, how it ended, with *Show in Finder* for what was received. It is
+a file on this Mac (`~/Library/Application Support/com.njoubert.nimbusdrop/history.json`, the
+last 500 drops), goes nowhere, and *Clear History* empties it.
+
 **Nothing is overwritten.** If `~/Downloads/Christmas 2026` already exists, the new one lands as
 `Christmas 2026 2`, the way Finder keeps both.
 
@@ -99,7 +105,7 @@ different protocol major shows as *Needs an update* and cannot be sent to; an of
 declined with both versions named. Settings shows this copy's.
 
 **Settings** (⌘, or right-click the menu bar icon): how many parallel connections a send uses,
-*Open at login*, updates, and which version and protocol this copy is.
+*Open at login*, the history, updates, and which version and protocol this copy is.
 
 ## How fast
 

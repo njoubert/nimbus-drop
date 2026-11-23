@@ -76,6 +76,7 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
                             PeerTable (pure: who is on the network, from what Bonjour reports);
                             PeerBrowser (NWBrowser + resolve to IPv4 + restart on trouble)
   Host.swift                LocalHost: the Bonjour host name, the IPv4 addresses
+  History.swift             HistoryEntry, HistoryStore (one JSON file, newest first, 500 at most)
   FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
                             extension to mean); ScannedDrop.keeping(kinds:) (send only some)
   Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
@@ -99,6 +100,8 @@ Sources/NimbusDrop/         the app
                             --dump-kinds
   SettingsWindow.swift      Settings (⌘,): parallel connections, Open at login, updates, the
                             version and protocol. Nothing of the kind is on the main window.
+  HistoryWindow.swift       every drop that has ended (HistoryStore in the core keeps it in
+                            ~/Library/Application Support/<bundle id>/history.json); --dump-history
   OfferPanel.swift          the Accept / Decline panel for an incoming drop; --dump-offer
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
@@ -286,6 +289,10 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   dropped everyone, for good. `PeerTable` now remembers who was behind each result, and a result
   without its record triggers a fresh browse (`restartSoon`), which also re-resolves addresses.
   `--watch-peers` prints everything Bonjour reports, for the next surprise of this kind.
+- **A finished drop leaves the window after a minute** (`AppModel.lingerSeconds`), its Retry
+  button with it; it is written to the history the moment it ends. The poll timer therefore
+  runs while anything is listed (four times a second while something moves, once a second
+  otherwise) and stops when the list is empty; the sleep hold is only for drops that are moving.
 - **Each offer owns its questions** (`AppModel.asking`, by drop id): its Accept panel, then its
   folder chooser, independent of any other drop. A sender giving up removes exactly its own. The
   first version queued offers behind one shared "a question is open" flag, and a withdrawn offer

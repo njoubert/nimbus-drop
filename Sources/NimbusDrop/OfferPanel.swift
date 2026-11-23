@@ -98,8 +98,10 @@ private struct OfferView: View {
             // One click for the usual case; the folder chooser for when it should go elsewhere.
             // Coloured by what they do: blue to take it, red to refuse.
             VStack(spacing: 8) {
+                // No Return key for this button, on purpose. The panel takes the keyboard when it
+                // appears, and someone typing in another app would accept a stranger's drop with
+                // the Return they were about to press. It takes a click. (Escape still declines.)
                 Button { answer(.downloads) } label: { Label("Save to Downloads", systemImage: "arrow.down.to.line") }
-                    .keyboardShortcut(.defaultAction)
                     .buttonStyle(AnswerButton(fill: Palette.send, text: .white))
                 HStack(spacing: 8) {
                     Button("Decline") { answer(.decline) }

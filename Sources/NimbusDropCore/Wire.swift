@@ -57,6 +57,16 @@ enum Tuning {
     /// How long both sides hold a drop open after the connection that carries the conversation
     /// is lost: the sender trying to reconnect, the receiver waiting for it.
     nonisolated(unsafe) static var reconnectSeconds: Double = 60
+    /// How long a connection has to say what it is, in all.
+    nonisolated(unsafe) static var strangerSeconds: Double = 10
+    /// Connections that have not yet said what they are, at once; more are closed on arrival.
+    nonisolated(unsafe) static var strangers = 64
+    /// Offers waiting for the person's answer at once, in all and from one address; more are
+    /// declined, so that nobody can bury the screen in panels.
+    nonisolated(unsafe) static var pendingOffers = 6
+    nonisolated(unsafe) static var pendingOffersPerAddress = 2
+    /// Data connections one drop may have open.
+    nonisolated(unsafe) static var streamsPerDrop = 64
     /// How long a receiver waits for connections the sender says it opened but that never arrived.
     nonisolated(unsafe) static var settleSeconds: Double = 1
 }
@@ -246,7 +256,10 @@ final class Socket: @unchecked Sendable {
         try frame.withUnsafeBytes { try writeAll($0.baseAddress!, frame.count) }
     }
 
-    func readFrame() throws -> (type: FrameType, body: Data) {
+    /// `limit`: the largest frame to accept. The default is for a manifest, which only a sender
+    /// whose drop was accepted may send; before that a stranger's frame is held to
+    /// `firstFrameBytes`, so that nobody can make this Mac set half a gigabyte aside by asking.
+    func readFrame(limit: Int = maxFrameBytes) throws -> (type: FrameType, body: Data) {
         var head = [UInt8](repeating: 0, count: 8)
         try head.withUnsafeMutableBytes { try readExactly($0.baseAddress!, 8) }
         let (length, lengthCRC) = head.withUnsafeBytes {
@@ -254,7 +267,7 @@ final class Socket: @unchecked Sendable {
              UInt32(bigEndian: $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)))
         }
         let count = Int(length)
-        guard head.withUnsafeBytes({ checksum($0.baseAddress!, 4) }) == lengthCRC, count >= 1, count <= maxFrameBytes else {
+        guard head.withUnsafeBytes({ checksum($0.baseAddress!, 4) }) == lengthCRC, count >= 1, count <= limit else {
             throw DropError.damagedMessage
         }
         var data = Data(count: count + 4)
@@ -274,6 +287,9 @@ extension DropError {
 
 /// The largest control frame accepted: a manifest of about two million files.
 let maxFrameBytes = 512 << 20
+/// The largest frame accepted from a connection that has not been let in yet (an offer, with
+/// the names of what is offered; a hello; an attach or a resume).
+let firstFrameBytes = 1 << 20
 
 enum FrameType: UInt8 {
     case offer = 1, accept, decline, manifest, plan, done, complete, error, attach, hello, resume

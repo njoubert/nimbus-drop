@@ -16,6 +16,8 @@ public final class DropListener: @unchecked Sendable {
     private var stopped = false
     private var sessions: [String: ReceiveSession] = [:]
     private var holders: [String: ReceiveSession] = [:]
+    private var strangers = 0
+    private var waiting: [(session: ReceiveSession?, address: String)] = []
     private var completed: [String: (answer: Complete, at: Date)] = [:]
 
     /// Listens on `preferredPort`, or on any free port when that one is taken (0 asks for any).
@@ -49,14 +51,42 @@ public final class DropListener: @unchecked Sendable {
     private func serve(_ socket: Socket) {
         // Bonjour resolution opens a connection and closes it again; anything that does not
         // speak within ten seconds is not a sender.
+        // Until it has said what it is, a connection is a stranger: a bounded number of them, a
+        // small first frame, and ten seconds in all to send it (not ten per byte).
+        guard lock.withLock({ () -> Bool in
+            guard strangers < Tuning.strangers else { return false }
+            strangers += 1
+            return true
+        }) else { return }
+        let arrived = Locked(false)
+        DispatchQueue.global().asyncAfter(deadline: .now() + Tuning.strangerSeconds) { if !arrived.withLock({ $0 }) { socket.shutdown() } }
         socket.setReadTimeout(10)
-        guard let first = try? socket.readFrame() else { return }
+        let first = try? socket.readFrame(limit: firstFrameBytes)
+        arrived.withLock { $0 = true }
+        lock.withLock { strangers -= 1 }
+        // Closed here and now: the deadline above still holds the socket for its ten seconds.
+        guard let first else { socket.shutdown(); return }
         socket.setReadTimeout(0)
         switch first.type {
         case .offer:
             guard let offer = try? decode(Offer.self, from: first.body) else { return }
             socket.setNoDelay()
             let session = ReceiveSession(control: socket, offer: offer, listener: self)
+            // No more questions on screen than a person can read, and no more than two from
+            // one address: the rest are declined without being shown.
+            let from = socket.peerAddress
+            let room = lock.withLock { () -> Bool in
+                waiting = waiting.filter { $0.session?.state == .waitingForAccept }
+                guard waiting.count < Tuning.pendingOffers,
+                      waiting.filter({ $0.address == from }).count < Tuning.pendingOffersPerAddress else { return false }
+                waiting.append((session, from))
+                return true
+            }
+            guard room else {
+                DropLog.write("declined an offer from \(from) unseen: too many are waiting for an answer already", .warn)
+                try? socket.send(.decline, Reason(message: "\(identity.name) has too many drops waiting for an answer"))
+                return
+            }
             session.run()
         case .hello:
             try? socket.send(.hello, Hello(name: identity.name, id: identity.id, version: protocolVersion, minor: protocolMinor, app: identity.appVersion))
@@ -135,6 +165,9 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private var incoming: Socket?
     private weak var listener: DropListener?
     private let version: Int
+    /// What the person was shown and agreed to; the manifest must be that and nothing else.
+    private let offered: Offer
+    private var tree: SafeTree!
 
     private enum Decision { case accept(URL), decline(String) }
     private var decision: Decision?
@@ -148,6 +181,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private var finished = 0
     private var roundStartBytes: Int64 = 0
     private var conducted = false
+    /// `SafeTree` keeps one directory open between calls; the stream threads take turns.
+    private let treeLock = NSLock()
     /// Which `Transfer.dataConnections` entry each data connection is.
     private let streamInfo = Locked<[ObjectIdentifier: Int]>([:])
     /// The control connection is gone and the session is waiting for the sender to bring another.
@@ -160,11 +195,14 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         offeredFiles = offer.fileCount
         offeredBytes = offer.totalBytes
         version = offer.version
-        senderAppVersion = offer.app ?? "an older version"
+        senderAppVersion = Sanitize.label(offer.app ?? "an older version", limit: 24)
         senderProtocol = "\(offer.version)" + (offer.minor.map { ".\($0)" } ?? "")
-        super.init(direction: .receive, state: .waitingForAccept, peerName: offer.senderName, peerAddress: control.peerAddress)
-        setItems(offer.items)
-        log("offer from \(offer.senderName) at \(control.peerAddress) (Nimbus Drop \(senderAppVersion), protocol \(senderProtocol)): “\(offer.items.joined(separator: "”, “"))”, \(offer.fileCount) files, \(offer.totalBytes) bytes")
+        offered = offer
+        // The name is whatever the sender says it is; only the address is known. Both are shown.
+        super.init(direction: .receive, state: .waitingForAccept, peerName: Sanitize.label(offer.senderName, limit: 64),
+                   peerAddress: control.peerAddress)
+        setItems(offer.items.prefix(1000).map { Sanitize.label($0, limit: 255) })
+        log("offer from \(peerName) at \(control.peerAddress) (Nimbus Drop \(senderAppVersion), protocol \(senderProtocol)): “\(items.prefix(20).joined(separator: "”, “"))”, \(offer.fileCount) files, \(offer.totalBytes) bytes")
         update { $0.totalBytes = offer.totalBytes; $0.totalFiles = offer.fileCount }
         track(control)
     }
@@ -293,7 +331,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         while chosen == nil {
             if isOver { onWithdrawn?(); return }
             if control.waitReadable(milliseconds: 200) {
-                let message = (try? control.readFrame()).flatMap { $0.type == .error ? try? decode(Reason.self, from: $0.body).message : nil }
+                let message = (try? control.readFrame(limit: firstFrameBytes)).flatMap { $0.type == .error ? (try? decode(Reason.self, from: $0.body).message).map { Sanitize.label($0, limit: 300) } : nil }
                 finish(.failed(message ?? "The sender went away"))
                 onWithdrawn?()
                 return
@@ -312,6 +350,12 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         guard frame.type == .manifest else { throw DropError("Unexpected message from the sender") }
         manifest = try decode(Manifest.self, from: frame.body)
         try manifest.validate()
+        // The person said yes to what the offer described. A manifest that is something else
+        // (more files, more bytes, other names) is not what was agreed to.
+        guard manifest.fileCount == offered.fileCount, manifest.totalBytes == offered.totalBytes,
+              manifest.topLevelNames == offered.items else {
+            throw DropError("The drop is not what was offered; it was refused")
+        }
         setItems(manifest.topLevelNames)
         update { $0.totalBytes = manifest.totalBytes; $0.totalFiles = manifest.fileCount }
 
@@ -319,14 +363,17 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         // is a rename on the same volume), named after the drop's key so a re-send finds it.
         let key = manifest.key(senderID: senderID)
         let label = String((manifest.topLevelNames.first ?? "Drop").prefix(80))
-        let partial = destination.appendingPathComponent("\(label).\(key.prefix(12)).nimbusdrop-partial", isDirectory: true)
+        // 32 hex digits of the key: enough that two different drops cannot be made to share a
+        // partial folder (12 could be, by trying sixteen million manifests).
+        let partial = destination.appendingPathComponent("\(label).\(key.prefix(32)).nimbusdrop-partial", isDirectory: true)
         listener.claim(partial.path, for: self)
         defer { listener.release(partial.path, by: self) }
         itemsRoot = partial.appendingPathComponent("items", isDirectory: true)
         do { try FileManager.default.createDirectory(at: itemsRoot, withIntermediateDirectories: true) }
         catch { throw DropError("Cannot write to \(destination.path): \(error.localizedDescription)") }
+        tree = try SafeTree(root: itemsRoot)
         try prepareTree()
-        ledger = try Ledger(url: partial.appendingPathComponent("ledger"), manifest: manifest, root: itemsRoot)
+        ledger = try Ledger(url: partial.appendingPathComponent("ledger"), manifest: manifest, tree: tree)
 
         let empties = manifest.entries.indices.filter { manifest.entries[$0].kind == .file && manifest.chunkCount($0) == 0 }.count
         update { $0.resumedBytes = ledger.doneBytes; $0.doneBytes = ledger.doneBytes; $0.doneFiles = ledger.doneFiles + empties }
@@ -359,7 +406,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
                 continue
             }
             touch()
-            if next.type == .error { throw DropError(try decode(Reason.self, from: next.body).message) }
+            if next.type == .error { throw DropError(Sanitize.label(try decode(Reason.self, from: next.body).message, limit: 300)) }
             guard next.type == .done else { throw DropError("Unexpected message from \(peerName)") }
             let roundStart = lock.withLock { roundStartBytes }
             let done = try decode(Done.self, from: next.body)
@@ -424,21 +471,15 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         streams.unlock()
     }
 
-    /// Folders, symlinks and empty files, before any data. Existing ones (a resume) are left.
+    /// Folders, symlinks and empty files, before any data. All through `SafeTree`: whatever is
+    /// already there (a resumed drop) must be what the manifest says it is.
     private func prepareTree() throws {
         for e in manifest.entries {
-            let path = itemsRoot.appendingPathComponent(e.path).path
             switch e.kind {
-            case .directory:
-                guard mkdir(path, 0o700) == 0 || errno == EEXIST else { throw errnoError("Cannot create \(e.path)") }
-            case .symlink:
-                guard symlink(e.link ?? "", path) == 0 || errno == EEXIST else { throw errnoError("Cannot create the link \(e.path)") }
-            case .file where e.size == 0:
-                let fd = open(path, O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)
-                guard fd >= 0 else { throw errnoError("Cannot create \(e.path)") }
-                close(fd)
-            case .file:
-                break
+            case .directory: try tree.makeDirectory(e.path)
+            case .symlink: try tree.makeSymlink(e.path, to: e.link ?? "")
+            case .file where e.size == 0: close(try tree.openFile(e.path))
+            case .file: break
             }
         }
     }
@@ -452,6 +493,12 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         let from = socket.peerAddress
         track(socket)
         streams.lock()
+        guard active.count < Tuning.streamsPerDrop else {
+            streams.unlock()
+            log("refused a data connection from \(from): \(Tuning.streamsPerDrop) are open already", .warn)
+            socket.shutdown()
+            return
+        }
         active.append(socket)
         let waiting = awaitingControl
         streams.unlock()
@@ -522,8 +569,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             }
             if openFile != file {
                 if fd >= 0 { close(fd) }
-                fd = open(itemsRoot.appendingPathComponent(manifest.entries[file].path).path, O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)
-                guard fd >= 0 else { throw errnoError("Cannot create \(manifest.entries[file].path)") }
+                fd = -1
+                fd = try treeLock.withLock { try tree.openFile(manifest.entries[file].path) }
                 openFile = file
             }
             var wrote = 0
@@ -541,13 +588,11 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// Modes and times, deepest first; then each top-level item moves into the destination.
     private func finalize(partial: URL, destination: URL) throws -> [URL] {
         for e in manifest.entries.reversed() where e.kind != .symlink {
-            let path = itemsRoot.appendingPathComponent(e.path).path
-            var times = [timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)),
-                         timespec(tv_sec: Int(e.mtime), tv_nsec: Int((e.mtime - e.mtime.rounded(.down)) * 1e9))]
-            utimensat(AT_FDCWD, path, &times, AT_SYMLINK_NOFOLLOW)
-            // The owner keeps access to what they were just sent, whatever the mode was.
-            chmod(path, mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600))
+            // The owner keeps access to what they were just sent, whatever the mode was; and
+            // nothing arrives set-uid (the mask drops every bit above the permissions).
+            tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600))
         }
+        tree.release()
         var saved: [URL] = []
         let fm = FileManager.default
         for e in manifest.entries where !e.path.contains("/") {

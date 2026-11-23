@@ -63,9 +63,9 @@ public enum Probe {
         let reply = try socket.readFrame()
         guard reply.type == .hello else { throw DropError("\(host) is not running Nimbus Drop") }
         let hello = try decode(Hello.self, from: reply.body)
-        var peer = Peer(id: hello.id, name: hello.name, address: host, port: port, version: hello.version)
+        var peer = Peer(id: String(hello.id.prefix(64)), name: Sanitize.label(hello.name, limit: 64), address: host, port: port, version: hello.version)
         peer.minor = hello.minor
-        peer.appVersion = hello.app
+        peer.appVersion = hello.app.map { Sanitize.label($0, limit: 24) }
         return peer
     }
 }
@@ -88,7 +88,8 @@ struct PeerTable {
             if let txt = r.txt, let id = txt["id"] {
                 // "2.0", or a bare "2" from before minors existed.
                 let v = (txt["v"] ?? "").split(separator: ".").map { Int($0) }
-                identities[r.key] = (id, txt["name"] ?? "?", v.first ?? nil, v.count > 1 ? v[1] : nil, txt["app"])
+                identities[r.key] = (String(id.prefix(64)), Sanitize.label(txt["name"] ?? "?", limit: 64), v.first ?? nil,
+                                     v.count > 1 ? v[1] : nil, txt["app"].map { Sanitize.label($0, limit: 24) })
             } else {
                 missingTXT = true
             }

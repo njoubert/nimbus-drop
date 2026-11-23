@@ -191,6 +191,32 @@ NimbusDrop --print                        # this Mac's name, addresses and setti
 `--receive` accepts everything offered to it. It is a tool for a machine you control, not
 something to leave running on a network you do not.
 
+## Security
+
+**What it is not:** private or authenticated. Drops cross the network unencrypted, anyone who can
+reach the port can offer you one, and a sender can call itself anything; only the IP address
+shown is real. Someone able to watch your network could read a drop in transit or interfere
+with one. Use it on a network you trust, and turn *Receive drops* off on one you do not.
+
+**What it defends:** your Mac. Accepting a drop means receiving the files you were shown into
+the folder you chose, and nothing else:
+
+- Nothing is written until you click (the accept button has no Return key, so typing in another
+  app cannot accept one by accident), and what arrives must be exactly what was offered: the
+  same names, file count and size.
+- Everything a drop writes is confined to its own folder. Paths are checked as text and again
+  against the disk, one folder at a time, without following symlinks; names that differ only in
+  case are refused.
+- Nothing existing is overwritten, nothing arrives set-uid, and the app runs as you, never as
+  root.
+- A stranger cannot make it use up memory or bury the screen in questions: connections that
+  have not been let in are few, small and short-lived, and at most two offers from one address
+  wait for an answer at once.
+
+A security review on 2026-11-22 found that versions before 0.2.2 could be made to write a file
+outside the chosen folder by a sender whose drop was accepted. **Update to 0.2.2 or later.**
+`Tests/NimbusDropCoreTests/SecurityTests.swift` holds that attack and the others tried.
+
 ## Testing it against a bad network
 
 `swift test` sends whole drops through a proxy that misbehaves on cue: it caps and collapses

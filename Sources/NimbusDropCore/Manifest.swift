@@ -63,32 +63,69 @@ public struct Manifest: Codable, Equatable, Sendable {
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The most entries a manifest may have, and the largest file: bounds that keep hostile
+    /// numbers from overflowing the arithmetic done with them, far above any real drop.
+    public static let maxEntries = 2_000_000
+    public static let maxFileSize: Int64 = 1 << 50
+
+    /// What the disk will take two names to be the same by: a Mac's volume is, by default,
+    /// insensitive to case and to how accents are composed.
+    static func folded(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
+
     /// What a receiver checks before it creates anything: a manifest is input from another
-    /// machine, and its paths become paths on this one.
+    /// machine, and its paths become paths on this one. This is the check of the text;
+    /// `SafeTree` is the check against the disk, and both must hold.
     public func validate() throws {
         guard chunkSize >= 4096, chunkSize <= 64 << 20 else { throw DropError("The drop's chunk size is not acceptable") }
+        guard !entries.isEmpty else { throw DropError("The drop is empty") }
+        guard entries.count <= Self.maxEntries else { throw DropError("The drop lists more entries than can be accepted") }
         var directories = Set<String>()
         var seen = Set<String>()
+        var total: Int64 = 0
         for e in entries {
             let parts = e.path.split(separator: "/", omittingEmptySubsequences: false)
             guard !e.path.isEmpty, !e.path.hasPrefix("/"), !e.path.utf8.contains(0),
                   parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 }) else {
-                throw DropError("The drop contains an unsafe path: \(e.path)")
+                throw DropError("The drop contains an unsafe path: \(Sanitize.label(e.path, limit: 120))")
             }
-            guard seen.insert(e.path).inserted else { throw DropError("The drop lists \(e.path) twice") }
+            // Unique as the disk sees names, not only as text: "x" and "X" are one file here, and
+            // a drop that used both for different things could aim a write through a symlink.
+            guard seen.insert(Self.folded(e.path)).inserted else {
+                throw DropError("The drop lists \(Sanitize.label(e.path, limit: 120)) twice (names that differ only in case are one name on a Mac)")
+            }
             if parts.count > 1 {
                 // The parent must be a folder this manifest made, never a symlink or something
                 // already on disk.
-                let parent = parts.dropLast().joined(separator: "/")
-                guard directories.contains(parent) else { throw DropError("The drop puts \(e.path) outside its folders") }
+                let parent = Self.folded(parts.dropLast().joined(separator: "/"))
+                guard directories.contains(parent) else { throw DropError("The drop puts \(Sanitize.label(e.path, limit: 120)) outside its folders") }
             }
+            // A time that is a number a calendar could hold (the year 5000 is generous).
+            guard e.mtime.isFinite, abs(e.mtime) < 1e11 else { throw DropError("The drop has an impossible date for \(Sanitize.label(e.path, limit: 120))") }
             switch e.kind {
-            case .directory: directories.insert(e.path)
-            case .file: guard e.size >= 0 else { throw DropError("The drop has a negative size for \(e.path)") }
-            case .symlink: guard let l = e.link, !l.isEmpty else { throw DropError("The drop has an empty link at \(e.path)") }
+            case .directory: directories.insert(Self.folded(e.path))
+            case .file:
+                guard e.size >= 0, e.size <= Self.maxFileSize else { throw DropError("The drop has an impossible size for \(Sanitize.label(e.path, limit: 120))") }
+                total += e.size   // cannot overflow: at most 2^21 entries of 2^50 bytes
+            case .symlink:
+                guard let l = e.link, !l.isEmpty, !l.utf8.contains(0), l.utf8.count <= Int(PATH_MAX) else {
+                    throw DropError("The drop has an unusable link at \(Sanitize.label(e.path, limit: 120))")
+                }
             }
         }
-        guard !entries.isEmpty else { throw DropError("The drop is empty") }
+    }
+}
+
+/// Text from another machine, made fit to show and to log: a host name, a file name, a reason.
+public enum Sanitize {
+    /// One line of bounded length: control characters (newlines among them, which could forge
+    /// a line of the log or push the real text out of a panel) become spaces.
+    public static func label(_ text: String, limit: Int = 200) -> String {
+        let cleaned = String(String.UnicodeScalarView(text.unicodeScalars.map {
+            $0.properties.generalCategory == .control || $0.properties.generalCategory == .lineSeparator
+                || $0.properties.generalCategory == .paragraphSeparator ? " " : $0
+        }))
+        let trimmed = cleaned.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > limit ? String(trimmed.prefix(limit)) + "…" : trimmed
     }
 }
 

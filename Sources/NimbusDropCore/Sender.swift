@@ -111,7 +111,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
         let answer = try nextFrame()
         switch answer.type {
         case .accept: break
-        case .decline: finish(.declined(try decode(Reason.self, from: answer.body).message)); return
+        case .decline: finish(.declined(Sanitize.label(try decode(Reason.self, from: answer.body).message, limit: 300))); return
         default: throw DropError("Unexpected answer from \(peerName)")
         }
 
@@ -283,7 +283,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                     touch()
                     if frame.type == .error {
                         // The receiver's reason, said before it closes everything.
-                        let reason = DropError(try decode(Reason.self, from: frame.body).message)
+                        let reason = DropError(Sanitize.label(try decode(Reason.self, from: frame.body).message, limit: 300))
                         guard inbox.withLock({ generation == mine }) else { return }
                         post(error: reason, generation: mine)
                         fail(reason)

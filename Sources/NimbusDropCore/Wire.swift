@@ -69,8 +69,11 @@ enum Tuning {
     nonisolated(unsafe) static var pendingOffersPerAddress = 2
     /// Connections that have completed a handshake with a key nobody here has paired, at once.
     nonisolated(unsafe) static var unpaired = 8
-    /// New connections taken per second, whoever they are from.
-    nonisolated(unsafe) static var arrivalsPerSecond = 50
+    /// New connections taken per second, whoever they are from. A handshake costs this Mac a
+    /// key generation and two key agreements, about a seventh of a millisecond: this many a
+    /// second is under a tenth of one core. (It was 50 at first, and a test showed fifty
+    /// strangers arriving in one second then kept a paired Mac out for the rest of it.)
+    nonisolated(unsafe) static var arrivalsPerSecond = 500
     /// Requests to pair that may wait behind the one on screen.
     nonisolated(unsafe) static var pairRequestsWaiting = 4
     /// How long a pairing's codes live, and how long a request waits for the person.

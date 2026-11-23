@@ -386,12 +386,8 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
                 let again = lock.withLock { () -> Bool in defer { remoteRight = true }; return remoteRight }
                 guard !again else { throw DropError("The other Mac did not keep to the pairing. Nothing was paired.") }
                 finishIfBoth()
-                // Nothing more is expected; wait for this side's own person.
-                while !state.isFinal {
-                    if Date() > deadline { throw DropError("The codes ran out of time. Nothing was paired.") }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                return
+                // Nothing more is expected from it. The loop goes on reading all the same, so
+                // that anything more is seen for what it is.
             case .pairFailed:
                 throw DropError(byNumber ? "The other Mac did not accept this Mac's identity number. Nothing was paired."
                                          : "The codes did not match on \(peerName). Something may be between the two Macs. Nothing was paired.")

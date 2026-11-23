@@ -244,8 +244,9 @@ public final class Trust: @unchecked Sendable {
 
     // MARK: This Mac
 
-    public var keyPair: KeyPair { lock.withLock { pair } }
-    public var publicKey: PublicKey { lock.withLock { pair.publicKey } }
+    /// This Mac's key as it is now: one that has reached its end is replaced before it is handed out.
+    public var keyPair: KeyPair { lock.withLock { tick(); return pair } }
+    public var publicKey: PublicKey { lock.withLock { tick(); return pair.publicKey } }
     public var made: Date { lock.withLock { file.made } }
     public var lifetime: Double { lock.withLock { file.lifetime } }
     /// Seconds this Mac's key has left.
@@ -298,7 +299,8 @@ public final class Trust: @unchecked Sendable {
                 DropLog.write("identity: \(k.name)'s key \(k.key.tag) reached its end date; it needs pairing again")
             }
             let before = file.again.count
-            file.again.removeAll { !current($0.endsElapsed, $0.endsWall) }
+            let elapsed = file.elapsed
+            file.again.removeAll { !(elapsed < $0.endsElapsed && wall < $0.endsWall) }
             if file.again.count != before { changed = true }
             if changed || file.elapsed - lastSave > 3600 { save() }
         }

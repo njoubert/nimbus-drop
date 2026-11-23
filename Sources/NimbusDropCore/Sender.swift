@@ -598,13 +598,11 @@ public final class SendSession: Transfer, @unchecked Sendable {
                     throw e
                 }
             }
-            let header = RecordHeader(file: UInt32(file), chunk: UInt32(chunk), length: UInt32(length)).bytes
-            let sealedHeader = try cipher.seal(header)
-            let body = try cipher.seal(bytes: buffer, count: length, ad: header)
+            let record = try RecordHeader.seal(&cipher, file: UInt32(file), chunk: UInt32(chunk), bytes: buffer, count: length)
             sealedBytes += Int64(length)
             // Progress counts the chunk's own bytes, not the 44 around them.
             var skip = RecordHeader.sealedSize, left = length
-            try socket.writeAll(sealedHeader, body.ciphertext, body.tag, slice: 256 << 10) { [self] n in
+            try socket.writeAll(record.header, record.ciphertext, record.tag, slice: 256 << 10) { [self] n in
                 lock.withLock { stream.lastProgress = Date() }
                 var n = n
                 let s = min(skip, n)
@@ -618,7 +616,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
             if chunk == manifest.chunkCount(file) - 1 { update { $0.doneFiles += 1 } }
         }
         if isOver { return false }
-        let end = try cipher.seal(RecordHeader(file: RecordHeader.endMarker, chunk: 0, length: 0).bytes)
+        let end = try RecordHeader.sealEnd(&cipher)
         try end.withUnsafeBytes { try socket.writeAll($0.baseAddress!, end.count) }
         return spent
     }

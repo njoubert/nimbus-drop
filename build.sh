@@ -36,7 +36,7 @@ BUNDLE_ID=com.njoubert.nimbusdrop
 # (Launch Constraint Violation, 2026-10-11).
 DEV_BUNDLE_ID=$BUNDLE_ID.dev
 DEV_APP_NAME="$APP_NAME Dev"
-VERSION=0.1.0
+VERSION=0.2.0
 INSTALL_DIR=/Applications
 INSTALLED="$INSTALL_DIR/$APP_NAME.app"
 DEV_APP="dist/debug/$DEV_APP_NAME.app"
@@ -90,6 +90,14 @@ make_bundle() {
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSServices</key>
+  <array><dict>
+    <key>NSMenuItem</key><dict><key>default</key><string>$name To…</string></dict>
+    <key>NSMessage</key><string>dropService</string>
+    <key>NSPortName</key><string>$name</string>
+    <key>NSSendFileTypes</key><array><string>public.item</string></array>
+    <key>NSRequiredContext</key><dict/>
+  </dict></array>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Nimbus Drop finds other Macs running Nimbus Drop on your local network, and sends files to them and receives files from them over it.</string>
   <key>NSBonjourServices</key>
@@ -363,7 +371,7 @@ case "$cmd" in
     ;;
 
   uninstall)
-    rm -rf "$HOME/Library/Caches/$BUNDLE_ID"
+    rm -rf "$HOME/Library/Caches/$BUNDLE_ID" "$HOME/Library/Application Support/$BUNDLE_ID"
     rm -rf "$INSTALL_DIR/.$NAME-old.app" "$INSTALL_DIR/.$NAME-update.app"
     if [ -e "$INSTALLED" ]; then
       stop_all

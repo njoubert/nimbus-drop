@@ -16,6 +16,9 @@ import NimbusUpdater
 //   --dump-bar PATH         render the status item's states to PATH (a strip), exit
 //   --dump-window PATH      render the window with made-up Macs and drops to PATH (+ -light, -empty), exit
 //   --crowd N               with --dump-window: N made-up destinations, at the default size and a wide one
+//   --dump-kinds PATH       render the "which kinds of file?" sheet to PATH, exit
+//   --dump-settings PATH    render the Settings window to PATH, exit
+//   --dump-history PATH     render the History window with a made-up history to PATH, exit
 //   --dump-offer PATH       render the "do you want this drop?" panel to PATH, exit
 //   --show-window           open the window at launch (the app otherwise starts in the menu bar only)
 //
@@ -28,6 +31,7 @@ import NimbusUpdater
 //   --name NAME             the name to go by (and a separate identity) for --receive / --send
 //   --port N                the port to listen on / connect to (default 47823)
 //   --streams N             parallel connections for --send
+//   --only jpg,cr3          with --send (before it): only these kinds of file
 //   --print                 this Mac's name, addresses and settings; exit
 //   --check-update          what the updater sees on GitHub; exit
 //   --preflight APP.app     the release checks build.sh release runs; exit
@@ -86,6 +90,9 @@ while !args.isEmpty {
     case "--signed": dmgSigned = true
     case "--dump-bar": dumpBarPath = takeValue(a)
     case "--dump-window": dumpWindowPath = takeValue(a)
+    case "--dump-kinds": let v = takeValue(a); exit(MainActor.assumeIsolated { MainWindowController.dumpKinds(to: v) ? 0 : 1 })
+    case "--dump-settings": let v = takeValue(a); exit(MainActor.assumeIsolated { SettingsWindowController.dump(to: v) ? 0 : 1 })
+    case "--dump-history": let v = takeValue(a); exit(MainActor.assumeIsolated { HistoryWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-offer": let v = takeValue(a); exit(MainActor.assumeIsolated { OfferPanel.dump(to: v) ? 0 : 1 })
     case "--crowd": dumpCrowd = Int(takeValue(a)) ?? 0
     case "--show-window": showWindowAtLaunch = true
@@ -104,6 +111,7 @@ while !args.isEmpty {
     case "--watch-peers": cli = .watchPeers
     case "--name": let v = takeValue(a); MainActor.assumeIsolated { CLI.name = v }
     case "--port": let v = UInt16(takeValue(a)); MainActor.assumeIsolated { CLI.port = v }
+    case "--only": let v = takeValue(a).split(separator: ",").map { String($0).replacingOccurrences(of: ".", with: "") }; MainActor.assumeIsolated { CLI.only = v }
     case "--streams": let v = Int(takeValue(a)); MainActor.assumeIsolated { CLI.streams = v }
     case "--print": cli = .print
     case "--check-update": cli = .checkUpdate
@@ -142,6 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var updater: Updater?
     var window: MainWindowController?
     var menu: MainMenu!
+    var settings: SettingsWindowController?
+    var history: HistoryWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -169,6 +179,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater?.start()
         model.start()
 
+        // "Nimbus Drop To…" in Finder's Services menu (declared in the Info.plist build.sh
+        // writes). The port name is the bundle's name, which is also what the menu item says,
+        // so the development copy's service is its own and is told apart.
+        if let name = Bundle.main.infoDictionary?["CFBundleName"] as? String {
+            NSApp.servicesProvider = self
+            NSRegisterServicesProvider(self, name)
+            NSUpdateDynamicServices()
+        }
+
         // `build.sh install` registers with --enable-login-item; a drag-install from the disk
         // image has nobody to do that, so the first launch from /Applications registers instead.
         // Once only: turning it off later (menu, System Settings) sticks across updates.
@@ -193,6 +212,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window?.show()
     }
 
+    /// The Settings window (⌘,), made on first use and kept.
+    @objc func showSettings() {
+        if settings == nil { settings = SettingsWindowController(model: model, updater: updater) }
+        settings?.show()
+    }
+
+    /// Every drop that has ended; the main window keeps one for only a minute.
+    @objc func showHistory() {
+        if history == nil { history = HistoryWindowController(model: model) }
+        history?.show()
+    }
+
     /// The menu bar item: open the window, or close it when it is already in front.
     func toggleWindow() {
         if let window, window.isFront { window.close() } else { showWindow() }
@@ -201,6 +232,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func addByAddress() {
         showWindow()
         model.askingForAddress = true
+    }
+
+    /// The Services menu: files and folders selected in Finder (or anywhere else that offers
+    /// them). They are held in the window until a destination is clicked.
+    @objc func dropService(_ pboard: NSPasteboard, userData: String, error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        let urls = (pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        guard !urls.isEmpty else {
+            error.pointee = "Nimbus Drop can only send files and folders."
+            return
+        }
+        showWindow()
+        model.pendingURLs = urls
     }
 
     /// Clicking the Dock icon, or opening the app again while it runs.

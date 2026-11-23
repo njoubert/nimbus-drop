@@ -32,7 +32,8 @@
 
 ## What it does
 
-**The menu bar icon opens the window**, and the window is the app: there is no dropdown. A cloud
+**The menu bar icon opens the window**, and the window is the app. (A right-click on the icon
+gives a short menu: open, Receive Drops, Open at Login, quit.) A cloud
 with an arrow while receiving is on, a hollow cloud while it is off, a percentage beside it
 while a drop moves. The app has a Dock icon and its own menu only while the window is open.
 
@@ -44,10 +45,18 @@ with *Decline* and *Accept*. Accept, and a folder chooser asks where to save it,
 own panel and can be answered in any order. Turn
 receiving off and this Mac disappears from everyone's list.
 
-**Sending.** Under *Destinations on this LAN* every Mac found is a tile showing its host name
+**Sending.** Under *Destinations* every Mac found is a tile showing its host name
 and IP address. Drag a file, a folder, or a whole selection onto a tile, or click it and choose
 from a panel. Files dropped beside the tiles go to the destination if there is only one, and
 otherwise wait for you to click one. The other person accepts, and it goes.
+
+**From Finder:** select files or folders, right-click, *Services › Nimbus Drop To…*. The window
+opens holding them; click the destination.
+
+**Only some kinds of file.** If what you send holds more than one kind of file, you are asked
+which: each kind is listed with how many files and how big (`.jpg` and `.jpeg` count as one),
+all ticked. Press Return to send everything, or untick what should stay behind, to send just
+the JPEGs of a shoot, say. Folders keep their shape; folders left empty are not sent.
 
 **Add by Address…** is for when a Mac is not found on its own (Bonjour blocked, a different
 subnet, a VPN): type its IP address or host name, with `:port` if it is not 47823. It is asked
@@ -58,24 +67,45 @@ using and the time left, and lets you stop it. If connections were lost or damag
 caught along the way, it says how many. A received drop has a *Show in Finder* button. Both Macs
 get a notification when a drop finishes or stops, and neither sleeps while one is under way.
 
+**Finished drops clear themselves** from the window a minute after they end, failures too.
+*History* (right-click the menu bar icon, the Window menu, or Settings) keeps the record: what,
+to or from whom, when, how big, how it ended, with *Show in Finder* for what was received. It is
+a file on this Mac (`~/Library/Application Support/com.njoubert.nimbusdrop/history.json`, the
+last 500 drops), goes nowhere, and *Clear History* empties it.
+
 **Nothing is overwritten.** If `~/Downloads/Christmas 2026` already exists, the new one lands as
 `Christmas 2026 2`, the way Finder keeps both.
 
 **A bad network is ridden out.** A connection that drops, stalls or delivers a damaged chunk is
-replaced and what it did not deliver is sent again, on the same accepted drop, without asking
-anyone twice.
+replaced and what it did not deliver is sent again. If the whole link goes (the other Mac walks
+out of Wi-Fi range, changes networks, closes its lid for a moment), both sides hold the drop
+open for a minute: the sender keeps looking for the other Mac, at a new address if it has one,
+and carries on when it finds it. Nobody is asked twice.
 
-**An interrupted drop continues.** If the whole link goes, a lid closes, or someone quits, what
-arrived stays in a `….nimbusdrop-partial` folder in the destination. Send the same items again,
-save to the same folder, and only what is missing is sent. (If the files changed in between, it
-is a new drop and starts over.) A partial folder you no longer want can simply be deleted.
+**Retry.** A send that did not arrive has a *Retry* button. It carries on from what the first
+attempt delivered; the other person is asked to accept again.
+
+**An interrupted drop continues.** If the link stays down longer than that, or someone quits,
+what arrived stays in a `….nimbusdrop-partial` folder in the destination. Send the same items
+again, save to the same folder, and only what is missing is sent.
+
+**What becomes of a partial folder:**
+
+- It is removed when its drop completes: the finished items move out and the folder goes.
+- It is kept when a drop stops for any reason (failed, cancelled, the app quit), for as long as
+  you leave it there. Nothing deletes it for you and it never expires.
+- It is reused, not overwritten, when the same sender sends the same files (same names, sizes
+  and modification times) into the same folder again.
+- If the files changed in between, or a different selection or set of file kinds is sent, that
+  is a different drop: it gets a partial folder of its own and the old one stays.
+- A partial folder you no longer want can simply be deleted.
 
 **Versions.** Every copy announces its app version and its protocol version. A Mac that speaks a
 different protocol major shows as *Needs an update* and cannot be sent to; an offer from one is
-declined with both versions named. The bottom of the window shows this copy's.
+declined with both versions named. Settings shows this copy's.
 
-At the bottom of the window: the number of parallel connections, *Open at login*, and the
-version. The app menu has the same, plus updates.
+**Settings** (⌘, or right-click the menu bar icon): how many parallel connections a send uses,
+*Open at login*, the history, updates, and which version and protocol this copy is.
 
 ## How fast
 
@@ -98,7 +128,7 @@ to about 3 GB/s before the Macs themselves are the limit.
   47823 and takes any free one otherwise.
 - **A drop:** one control connection carries the offer, the answer, the manifest (every file,
   folder and symlink with size, time and mode) and the receiver's note of what it already has.
-  Then 8 parallel TCP connections (*Connections* at the bottom of the window: 1 to 16) carry the
+  Then 8 parallel TCP connections (*Parallel connections* in Settings: 1 to 16) carry the
   data in 4 MiB chunks. Every connection takes the next unsent chunk from one shared list, so a
   single huge file is spread across all of them and so is a folder of small ones.
 - **Checked end to end:** every chunk carries a CRC-32 over its header and its bytes, verified
@@ -113,7 +143,7 @@ to about 3 GB/s before the Macs themselves are the limit.
 - **Written where it belongs:** each chunk is written straight to its offset in its file
   (`pwrite`), so nothing is reassembled afterwards. Modification times and permissions are set
   at the end and the finished items are moved into place in one rename each.
-- **Versioned:** the protocol is 2.0. The first number changes when two copies could no longer
+- **Versioned:** the protocol is 2.1 (2.1 added reconnecting; it works with 2.0, without that). The first number changes when two copies could no longer
   exchange a drop, the second when something is added that an older copy can ignore.
 - **No encryption and no accounts,** by design: this is for a network you trust, and the
   safeguard is that a person at the receiving Mac approves every drop. Anyone on the same
@@ -133,7 +163,7 @@ Both Macs need Nimbus Drop running, Apple silicon and macOS 15 or later, on the 
 The first launch asks for **Local Network** access; allow it, or the Macs cannot see each other
 (System Settings › Privacy & Security › Local Network to change it later). Launched from
 `/Applications` it adds itself to Login Items once, so the Mac is ready to receive after a
-restart; turn that off at the bottom of the window (*Open at login*) or in System Settings.
+restart; turn that off in Settings (*Open at login*) or in System Settings.
 
 ## From the command line
 

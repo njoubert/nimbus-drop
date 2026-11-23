@@ -6,7 +6,7 @@ import NimbusUpdater
 
 /// The app's own menu bar, shown while the window is open. An LSUIElement app has none until it
 /// builds one, and without it ⌘W, ⌘Q and ⌘C do nothing. It also holds what a menu bar app would
-/// otherwise keep in a dropdown: updates, Open at Login, the number of connections.
+/// otherwise keep in a dropdown: Settings, updates, Receive Drops.
 @MainActor
 final class MainMenu: NSObject, NSMenuDelegate {
     private let model: AppModel
@@ -44,6 +44,8 @@ final class MainMenu: NSObject, NSMenuDelegate {
         let windowItem = NSMenuItem()
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        window.addItem(.separator())
+        window.addItem(withTitle: "Drop History", action: #selector(AppDelegate.showHistory), keyEquivalent: "y")
         windowItem.submenu = window
         main.addItem(windowItem)
         NSApp.mainMenu = main
@@ -65,28 +67,14 @@ final class MainMenu: NSObject, NSMenuDelegate {
         addUpdateItems()
         appMenu.addItem(.separator())
 
+        let settings = NSMenuItem(title: "Settings…", action: #selector(AppDelegate.showSettings), keyEquivalent: ",")
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+
         let receive = NSMenuItem(title: "Receive Drops", action: #selector(toggleReceiving), keyEquivalent: "r")
         receive.target = self
         receive.state = model.receiving ? .on : .off
         appMenu.addItem(receive)
-
-        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
-        login.target = self
-        login.state = LoginItem.isEnabled ? .on : .off
-        login.isEnabled = Bundle.main.bundleIdentifier != nil
-        appMenu.addItem(login)
-
-        let streams = NSMenuItem(title: "Parallel Connections", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        for n in Settings.streamChoices {
-            let it = NSMenuItem(title: n == Settings.defaultStreams ? "\(n) (default)" : "\(n)", action: #selector(setStreams(_:)), keyEquivalent: "")
-            it.target = self
-            it.tag = n
-            it.state = Settings.streams == n ? .on : .off
-            sub.addItem(it)
-        }
-        streams.submenu = sub
-        appMenu.addItem(streams)
 
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Nimbus Drop", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
@@ -94,8 +82,6 @@ final class MainMenu: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleReceiving() { model.setReceiving(!model.receiving) }
-    @objc private func toggleLoginItem() { model.setOpenAtLogin(!LoginItem.isEnabled) }
-    @objc private func setStreams(_ sender: NSMenuItem) { model.setStreams(sender.tag) }
     @objc private func copyVersion() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(StatusBarController.versionString(), forType: .string)

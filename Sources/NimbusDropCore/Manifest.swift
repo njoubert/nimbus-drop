@@ -7,10 +7,10 @@ import zlib
 
 /// Everything in a drop: every folder, file and symlink with its size, time and mode. Folders
 /// come before what they hold.
-public struct Manifest: Codable, Equatable {
-    public enum Kind: Int, Codable { case file = 0, directory = 1, symlink = 2 }
+public struct Manifest: Codable, Equatable, Sendable {
+    public enum Kind: Int, Codable, Sendable { case file = 0, directory = 1, symlink = 2 }
 
-    public struct Entry: Codable, Equatable {
+    public struct Entry: Codable, Equatable, Sendable {
         /// Relative, `/`-separated, starting with the top-level item's name.
         public var path: String
         public var kind: Kind
@@ -93,10 +93,15 @@ public struct Manifest: Codable, Equatable {
 }
 
 /// A manifest and where each of its entries lives on the sending Mac.
-public struct ScannedDrop {
+public struct ScannedDrop: Sendable {
     public var manifest: Manifest
     /// Absolute source path per entry.
     public var sources: [String]
+
+    public init(manifest: Manifest, sources: [String]) {
+        self.manifest = manifest
+        self.sources = sources
+    }
 }
 
 public enum Scanner {

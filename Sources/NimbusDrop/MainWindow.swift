@@ -51,27 +51,41 @@ struct MainView: View {
                 // As tall as its drops, and no taller than about three of them.
                 .frame(height: min(max(dropsHeight, 40), 250))
             }
-            Divider()
-            footer
+            // The few settings live in the Settings window. All that shows here is an update
+            // that is downloaded and waiting.
+            if let version = model.updateReady {
+                Divider()
+                HStack {
+                    Text("Nimbus Drop \(version) is ready to install.").font(.callout)
+                    Spacer()
+                    Button("Install and Relaunch") { model.installUpdate?() }.controlSize(.small)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 8)
+            }
         }
-        .frame(minWidth: 500, idealWidth: 560, minHeight: 360, idealHeight: 470)
+        .frame(minWidth: 500, idealWidth: 560, minHeight: 360, idealHeight: 480)
         .tint(Palette.send)
+        .sheet(item: $model.kindQuestion) { KindSheet(question: $0, model: model).tint(Palette.send) }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "laptopcomputer")
-                .font(.system(size: 26)).foregroundStyle(.secondary).frame(width: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.identity.name).font(.headline)
-                Text(model.addresses.isEmpty ? "No network" : model.addresses.map(\.address).joined(separator: "  ·  "))
-                    .font(.system(.subheadline, design: .monospaced)).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("This computer").font(.title3.weight(.semibold))
+                Spacer()
                 Toggle("Receive drops", isOn: Binding(get: { model.receiving }, set: { model.setReceiving($0) }))
                     .toggleStyle(.switch).tint(Palette.receive)
+            }
+            HStack(spacing: 12) {
+                Image(systemName: "laptopcomputer")
+                    .font(.system(size: 24)).foregroundStyle(.secondary).frame(width: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.identity.name).font(.headline)
+                    Text(model.addresses.isEmpty ? "No network" : model.addresses.map(\.address).joined(separator: "  ·  "))
+                        .font(.system(.subheadline, design: .monospaced)).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
                 // Said only when it is off, which is the state that explains a surprise.
                 if !model.receiving {
                     Text("Hidden: nobody can send to this Mac").font(.caption).foregroundStyle(.secondary)
@@ -84,7 +98,7 @@ struct MainView: View {
     private var destinations: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Destinations on this LAN").font(.title3.weight(.semibold))
+                Text("Destinations").font(.title3.weight(.semibold))
                 Spacer()
                 Picker("View", selection: $model.listLayout) {
                     Image(systemName: "square.grid.2x2").tag(false).help("Tiles")
@@ -97,6 +111,9 @@ struct MainView: View {
                     .help("Add a Mac by its IP address or host name, for when it is not found on its own.")
             }
             if model.askingForAddress { addressField }
+            if let reading = model.scanning {
+                HStack(spacing: 8) { ProgressView().controlSize(.small); Text(reading).font(.callout).foregroundStyle(.secondary) }
+            }
             if !model.pendingURLs.isEmpty {
                 HStack {
                     Text("Click a destination to send \(model.pendingURLs.count == 1 ? "“\(model.pendingURLs[0].lastPathComponent)”" : "\(model.pendingURLs.count) items").")
@@ -172,26 +189,6 @@ struct MainView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.4)))
         }
     }
-
-    private var footer: some View {
-        HStack(spacing: 14) {
-            Picker("Connections", selection: Binding(get: { model.streams }, set: { model.setStreams($0) })) {
-                ForEach(Settings.streamChoices, id: \.self) { Text("\($0)").tag($0) }
-            }
-            .fixedSize()
-            .help("How many parallel connections a drop you send is spread over. More helps on fast wired networks and with many small files.")
-            Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
-                .disabled(Bundle.main.bundleIdentifier == nil)
-            Spacer()
-            if let version = model.updateReady {
-                Button("Install Update \(version)") { model.installUpdate?() }.controlSize(.small)
-            }
-            Text(StatusBarController.versionString())
-                .font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)
-        }
-        .controlSize(.small)
-        .padding(.horizontal, 20).padding(.vertical, 9)
-    }
 }
 
 private struct HeightKey: PreferenceKey {
@@ -259,6 +256,72 @@ private struct PeerTile: View {
     }
 }
 
+/// "Which kinds of file do you want to send?" Everything is ticked to begin with, so Return
+/// sends it all; untick to narrow it. Shown only for a drop that holds more than one kind.
+private struct KindSheet: View {
+    let question: KindQuestion
+    let model: AppModel
+    @State private var chosen: Set<String>
+
+    init(question: KindQuestion, model: AppModel) {
+        self.question = question
+        self.model = model
+        _chosen = State(initialValue: Set(question.kinds.map(\.id)))
+    }
+
+    private var all: Bool { chosen.count == question.kinds.count }
+    private var files: Int { question.kinds.filter { chosen.contains($0.id) }.reduce(0) { $0 + $1.files } }
+    private var bytes: Int64 { question.kinds.filter { chosen.contains($0.id) }.reduce(0) { $0 + $1.bytes } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Send “\(question.title)” to \(question.peer.name)").font(.headline)
+            Text("It holds \(question.kinds.count) kinds of file. Send everything, or untick what should stay behind.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(question.kinds.enumerated()), id: \.element.id) { index, kind in
+                        if index > 0 { Divider() }
+                        Toggle(isOn: Binding(get: { chosen.contains(kind.id) },
+                                             set: { if $0 { chosen.insert(kind.id) } else { chosen.remove(kind.id) } })) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(kind.label)
+                                    if !kind.extensions.isEmpty {
+                                        Text(kind.extensions.map { "." + $0 }.joined(separator: "  "))
+                                            .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Text("\(Format.files(kind.files)) · \(Format.bytes(kind.bytes))")
+                                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            .padding(.leading, 4)
+                        }
+                        .toggleStyle(.checkbox)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+            HStack {
+                Button(all ? "Untick All" : "Tick All") { chosen = all ? [] : Set(question.kinds.map(\.id)) }
+                    .controlSize(.small)
+                Spacer()
+                Button("Cancel") { model.answer(question, kinds: nil, send: false) }.keyboardShortcut(.cancelAction)
+                // Always with what is about to go: the size is the thing being decided.
+                Button(all ? "Send All (\(Format.bytes(bytes)))" : "Send \(Format.files(files)) (\(Format.bytes(bytes)))") {
+                    model.answer(question, kinds: all ? nil : chosen, send: true)
+                }
+                .keyboardShortcut(.defaultAction).disabled(chosen.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
 /// One destination as a line in the compact list: the same drop target and button as a tile.
 private struct PeerRow: View {
     let peer: Peer
@@ -318,6 +381,7 @@ private struct PeerRow: View {
 private struct DropRow: View {
     let row: TransferRow
     let model: AppModel
+    @State private var hovered = false
     /// Blue going out, green coming in, as in the icon.
     private var colour: Color { row.direction == .send ? Palette.send : Palette.receive }
 
@@ -346,6 +410,10 @@ private struct DropRow: View {
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            if row.canRetry {
+                Button { model.retry(row.id) } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                    .controlSize(.small).help("Send it again to \(row.peerName). It carries on from what already arrived.")
+            }
             if row.canReveal {
                 Button { model.reveal(row.id) } label: { Image(systemName: "magnifyingglass.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Show in Finder")
@@ -355,6 +423,12 @@ private struct DropRow: View {
         }
         .font(.system(size: 13))
         .padding(.horizontal, 12).padding(.vertical, 10)
+        // A received drop: the whole card opens where it was saved, not only the magnifier.
+        .background(row.canReveal && hovered ? AnyShapeStyle(.quaternary.opacity(0.6)) : AnyShapeStyle(.clear))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture { if row.canReveal { model.reveal(row.id) } }
+        .help(row.canReveal ? "Click to show it in Finder" : "")
     }
 }
 
@@ -371,9 +445,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         // Room for two rows of destinations with no drops showing; the person's own size and
         // place are remembered from then on.
-        window.setContentSize(NSSize(width: 560, height: 470))
+        window.setContentSize(NSSize(width: 560, height: 480))
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("NimbusDropMain2")
+        window.setFrameAutosaveName("NimbusDropMain4")
         if window.frame.origin == .zero { window.center() }
         window.delegate = self
     }
@@ -392,6 +466,30 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { NSApp.setActivationPolicy(.accessory) }
 
     // MARK: Layout check
+
+    /// The "which kinds of file?" sheet with a made-up shoot, as a PNG.
+    static func dumpKinds(to path: String) -> Bool {
+        _ = NSApplication.shared
+        let kinds = [FileKind(id: "raw", label: "Canon raw image", extensions: ["cr3"], files: 612, bytes: 21_400_000_000),
+                     FileKind(id: "public.jpeg", label: "JPEG image", extensions: ["jpeg", "jpg"], files: 1180, bytes: 9_200_000_000),
+                     FileKind(id: "public.mpeg-4", label: "MPEG-4 movie", extensions: ["mp4"], files: 4, bytes: 610_000_000),
+                     FileKind(id: "ext:xmp", label: "XMP file", extensions: ["xmp"], files: 612, bytes: 4_100_000),
+                     FileKind(id: "none", label: "Files with no extension", extensions: [], files: 3, bytes: 18_000)]
+        let q = KindQuestion(urls: [], peer: Peer(id: "1", name: "macbookairm4"), scanned: ScannedDrop(manifest: Manifest(chunkSize: 4096, entries: []), sources: []),
+                             kinds: kinds, title: "Christmas 2026")
+        let model = AppModel(demoPeers: [], manual: [], rows: [])
+        let host = NSHostingView(rootView: KindSheet(question: q, model: model).tint(Palette.send).background(Color(nsColor: .windowBackgroundColor)))
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return false }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        do { try rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path)) } catch { return false }
+        print("wrote \(path)")
+        return true
+    }
 
     /// The window with `count` made-up destinations and one drop, at its default size and at a
     /// wide one: how the grid copes with a busy network.
@@ -447,7 +545,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             TransferRow(id: UUID(), direction: .receive, peerName: "macbookairm4", peerAddress: "192.168.1.52", title: "Scans",
                         status: "1,204 files, 8.40 GB in 1:13 · 918 Mbps\n1 connection lost, 1 damaged chunk caught; re-sent", fraction: 1, isActive: false, isIndeterminate: false, failed: false, canReveal: true),
             TransferRow(id: UUID(), direction: .send, peerName: "macbookairm4", peerAddress: "192.168.1.52", title: "Backups",
-                        status: "macbookairm4 stopped responding; send the drop again to continue it", fraction: 0.2, isActive: false, isIndeterminate: false, failed: true, canReveal: false),
+                        status: "Lost the connection to macbookairm4 and could not get it back; send the drop again to continue it", fraction: 0.2, isActive: false, isIndeterminate: false, failed: true, canReveal: false, canRetry: true),
         ]
         let base = path.hasSuffix(".png") ? String(path.dropLast(4)) : path
         var ok = true

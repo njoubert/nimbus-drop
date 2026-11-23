@@ -23,6 +23,8 @@ enum CLI {
     static var port: UInt16?
     static var streams: Int?
     static var advertise = true
+    /// Set by `--only`: the extensions to send.
+    static var only: [String]?
 
     static var identity: Identity {
         var i = Settings.identity
@@ -95,8 +97,18 @@ enum CLI {
                     host = a; hostPort = p
                 }
             }
+            var prescanned: ScannedDrop?
+            if let only {
+                // --only jpg,cr3: the kinds those extensions belong to (so jpg brings .jpeg too).
+                guard let scanned = try? Scanner.scan(urls) else { fputs("cannot read what was given\n", stderr); return 1 }
+                let wanted = Set(only.map { FileKinds.id(forPath: "x." + $0.lowercased()) })
+                prescanned = scanned.keeping(kinds: wanted)
+                for kind in FileKinds.summarize(scanned.manifest) {
+                    Swift.print("\(wanted.contains(kind.id) ? "send" : "skip")  \(kind.label) \(kind.extensions.map { "." + $0 }.joined(separator: " "))  \(Format.files(kind.files)), \(Format.bytes(kind.bytes))")
+                }
+            }
             let session = SendSession(urls: urls, host: host, port: hostPort, peerName: peerName, identity: identity,
-                                      streams: streams ?? Settings.streams)
+                                      streams: streams ?? Settings.streams, prescanned: prescanned)
             session.start()
             return watch(session)
 
@@ -180,6 +192,7 @@ enum CLI {
             let moved = p.totalBytes - p.resumedBytes
             let trouble = t.stats
             Swift.print("done: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(moved) / seconds)) (\(Format.rate(Double(moved) / seconds)))"
+                + (trouble.reconnects > 0 ? "; reconnected \(trouble.reconnects) time\(trouble.reconnects == 1 ? "" : "s")" : "")
                 + (trouble.connectionFailures > 0 ? "; got past \(trouble.connectionFailures) lost connections\(trouble.damagedChunks > 0 ? " (\(trouble.damagedChunks) for damaged chunks)" : "") in \(trouble.rounds) rounds" : ""))
             return 0
         case .declined(let why): Swift.print("declined: \(why)"); return 3

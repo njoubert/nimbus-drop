@@ -19,9 +19,21 @@ struct TransferRow: Identifiable, Equatable {
     var isIndeterminate: Bool
     var failed: Bool
     var canReveal: Bool
+    /// A send that ended without arriving, and can be sent again to the same Mac.
+    var canRetry = false
 
     /// "Christmas 2026 → macbookair" / "Christmas 2026 ← macstudio".
     var headline: String { "\(title) \(direction == .send ? "→" : "←") \(peerName)" }
+}
+
+/// "Which kinds of file do you want to send?": a drop that has been read and holds several.
+struct KindQuestion: Identifiable {
+    let id = UUID()
+    var urls: [URL]
+    var peer: Peer
+    var scanned: ScannedDrop
+    var kinds: [FileKind]
+    var title: String
 }
 
 /// Everything the app knows: who is nearby, what is moving, whether this Mac is receiving.
@@ -46,6 +58,15 @@ final class AppModel: ObservableObject {
     /// "0.2.0", when the updater has that version downloaded and ready to install.
     @Published var updateReady: String?
     var installUpdate: (() -> Void)?
+    /// Files are being read before a send: "Reading “Christmas 2026”…".
+    @Published var scanning: String?
+    /// A drop with several kinds of file, waiting for the person to say which to send.
+    @Published var kindQuestion: KindQuestion?
+    /// Every drop that has ended, newest first, kept across launches.
+    @Published var history: [HistoryEntry] = []
+    private var historyStore: HistoryStore?
+    /// A finished drop leaves the window this long after it ended; the History window keeps it.
+    static let lingerSeconds: Double = 60
     /// The "add by address" field is showing.
     @Published var askingForAddress = false
 
@@ -63,6 +84,9 @@ final class AppModel: ObservableObject {
     private var advertiser: Advertiser?
     private var browser: PeerBrowser?
     private var transfers: [Transfer] = []
+    /// What each send was sending and to whom, for Retry.
+    private var sends: [UUID: (urls: [URL], peer: Peer, kinds: Set<String>?)] = [:]
+    private var scanTicket: UUID?
     private var meters: [UUID: RateMeter] = [:]
     private var announced = Set<UUID>()
     private var timer: Timer?
@@ -107,6 +131,11 @@ final class AppModel: ObservableObject {
         }
         b.start()
         browser = b
+        // Beside the preferences, under the bundle's own name, so the development copy keeps its own.
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "NimbusDrop", isDirectory: true)
+        historyStore = HistoryStore(url: support.appendingPathComponent("history.json"))
+        history = historyStore?.entries ?? []
         manual = Settings.manualDestinations.map(Self.placeholder)
         probeManual()
         applyReceiving()
@@ -171,14 +200,55 @@ final class AppModel: ObservableObject {
 
     // MARK: Sending
 
-    func send(_ urls: [URL], to peer: Peer) {
-        guard live, !urls.isEmpty, let browser else { return }
+    /// Sends files and folders to a Mac. They are read first; if they hold more than one kind of
+    /// file the person is asked which kinds to send (`kindQuestion`), unless `kinds` already says or `asking` is off (a retry).
+    func send(_ urls: [URL], to peer: Peer, kinds: Set<String>? = nil, asking: Bool = true) {
+        guard live, !urls.isEmpty else { return }
         pendingURLs = []
+        let name = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items"
+        scanning = "Reading “\(name)”…"
+        let ticket = UUID()
+        scanTicket = ticket
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try Scanner.scan(urls) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard self.scanTicket == ticket else { return }
+                    self.scanning = nil
+                    switch result {
+                    case .failure(let error):
+                        let alert = NSAlert()
+                        alert.messageText = "Cannot send “\(name)”"
+                        alert.informativeText = (error as? DropError)?.message ?? error.localizedDescription
+                        NSApp.activate(ignoringOtherApps: true)
+                        alert.runModal()
+                    case .success(let scanned):
+                        let found = FileKinds.summarize(scanned.manifest)
+                        if let kinds {
+                            self.deliver(urls, scanned.keeping(kinds: kinds), kinds: kinds, to: peer)
+                        } else if asking, found.count >= 2 {
+                            AppDelegate.shared?.showWindow()
+                            self.kindQuestion = KindQuestion(urls: urls, peer: peer, scanned: scanned, kinds: found, title: name)
+                        } else {
+                            self.deliver(urls, scanned, kinds: nil, to: peer)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The answer to `kindQuestion`: these kinds (nil: everything), or nothing at all.
+    func answer(_ question: KindQuestion, kinds: Set<String>?, send: Bool) {
+        kindQuestion = nil
+        guard send else { return }
+        deliver(question.urls, kinds.map { question.scanned.keeping(kinds: $0) } ?? question.scanned, kinds: kinds, to: question.peer)
+    }
+
+    private func deliver(_ urls: [URL], _ scanned: ScannedDrop, kinds: Set<String>?, to peer: Peer) {
+        guard let browser else { return }
         if peer.isManual, let address = peer.address {
-            let session = SendSession(urls: urls, host: address, port: peer.port ?? defaultPort, peerName: peer.name,
-                                      identity: identity, streams: Settings.streams)
-            add(session)
-            session.start()
+            begin(urls, scanned, kinds: kinds, to: peer, host: address, port: peer.port ?? defaultPort)
             return
         }
         // The other copy's port changes when it restarts, so look it up again each time.
@@ -193,12 +263,51 @@ final class AppModel: ObservableObject {
                     alert.runModal()
                     return
                 }
-                let session = SendSession(urls: urls, host: address, port: port, peerName: peer.name,
-                                          identity: self.identity, streams: Settings.streams)
-                self.add(session)
-                session.start()
+                self.begin(urls, scanned, kinds: kinds, to: peer, host: address, port: port)
             }
         }
+    }
+
+    private func begin(_ urls: [URL], _ scanned: ScannedDrop, kinds: Set<String>?, to peer: Peer, host: String, port: UInt16) {
+        let session = SendSession(urls: urls, host: host, port: port, peerName: peer.name,
+                                  identity: identity, streams: Settings.streams, prescanned: scanned)
+        if !peer.isManual {
+            // If the drop loses its connection, the engine asks where the Mac is now: one that
+            // changed networks comes back under another address, and Bonjour knows it.
+            let id = peer.id
+            session.relocate = { [weak self] in
+                let found = Located()
+                let done = DispatchSemaphore(value: 0)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let browser = self?.browser else { done.signal(); return }
+                        browser.resolve(id) { peer in
+                            if let a = peer?.address, let p = peer?.port { found.value = (a, p) }
+                            done.signal()
+                        }
+                    }
+                }
+                _ = done.wait(timeout: .now() + 6)
+                return found.value
+            }
+        }
+        sends[session.id] = (urls, peer, kinds)
+        add(session)
+        session.start()
+    }
+
+    /// Sends a drop that did not arrive once more, to the same Mac. What the first attempt
+    /// delivered is still there, so it carries on from it; the other person is asked again.
+    func retry(_ id: UUID) {
+        guard let again = sends[id], let old = transfers.first(where: { $0.id == id }), old.state.isFinal else { return }
+        transfers.removeAll { $0.id == id }
+        meters[id] = nil
+        sends[id] = nil
+        // The Mac as it is known now (its address may have changed), or as it was.
+        let peer = destinations.first { $0.id == again.peer.id } ?? again.peer
+        // The same kinds of file as before; the files are read again, in case they changed.
+        send(again.urls, to: peer, kinds: again.kinds, asking: false)
+        refresh()
     }
 
     /// The Open panel for "send to this Mac", from the menu or a click on a tile.
@@ -389,11 +498,13 @@ final class AppModel: ObservableObject {
         guard let t = transfers.first(where: { $0.id == id }), t.state.isFinal else { return }
         transfers.removeAll { $0.id == id }
         meters[id] = nil
+        sends[id] = nil
         refresh()
     }
 
     func clearFinished() {
         transfers.removeAll { $0.state.isFinal }
+        sends = sends.filter { id, _ in transfers.contains { $0.id == id } }
         refresh()
     }
 
@@ -413,24 +524,67 @@ final class AppModel: ObservableObject {
 
     private func refresh() {
         let now = Date()
+        for t in transfers where t.state.isFinal && announced.insert(t.id).inserted {
+            announce(t)
+            record(t)
+        }
+        // A drop that ended a minute ago has been seen; it leaves the window. History has it.
+        let stale = transfers.filter { t in t.finishedAt.map { now.timeIntervalSince($0) > Self.lingerSeconds } ?? false }
+        if !stale.isEmpty {
+            let ids = Set(stale.map(\.id))
+            transfers.removeAll { ids.contains($0.id) }
+            for id in ids { meters[id] = nil; sends[id] = nil }
+        }
         rows = transfers.map { row(for: $0, now: now) }
         let active = transfers.contains { !$0.state.isFinal }
 
-        // Poll while anything is moving; hold the Mac awake for as long.
-        if active, timer == nil {
-            let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
+        // Poll while anything is listed: quickly while it moves, once a second while finished
+        // drops wait out their minute. The Mac is held awake only while something moves.
+        let interval = active ? 0.25 : 1.0
+        if transfers.isEmpty {
+            timer?.invalidate()
+            timer = nil
+        } else if timer == nil || timer?.timeInterval != interval {
+            timer?.invalidate()
+            let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
             RunLoop.main.add(t, forMode: .common)
             timer = t
+        }
+        if active, activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
                                                              reason: "A drop is under way")
-        } else if !active, let t = timer {
-            t.invalidate()
-            timer = nil
-            if let a = activity { ProcessInfo.processInfo.endActivity(a) }
+        } else if !active, let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
             activity = nil
         }
-        for t in transfers where t.state.isFinal && announced.insert(t.id).inserted { announce(t) }
         onChange?()
+    }
+
+    /// Writes a drop that has ended into the history. An offer that was withdrawn before anyone
+    /// here answered it never became a drop, and is left out.
+    private func record(_ t: Transfer) {
+        let outcome: HistoryEntry.Outcome
+        var detail: String?
+        switch t.state {
+        case .completed: outcome = .completed
+        case .declined(let why): outcome = .declined; detail = why
+        case .failed(let why):
+            if t.direction == .receive, t.transferStartedAt == nil { return }
+            outcome = .failed; detail = why
+        case .cancelled: outcome = .cancelled
+        default: return
+        }
+        let p = t.progress
+        let seconds = t.transferStartedAt.map { (t.finishedAt ?? Date()).timeIntervalSince($0) }
+        historyStore?.add(HistoryEntry(date: t.finishedAt ?? Date(), sent: t.direction == .send, title: t.title, peerName: t.peerName,
+                                       peerAddress: t.peerAddress, files: p.totalFiles, bytes: p.totalBytes, seconds: seconds,
+                                       outcome: outcome, detail: detail, savedPaths: t.savedURLs.map(\.path)))
+        history = historyStore?.entries ?? []
+    }
+
+    func clearHistory() {
+        historyStore?.clear()
+        history = []
     }
 
     private func row(for t: Transfer, now: Date) -> TransferRow {
@@ -447,7 +601,12 @@ final class AppModel: ObservableObject {
             status = "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) · \(Format.bitRate(rate)) · \(Format.connections(p.connections))"
             if rate > 0 { status += " · \(Format.duration(Double(p.totalBytes - p.doneBytes) / rate)) left" }
             let trouble = t.stats
-            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 { status += "\n" + Self.troubleText(trouble) }
+            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 || trouble.reconnects > 0 { status += "\n" + Self.troubleText(trouble) }
+        case .reconnecting:
+            status = t.direction == .send ? "Lost the connection to \(t.peerName); trying to get it back…"
+                                          : "Lost the connection to \(t.peerName); waiting for it to come back…"
+            status += "\n\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) so far"
+            indeterminate = true
         case .finishing: status = "Finishing…"; indeterminate = true
         case .completed:
             let seconds = max(0.001, (t.finishedAt ?? now).timeIntervalSince(t.transferStartedAt ?? t.startedAt))
@@ -455,7 +614,7 @@ final class AppModel: ObservableObject {
             status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
             if p.resumedBytes > 0 { status += " · continued from \(Format.bytes(p.resumedBytes))" }
             let trouble = t.stats
-            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 { status += "\n" + Self.troubleText(trouble) }
+            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 || trouble.reconnects > 0 { status += "\n" + Self.troubleText(trouble) }
         case .declined(let why): status = why; failed = true
         case .failed(let why): status = why; failed = true
         case .cancelled: status = "Cancelled"; failed = true
@@ -463,16 +622,18 @@ final class AppModel: ObservableObject {
         return TransferRow(id: t.id, direction: t.direction, peerName: t.peerName, peerAddress: t.peerAddress, title: t.title,
                            status: status, fraction: state == .completed ? 1 : p.fraction, isActive: !state.isFinal,
                            isIndeterminate: indeterminate, failed: failed,
-                           canReveal: state == .completed && !t.savedURLs.isEmpty)
+                           canReveal: state == .completed && !t.savedURLs.isEmpty,
+                           canRetry: failed && sends[t.id] != nil)
     }
 
     /// "2 connections lost and 1 damaged chunk re-sent": what the drop got past.
     static func troubleText(_ s: TransferStats) -> String {
         var parts: [String] = []
         let lost = s.connectionFailures - s.damagedChunks
+        if s.reconnects > 0 { parts.append("reconnected \(s.reconnects == 1 ? "once" : "\(s.reconnects) times")") }
         if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") lost") }
         if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
-        return parts.joined(separator: ", ") + "; re-sent"
+        return parts.joined(separator: ", ") + (lost > 0 || s.damagedChunks > 0 ? "; re-sent" : "")
     }
 
     // MARK: Notifications
@@ -505,6 +666,16 @@ final class AppModel: ObservableObject {
             guard ok else { return }
             center.add(UNNotificationRequest(identifier: t.id.uuidString, content: content, trigger: nil))
         }
+    }
+}
+
+/// An answer carried from the main thread back to an engine thread.
+private final class Located: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: (host: String, port: UInt16)?
+    var value: (host: String, port: UInt16)? {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }
 

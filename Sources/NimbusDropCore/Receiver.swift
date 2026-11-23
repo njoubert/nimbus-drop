@@ -15,6 +15,8 @@ public final class DropListener: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
     private var sessions: [String: ReceiveSession] = [:]
+    private var holders: [String: ReceiveSession] = [:]
+    private var completed: [String: (answer: Complete, at: Date)] = [:]
 
     /// Listens on `preferredPort`, or on any free port when that one is taken (0 asks for any).
     public init(identity: Identity, preferredPort: UInt16 = defaultPort) throws {
@@ -58,6 +60,16 @@ public final class DropListener: @unchecked Sendable {
             session.run()
         case .hello:
             try? socket.send(.hello, Hello(name: identity.name, id: identity.id, version: protocolVersion, minor: protocolMinor, app: identity.appVersion))
+        case .resume:
+            guard let resume = try? decode(Attach.self, from: first.body) else { return }
+            // A drop that finished while its sender was out of reach: say so again.
+            if let done = lock.withLock({ completed[resume.token]?.answer }) {
+                try? socket.send(.complete, done)
+                return
+            }
+            guard let session = lock.withLock({ sessions[resume.token] }) else { return }
+            socket.setNoDelay()
+            session.resume(on: socket)
         case .attach:
             guard let attach = try? decode(Attach.self, from: first.body),
                   let session = lock.withLock({ sessions[attach.token] }) else { return }
@@ -67,7 +79,35 @@ public final class DropListener: @unchecked Sendable {
         }
     }
 
+    /// Keeps a finished drop's answer for a few minutes, for a sender whose connection was lost
+    /// before it heard.
+    func remember(completed token: String, _ answer: Complete) {
+        lock.withLock {
+            let now = Date()
+            completed = completed.filter { now.timeIntervalSince($0.value.at) < 300 }
+            completed[token] = (answer, now)
+        }
+    }
+
     func register(_ session: ReceiveSession, token: String) { lock.withLock { sessions[token] = session } }
+
+    /// One drop per partial folder. A sender that gave up and offered the same drop afresh must
+    /// not find an earlier session still holding the folder (waiting for a reconnect, say): the
+    /// earlier one is ended first.
+    func claim(_ partial: String, for session: ReceiveSession) {
+        let earlier = lock.withLock { () -> ReceiveSession? in
+            let e = holders[partial]
+            holders[partial] = session
+            return e === session ? nil : e
+        }
+        guard let earlier else { return }
+        earlier.fail(DropError("The sender started this drop again"))
+        earlier.waitUntilOver()
+    }
+
+    func release(_ partial: String, by session: ReceiveSession) {
+        lock.withLock { if holders[partial] === session { holders[partial] = nil } }
+    }
     func unregister(token: String) { lock.withLock { sessions[token] = nil } }
 }
 
@@ -88,7 +128,10 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// Called once if the sender gives up while this Mac is still deciding.
     public var onWithdrawn: (@Sendable () -> Void)?
 
-    private let control: Socket
+    /// The connection the conversation is on. Replaced when the sender reconnects.
+    private var control: Socket
+    /// A connection the sender has opened to pick the drop up again, waiting to be taken.
+    private var incoming: Socket?
     private weak var listener: DropListener?
     private let version: Int
 
@@ -103,6 +146,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private var active: [Socket] = []
     private var finished = 0
     private var roundStartBytes: Int64 = 0
+    private var conducted = false
 
     init(control: Socket, offer: Offer, listener: DropListener) {
         self.control = control
@@ -130,6 +174,80 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             // Tell the sender why, when it is still there to hear it.
             if !isOver { try? control.send(.error, Reason(message: (error as? DropError)?.message ?? error.localizedDescription)) }
             fail(error)
+        }
+        streams.lock()
+        conducted = true
+        streams.broadcast()
+        streams.unlock()
+    }
+
+    /// A long silence is treated as a lost connection (see `SendSession.silence`): the drop is
+    /// held open for the sender to come back to, rather than ended.
+    override func silence() {
+        guard ledger != nil, state == .transferring else { return super.silence() }
+        control.shutdown()
+    }
+
+    /// Returns once this session's own thread has finished with the drop.
+    func waitUntilOver() {
+        streams.lock()
+        let deadline = Date().addingTimeInterval(15)
+        while !conducted, streams.wait(until: deadline) {}
+        streams.unlock()
+    }
+
+    /// The sender has reconnected on `socket` and wants to carry on. Called on the listener's
+    /// thread; the session's own thread takes the connection from here. If that thread is still
+    /// listening on the old connection (the sender noticed the loss first), closing the old one
+    /// is what tells it.
+    func resume(on socket: Socket) {
+        streams.lock()
+        incoming?.shutdown()
+        incoming = socket
+        let old = control
+        streams.broadcast()
+        streams.unlock()
+        old.shutdown()
+    }
+
+    /// The control connection is gone. Holds the drop open for `Tuning.reconnectSeconds`, with
+    /// everything written so far kept, until the sender reconnects; then answers with what is
+    /// here. Throws when nobody comes.
+    private func awaitSender(token: String, after lost: Error) throws {
+        while true {
+            if isOver { throw lost }
+            setState(.reconnecting)
+            // Whatever is wrong with the old connection (gone, or it delivered a damaged
+            // message), it is finished: closing it is how the sender learns to reconnect.
+            control.shutdown()
+            streams.lock()
+            for s in active { s.shutdown() }
+            let deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+            while incoming == nil, !isOver, streams.wait(until: min(deadline, Date().addingTimeInterval(0.2))) || Date() < deadline {}
+            let fresh = incoming
+            incoming = nil
+            streams.unlock()
+            if isOver { throw lost }
+            guard let fresh else {
+                throw DropError("Lost the connection to \(peerName) and it did not come back; send the drop again to continue it")
+            }
+            replaceControl(control, with: fresh)
+            control = fresh
+            setPeerAddress(fresh.peerAddress)
+            // The old data connections are closing; let them finish before saying what is here.
+            streams.lock()
+            let settled = Date().addingTimeInterval(5)
+            while !active.isEmpty, streams.wait(until: settled) {}
+            streams.unlock()
+            let have = ledger.doneBytes
+            lock.withLock { roundStartBytes = have }
+            update { $0.doneBytes = have }
+            note { $0.reconnects += 1 }
+            do {
+                try control.send(.plan, ledger.plan(token: token))
+                setState(.transferring)
+                return
+            } catch { continue }   // lost again already: wait again
         }
     }
 
@@ -180,6 +298,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         let key = manifest.key(senderID: senderID)
         let label = String((manifest.topLevelNames.first ?? "Drop").prefix(80))
         let partial = destination.appendingPathComponent("\(label).\(key.prefix(12)).nimbusdrop-partial", isDirectory: true)
+        listener.claim(partial.path, for: self)
+        defer { listener.release(partial.path, by: self) }
         itemsRoot = partial.appendingPathComponent("items", isDirectory: true)
         do { try FileManager.default.createDirectory(at: itemsRoot, withIntermediateDirectories: true) }
         catch { throw DropError("Cannot write to \(destination.path): \(error.localizedDescription)") }
@@ -208,7 +328,13 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         // round delivers nothing.
         var idle = 0
         while true {
-            let next = try control.readFrame()
+            let next: (type: FrameType, body: Data)
+            do { next = try control.readFrame() } catch {
+                // The conversation's connection is gone. The drop was accepted and is partly
+                // here: wait for the sender to come back rather than ending it.
+                try awaitSender(token: token, after: error)
+                continue
+            }
             touch()
             if next.type == .error { throw DropError(try decode(Reason.self, from: next.body).message) }
             guard next.type == .done else { throw DropError("Unexpected message from \(peerName)") }
@@ -222,14 +348,20 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             let have = ledger.doneBytes
             lock.withLock { roundStartBytes = have }
             update { $0.doneBytes = have }
-            try control.send(.plan, ledger.plan(token: token))
+            do { try control.send(.plan, ledger.plan(token: token)) } catch {
+                try awaitSender(token: token, after: error)
+            }
         }
 
         setState(.finishing)
         let saved = try finalize(partial: partial, destination: destination)
         setSaved(saved)
         update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
-        try? control.send(.complete, Complete(saved: saved.map(\.lastPathComponent)))
+        let complete = Complete(saved: saved.map(\.lastPathComponent))
+        try? control.send(.complete, complete)
+        // A sender that lost the connection meanwhile will come back asking; it is told then.
+        listener.remember(completed: token, complete)
+        if let fresh = streams.withLock({ incoming }) { try? fresh.send(.complete, complete) }
         finish(.completed)
     }
 

@@ -15,9 +15,14 @@ final class DropTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("nimbusdrop-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // A receiver holds a drop open for a minute after losing its sender; not in these tests.
+        Tuning.reconnectSeconds = 2
     }
 
-    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+    override func tearDownWithError() throws {
+        Tuning.reconnectSeconds = 60
+        try? FileManager.default.removeItem(at: root)
+    }
 
     // MARK: Helpers
 
@@ -252,6 +257,99 @@ final class DropTests: XCTestCase {
         wait(s)
         guard case .failed(let why) = s.state else { return XCTFail("\(s.state)") }
         XCTAssertTrue(why.contains("Cannot connect"), why)
+    }
+
+    // MARK: Sending only some kinds of file
+
+    /// A shoot as it comes off a card: JPEGs under two spellings, raw files, sidecars, clutter.
+    func makeShoot() throws -> URL {
+        let fm = FileManager.default
+        let dir = root.appendingPathComponent("src/Shoot")
+        try fm.createDirectory(at: dir.appendingPathComponent("raw"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: dir.appendingPathComponent("notes/old"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: dir.appendingPathComponent("empty"), withIntermediateDirectories: true)
+        for i in 0..<5 { try bytes(3000 + i, seed: UInt64(i)).write(to: dir.appendingPathComponent("IMG_\(i).jpg")) }
+        try bytes(2000, seed: 50).write(to: dir.appendingPathComponent("scan.JPEG"))
+        for i in 0..<3 { try bytes(9000, seed: UInt64(60 + i)).write(to: dir.appendingPathComponent("raw/IMG_\(i).cr3")) }
+        for i in 0..<3 { try bytes(100, seed: UInt64(70 + i)).write(to: dir.appendingPathComponent("raw/IMG_\(i).xmp")) }
+        try bytes(40, seed: 80).write(to: dir.appendingPathComponent("notes/old/readme.txt"))
+        try bytes(10, seed: 81).write(to: dir.appendingPathComponent("notes/LICENSE"))
+        try bytes(10, seed: 82).write(to: dir.appendingPathComponent(".DS_Store"))
+        try bytes(10, seed: 83).write(to: dir.appendingPathComponent("odd.qzx9"))
+        try fm.createSymbolicLink(atPath: dir.appendingPathComponent("latest.jpg").path, withDestinationPath: "IMG_4.jpg")
+        return dir
+    }
+
+    func testTheKindsInADropAreCountedAndGrouped() throws {
+        let scanned = try Scanner.scan([try makeShoot()], chunkSize: chunk)
+        let kinds = FileKinds.summarize(scanned.manifest)
+        let by = Dictionary(uniqueKeysWithValues: kinds.map { ($0.id, $0) })
+        XCTAssertEqual(by["public.jpeg"]?.files, 6, ".jpg and .JPEG are one kind")
+        XCTAssertEqual(by["public.jpeg"]?.extensions, ["jpeg", "jpg"])
+        XCTAssertEqual(by["public.jpeg"]?.label, "JPEG image")
+        XCTAssertEqual(by["public.plain-text"]?.files, 1)
+        XCTAssertEqual(by["none"]?.files, 2, "LICENSE and .DS_Store have no extension")
+        XCTAssertEqual(by["ext:qzx9"]?.label, "QZX9 file", "an extension macOS does not know is a kind of its own")
+        XCTAssertEqual(by["symlink"]?.files, 1, "a link is a link, whatever its name ends in")
+        XCTAssertEqual(kinds.first?.extensions, ["cr3"], "the kind taking the most bytes comes first")
+        XCTAssertEqual(kinds.reduce(0) { $0 + $1.files }, scanned.manifest.entries.filter { $0.kind != .directory }.count)
+        XCTAssertEqual(kinds.reduce(0) { $0 + $1.bytes }, scanned.manifest.totalBytes)
+    }
+
+    func testOnlyTheChosenKindsAreSentAndFoldersKeepTheirShape() throws {
+        let src = try makeShoot()
+        let dst = try destination()
+        let l = try listen { $0.accept(destination: dst) }
+        defer { l.stop() }
+        let all = try Scanner.scan([src], chunkSize: chunk)
+        let raw = FileKinds.summarize(all.manifest).first { $0.extensions == ["cr3"] }!.id
+        let chosen = all.keeping(kinds: [raw, "public.plain-text"])
+        XCTAssertNoThrow(try chosen.manifest.validate())
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "receiver", identity: sender,
+                            chunkSize: chunk, prescanned: chosen)
+        s.start()
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertEqual(try snapshot(dst.appendingPathComponent("Shoot")).keys.sorted(),
+                       ["notes", "notes/old", "notes/old/readme.txt", "raw", "raw/IMG_0.cr3", "raw/IMG_1.cr3", "raw/IMG_2.cr3"],
+                       "the chosen files in their folders; no JPEGs, no sidecars, no folder left empty")
+        XCTAssertEqual(try Data(contentsOf: dst.appendingPathComponent("Shoot/raw/IMG_1.cr3")), try Data(contentsOf: src.appendingPathComponent("raw/IMG_1.cr3")))
+        XCTAssertEqual(s.progress.totalFiles, 4)
+    }
+
+    func testChoosingNothingThatIsThereSendsNothing() throws {
+        let scanned = try Scanner.scan([try makeShoot()], chunkSize: chunk)
+        XCTAssertTrue(scanned.keeping(kinds: ["public.png"]).manifest.entries.isEmpty)
+        let s = SendSession(urls: [], host: "127.0.0.1", port: 1, peerName: "nobody", identity: sender, prescanned: scanned.keeping(kinds: []))
+        s.start()
+        wait(s)
+        XCTAssertEqual(s.state, .failed("Nothing to send"))
+    }
+
+    // MARK: History
+
+    func testHistoryIsKeptNewestFirstCappedAndSurvivesABadFile() throws {
+        let url = root.appendingPathComponent("support/history.json")
+        var store = HistoryStore(url: url)
+        XCTAssertTrue(store.entries.isEmpty, "no file yet is an empty history")
+        func entry(_ n: Int) -> HistoryEntry {
+            HistoryEntry(date: Date(timeIntervalSince1970: Double(1_700_000_000 + n)), sent: n % 2 == 0, title: "drop \(n)", peerName: "air",
+                         peerAddress: "192.168.1.143", files: n, bytes: Int64(n) * 1000, seconds: 1.5, outcome: n == 3 ? .failed : .completed,
+                         detail: n == 3 ? "The connection closed" : nil, savedPaths: n % 2 == 0 ? [] : ["/tmp/drop \(n)"])
+        }
+        for n in 1...3 { store.add(entry(n)) }
+        let again = HistoryStore(url: url)
+        XCTAssertEqual(again.entries.map(\.title), ["drop 3", "drop 2", "drop 1"])
+        XCTAssertEqual(again.entries, store.entries, "what was written is what is read")
+
+        for n in 4...(HistoryStore.limit + 10) { store.add(entry(n)) }
+        XCTAssertEqual(HistoryStore(url: url).entries.count, HistoryStore.limit)
+        XCTAssertEqual(HistoryStore(url: url).entries.first?.title, "drop \(HistoryStore.limit + 10)")
+
+        store.clear()
+        XCTAssertTrue(HistoryStore(url: url).entries.isEmpty)
+        try Data("not json".utf8).write(to: url)
+        XCTAssertTrue(HistoryStore(url: url).entries.isEmpty, "a damaged file is an empty history, not a crash")
     }
 
     // MARK: Finding each other

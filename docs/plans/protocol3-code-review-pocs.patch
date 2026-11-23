@@ -1,0 +1,495 @@
+diff --git a/Tests/NimbusDropCoreTests/ReviewPoCTests.swift b/Tests/NimbusDropCoreTests/ReviewPoCTests.swift
+new file mode 100644
+index 0000000..3af6588
+--- /dev/null
++++ b/Tests/NimbusDropCoreTests/ReviewPoCTests.swift
+@@ -0,0 +1,489 @@
++// Copyright (C) 2026 Niels Joubert
++// SPDX-License-Identifier: GPL-3.0-or-later
++import Foundation
++import XCTest
++@testable import NimbusDropCore
++
++/// Phase 5 (review of the code against the plan), 2026-11-23, at d1863b8.
++///
++/// `testPoC…`: each states something the plan claims and FAILS on the code as reviewed; the
++/// finding it belongs to is named in its comment (docs: protocol3-code-review.md).
++/// `testFuzz…`: malformed input thrown at the parsers; these are expected to PASS (a trap in
++/// the listener would take the test process down with it).
++final class ReviewPoCTests: XCTestCase {
++    var root: URL!
++    let chunk = 16 * 1024
++    let day = 86400.0
++
++    override func setUpWithError() throws {
++        root = FileManager.default.temporaryDirectory.appendingPathComponent("nimbusdrop-review-\(UUID().uuidString)")
++        try FileManager.default.createDirectory(at: root.appendingPathComponent("dst"), withIntermediateDirectories: true)
++        Tuning.reconnectSeconds = 2
++    }
++
++    override func tearDownWithError() throws {
++        Tuning.reconnectSeconds = 60
++        Tuning.pairQuietSeconds = 10
++        Tuning.pairQuietLongest = 600
++        Tuning.strangerSeconds = 10
++        Tuning.attachSeconds = 5
++        Tuning.connectRetrySeconds = 30
++        try? FileManager.default.removeItem(at: root)
++    }
++
++    var dst: URL { root.appendingPathComponent("dst") }
++
++    func file(_ name: String, bytes: Int) throws -> URL {
++        let url = root.appendingPathComponent(name)
++        try Data((0..<bytes).map { UInt8(truncatingIfNeeded: $0 &* 31) }).write(to: url)
++        return url
++    }
++
++    func pairedMacs() throws -> (TestMac, TestMac) {
++        let (a, b) = Trust.paired("sender", "receiver")
++        let sender = try TestMac("sender", trust: a), receiver = try TestMac("receiver", trust: b)
++        let dst = dst
++        receiver.listener.onOffer = { [weak receiver] s in
++            receiver?.offers.withLock { $0.append(s) }
++            s.accept(destination: dst)
++        }
++        return (sender, receiver)
++    }
++
++    func send(_ urls: [URL], from: TestMac, to: TestMac, port: UInt16? = nil, expect: PublicKey? = nil, name: String? = nil) -> SendSession {
++        let s = SendSession(urls: urls, host: "127.0.0.1", port: port ?? to.port, peerName: name ?? to.identity.name, identity: from.identity, trust: from.trust,
++                            expect: expect, streams: 4, chunkSize: chunk)
++        s.start()
++        return s
++    }
++
++    func wait(_ t: Transfer, _ seconds: Double = 20) { _ = until(seconds) { t.state.isFinal } }
++
++    // MARK: Findings, as failing tests
++
++    /// F1. P11/P13: "anyone else ... cannot end the drop"; "every connection is held to the
++    /// budget of its class". The budget of the stranger class is one global pool: whoever fills
++    /// it keeps everyone else out, paired Macs included.
++    func testPoC_F1_SilentConnectionsDoNotKeepAPairedMacOut() throws {
++        let (sender, receiver) = try pairedMacs()
++        var held: [Socket] = []
++        for _ in 0..<Tuning.strangers { held.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)) }
++        Thread.sleep(forTimeInterval: 0.5)
++        let s = send([try file("a.bin", bytes: chunk * 4)], from: sender, to: receiver)
++        wait(s, 8)
++        XCTAssertEqual(s.state, .completed, "64 TCP connections that say nothing (renewed every 10 s) and no paired Mac can start a drop, attach a data connection, reconnect or be probed")
++        withExtendedLifetime(held) {}
++    }
++
++    /// F1, second pool. Sixteen strangers say "NDATA" and nothing more; the sender's own data
++    /// connections for the drop in progress are then closed unread.
++    func testPoC_F1_StrangersCannotTakeTheDataConnectionSlotsOfADrop() throws {
++        let (sender, receiver) = try pairedMacs()
++        let (c, _) = try Channel.dial(host: "127.0.0.1", port: receiver.port, trust: sender.trust, name: "sender", purpose: .drop)
++        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "f.bin", kind: .file, size: Int64(chunk * 3))])
++        try c.send(.offer, Offer(items: ["f.bin"], fileCount: 1, totalBytes: manifest.totalBytes))
++        XCTAssertEqual(try c.read().type, .accept)
++        try c.send(.manifest, manifest)
++        XCTAssertEqual(try c.read().type, .plan)
++
++        func knock() throws -> (Socket, Bool) {
++            let s = try Socket.connect(host: "127.0.0.1", port: receiver.port)
++            s.setReadTimeout(2)
++            try Opening.data.withUnsafeBytes { try s.writeAll($0.baseAddress!, 5) }
++            var challenge = Data(count: 16)
++            let got = (try? challenge.withUnsafeMutableBytes { try s.readExactly($0.baseAddress!, 16) }) != nil
++            return (s, got)
++        }
++        var held: [Socket] = []
++        for _ in 0..<Tuning.unattachedPerDrop { held.append(try knock().0) }
++        let real = try knock()
++        XCTAssertTrue(real.1, "the sender's data connection got no challenge: sixteen strangers hold every slot, for 5 s at a time, for as long as they like")
++        c.socket.shutdown()
++        withExtendedLifetime(held) {}
++    }
++
++    /// F2. P16 / Key expiry: "After its end date a key is refused ... and cannot be paired
++    /// again; the record of it is kept as a tombstone when the rest of its entry is dropped."
++    /// A key on the pair-again list is dropped at its end with no tombstone, and is New again.
++    func testPoC_F2_AKeyThatRunsOutOnThePairAgainListStaysRefused() throws {
++        let clock = FakeClock()
++        let trust = Trust.inMemory(clock: clock, lifetime: day)
++        let theirs = KeyPair().publicKey
++        try trust.store(pairing: theirs, announced: "air", method: "codes", remaining: 10 * day)
++        clock.pass(2 * day)
++        trust.tick()   // this Mac's own key ran out and was replaced: `theirs` waits to be paired again
++        guard case .renew = trust.standing(of: theirs) else { return XCTFail("\(trust.standing(of: theirs))") }
++        clock.pass(10 * day)
++        trust.tick()   // and now the deadline recorded for `theirs` has passed
++        XCTAssertFalse(trust.standing(of: theirs).mayPair, "a key past the deadline recorded for it is \(trust.standing(of: theirs)): it can be paired as a new Mac, for a fresh 90 days, and using it raises no alarm")
++        XCTAssertTrue(trust.tombstones.contains { $0.key == theirs })
++    }
++
++    /// F2, the same after Reset Identity (every Known Mac goes to the pair-again list).
++    func testPoC_F2_TheSameAfterAReset() throws {
++        let clock = FakeClock()
++        let trust = Trust.inMemory(clock: clock)
++        let theirs = KeyPair().publicKey
++        try trust.store(pairing: theirs, announced: "air", method: "codes", remaining: 10 * day)
++        _ = trust.beginReset()
++        trust.completeReset(told: [])
++        clock.pass(11 * day)
++        trust.tick()
++        XCTAssertFalse(trust.standing(of: theirs).mayPair, "\(trust.standing(of: theirs))")
++    }
++
++    /// F3. Key expiry says a calendar set forward "costs a renewal". In the code it costs every
++    /// pairing for good: each peer's key, still good on its own Mac, is tombstoned here, and
++    /// stays refused after the calendar is put right. Each of those Macs has to Reset Identity.
++    func testPoC_F3_ACalendarSetForwardOnceCostsARenewalAndNoMore() throws {
++        let clock = FakeClock()
++        let trust = Trust.inMemory(clock: clock)
++        let theirs = KeyPair().publicKey
++        try trust.store(pairing: theirs, announced: "air", method: "codes", remaining: 80 * day)
++        clock.setCalendar(by: 100 * day)    // a forged time server, for one tick
++        trust.tick()
++        clock.setCalendar(by: -100 * day)   // and the calendar is right again
++        trust.tick()
++        XCTAssertTrue(trust.standing(of: theirs).mayPair, "the other Mac's key has 80 days left by every honest clock, and is \(trust.standing(of: theirs)) here: it cannot be paired again until that Mac resets its identity")
++    }
++
++    /// F5. Pairing: "One pairing at a time on each Mac, in either role. A request arriving
++    /// meanwhile is answered busy." A stranger's request is put on screen beside this Mac's own
++    /// pairing in progress.
++    func testPoC_F5_NoRequestIsShownWhileThisMacIsItselfPairing() throws {
++        let a = try TestMac("a"), b = try TestMac("b"), stranger = try TestMac("b")
++        let mine = a.pair(with: b)   // b's person has not answered yet
++        XCTAssertTrue(until { mine.state == .asking })
++        let theirs = stranger.pair(with: a)
++        _ = until(3) { theirs.state.isFinal || !a.requests.withLock { $0.isEmpty } }
++        XCTAssertTrue(a.requests.withLock { $0.isEmpty }, "a request from a stranger calling itself “b” was shown while this Mac's person was in the middle of pairing with b")
++        mine.cancel()
++        theirs.cancel()
++    }
++
++    /// F6. Admission: an offer waits "until answered or withdrawn; the sender's key ending
++    /// withdraws it". P16: no Mac begins a drop with a key after the deadline it recorded.
++    func testPoC_F6_AnOfferStillWaitingWhenItsKeyEndsIsWithdrawn() throws {
++        let clock = FakeClock()
++        let a = Trust.inMemory(clock: clock), b = Trust.inMemory(clock: clock)
++        try a.store(pairing: b.publicKey, announced: "receiver", method: "codes", remaining: 90 * day)
++        try b.store(pairing: a.publicKey, announced: "sender", method: "codes", remaining: 3600)
++        let sender = try TestMac("sender", trust: a), receiver = try TestMac("receiver", trust: b)
++        let s = send([try file("late.txt", bytes: 10)], from: sender, to: receiver)
++        XCTAssertTrue(until { receiver.offers.withLock { $0.count == 1 } })
++        clock.pass(3700, calendar: 0)   // the sender's key runs out with the question still on screen
++        b.tick()
++        Thread.sleep(forTimeInterval: 0.3)
++        let offer = receiver.offers.withLock { $0[0] }
++        XCTAssertTrue(offer.state.isFinal, "the offer is still waiting (\(offer.state)) after the key that made it ran out")
++        offer.accept(destination: dst)
++        wait(s, 10)
++        XCTAssertNotEqual(s.state, .completed)
++        XCTAssertFalse(FileManager.default.fileExists(atPath: dst.appendingPathComponent("late.txt").path), "a drop began, and was delivered, under a key past its deadline")
++    }
++
++    /// F4. Ground rule: "nothing decides who a Mac is but the key it proved". The command
++    /// line's `--send NAME` looks NAME up in Bonjour and sends with no expected key, so the
++    /// drop goes to whichever paired Mac answers at the address that record gave. This is the
++    /// engine's half of that: `expect: nil`, and another paired Mac at the address.
++    func testPoC_F4_ADropAimedAtOneMacIsNotTakenByAnotherPairedMac() throws {
++        let a = Trust.inMemory(), b = Trust.inMemory(), c = Trust.inMemory()
++        a.adopt(b, as: "air"); b.adopt(a, as: "pro")
++        a.adopt(c, as: "mini"); c.adopt(a, as: "pro")
++        let sender = try TestMac("pro", trust: a), air = try TestMac("air", trust: b), mini = try TestMac("air", trust: c)   // the mini announces itself as "air"
++        let dst = dst
++        mini.listener.onOffer = { $0.accept(destination: dst) }
++        _ = air
++        // What CLI.locate + CLI.run(.send) do with "air" when the mini's record is the one found.
++        let s = send([try file("for-the-air.txt", bytes: 10)], from: sender, to: mini, expect: nil, name: "air")
++        wait(s, 10)
++        XCTAssertNotEqual(s.state, .completed, "sent to “air”; delivered to the Mac this one knows as “mini”")
++    }
++
++    /// F7. Withdrawing trust runs with the trust store's lock held, and for a sender it says a
++    /// last word on the control connection first (`SendSession.fail`). A paired Mac that has
++    /// stopped reading that connection, and then retires its own key, leaves the store locked
++    /// for good: no handshake, no tile, no window that asks who a key is ever gets an answer.
++    func testPoC_F7_APairedMacCannotLockTheTrustStoreByRetiringItselfMidDrop() throws {
++        let a = Trust.inMemory(), k = Trust.inMemory()
++        a.adopt(k, as: "hostile"); k.adopt(a, as: "victim")
++        let victim = try TestMac("victim", trust: a)
++        // The hostile Mac as a receiver: takes the offer, says yes, and never reads again.
++        let (fd, port) = try Socket.listen(port: 0)
++        defer { close(fd) }
++        let taken = Locked<Channel?>(nil)
++        Thread.detachNewThread {
++            let client = accept(fd, nil, nil)
++            guard client >= 0 else { return }
++            let socket = Socket(fd: client)
++            guard (try? Opening.readKind(socket)) == Opening.control, let c = try? Channel.respond(socket, keys: k.keyPair),
++                  (try? c.read()) != nil,
++                  (try? c.send(.hello, SecureHello(minor: 0, app: "x", name: "hostile", remaining: 90 * 86400, paired: true, purpose: nil))) != nil,
++                  (try? c.read()) != nil, (try? c.send(.accept, Empty())) != nil else { return }
++            taken.withLock { $0 = c }
++        }
++        // A drop whose manifest is more than the two socket buffers hold (a folder of 400,000 files).
++        let entries = [Manifest.Entry(path: "Photos", kind: .directory)]
++            + (0..<400_000).map { Manifest.Entry(path: "Photos/file-with-a-name-of-ordinary-length-\($0).jpeg", kind: .file, size: 0) }
++        let scanned = ScannedDrop(manifest: Manifest(chunkSize: chunk, entries: entries), sources: entries.map { _ in "/dev/null" })
++        let s = SendSession(urls: [], host: "127.0.0.1", port: port, peerName: "hostile", identity: victim.identity, trust: a, expect: k.publicKey,
++                            chunkSize: chunk, prescanned: scanned)
++        s.start()
++        XCTAssertTrue(until { taken.withLock { $0 != nil } })
++        Thread.sleep(forTimeInterval: 1.5)   // the manifest is on its way and going nowhere
++        XCTAssertFalse(s.state.isFinal)
++        // Now it retires its own key, as any paired key may.
++        Thread.detachNewThread {
++            guard let (c, _) = try? Channel.dial(host: "127.0.0.1", port: victim.port, trust: k, name: "hostile", purpose: .retire) else { return }
++            try? c.send(.retire, Empty())
++            _ = try? c.read()
++        }
++        Thread.sleep(forTimeInterval: 1.5)
++        let answered = Locked(false)
++        Thread.detachNewThread { _ = a.standing(of: KeyPair().publicKey); answered.withLock { $0 = true } }
++        XCTAssertTrue(until(5) { answered.withLock { $0 } }, "the trust store has not answered a question in 5 s: its lock is held by a thread writing to a socket nobody reads")
++        taken.withLock { $0?.socket.shutdown() }   // let everything go
++        _ = until(5) { answered.withLock { $0 } }
++    }
++
++    // MARK: Fuzzing
++
++    /// An initiator driven by hand below the level of `Channel`, so that what is sealed can be
++    /// anything at all.
++    final class RawPeer {
++        let socket: Socket
++        var out: CipherState
++        var back: CipherState
++        let master: Data
++        let h: Data
++
++        init(port: UInt16, keys: KeyPair) throws {
++            let socket = try Socket.connect(host: "127.0.0.1", port: port)
++            self.socket = socket
++            socket.setReadTimeout(2)
++            let mine = Opening.mine()
++            try mine.withUnsafeBytes { try socket.writeAll($0.baseAddress!, mine.count) }
++            guard try Opening.readKind(socket) == Opening.control else { throw DropError("not NDROP") }
++            let theirs = try Opening.readRest(socket)
++            let noise = Noise(initiator: true, prologue: Channel.prologue(initiator: mine, responder: theirs.bytes), s: keys)
++            try Channel.write(socket, try noise.write())
++            _ = try noise.read(try Channel.read(socket, limit: 1024))
++            try Channel.write(socket, try noise.write())
++            h = noise.h
++            (out, back, master) = try noise.split()
++        }
++
++        func plain(_ p: Data) throws { try Channel.write(socket, try out.seal(p)) }
++
++        func message(_ type: UInt8, _ body: Data, more: UInt8 = 0, total: UInt32? = nil) throws {
++            try plain(Data([type, more]) + Crypto.be32(total ?? UInt32(body.count)) + body)
++        }
++
++        func json<T: Encodable>(_ type: FrameType, _ value: T) throws { try message(type.rawValue, try JSONEncoder().encode(value)) }
++
++        func hello(_ purpose: Purpose?, paired: Bool = true) throws {
++            try json(.hello, SecureHello(minor: 0, app: "fuzz", name: "fuzz", remaining: 90 * 86400, paired: paired, purpose: purpose))
++            _ = try read()
++        }
++
++        func read() throws -> (type: UInt8, body: Data) {
++            let first = try back.open(try Channel.read(socket))
++            guard first.count >= 6 else { throw DropError("short") }
++            var body = Data(first.dropFirst(6)), more = first[1] & 1 == 1
++            while more {
++                let next = try back.open(try Channel.read(socket))
++                body.append(next.dropFirst(2))
++                more = next[1] & 1 == 1
++            }
++            return (first[0], body)
++        }
++    }
++
++    /// Bytes before any key is proved: openings, frame headers, handshake messages.
++    func testFuzz_OpeningsAndHandshakeFrames() throws {
++        Tuning.strangerSeconds = 1
++        let (sender, receiver) = try pairedMacs()
++        var rng = SystemRandomNumberGenerator()
++        func frame(_ body: Data, lie: Bool = false) -> Data {
++            let n = UInt16(body.count), c = lie ? n : ~n
++            return Data([UInt8(n >> 8), UInt8(n & 0xff), UInt8(c >> 8), UInt8(c & 0xff)]) + body
++        }
++        let sizes = [0, 1, 15, 16, 31, 32, 33, 47, 48, 63, 64, 79, 80, 95, 96, 97, 112, 500, 1023, 1024, 1025, 4000, 65535]
++        for i in 0..<600 {
++            guard let s = try? Socket.connect(host: "127.0.0.1", port: receiver.port) else { continue }
++            s.setReadTimeout(1)
++            var bytes = Data()
++            switch i % 6 {
++            case 0: bytes = Crypto.random(Int.random(in: 0...64, using: &rng))
++            case 1: bytes = Opening.control + Data([UInt8.random(in: 0...255, using: &rng)]) + Crypto.random(Int.random(in: 0...20, using: &rng))
++            case 2: bytes = Opening.mine() + frame(Crypto.random(sizes[i / 6 % sizes.count]), lie: i % 12 == 2)
++            case 3: bytes = Opening.data + Crypto.random(Int.random(in: 0...80, using: &rng))
++            case 4:
++                // A whole first message, then a third of every awkward length.
++                bytes = Opening.mine() + frame(Crypto.random(32) + Crypto.random(i % 24 == 4 ? 0 : 200))
++                try? bytes.withUnsafeBytes { try s.writeAll($0.baseAddress!, bytes.count) }
++                _ = try? Opening.readKind(s)
++                _ = try? Opening.readRest(s)
++                _ = try? Channel.read(s, limit: 2048)
++                bytes = frame(Crypto.random(sizes[i / 6 % sizes.count]))
++            default:
++                // A low-order point and a non-canonical one as the ephemeral key.
++                var e = Data(count: 32)
++                if i % 12 == 5 { e = Data(repeating: 0xff, count: 32) }
++                bytes = Opening.mine() + frame(e)
++            }
++            try? bytes.withUnsafeBytes { try s.writeAll($0.baseAddress!, bytes.count) }
++            if i % 3 == 0 { var b: UInt8 = 0; _ = try? s.readExactly(&b, 1) }
++            s.shutdown()
++            if i % 50 == 49 { Thread.sleep(forTimeInterval: 0.15) }   // stay under the arrival rate
++        }
++        Thread.sleep(forTimeInterval: 1.5)
++        let s = send([try file("after.bin", bytes: chunk * 3)], from: sender, to: receiver)
++        wait(s)
++        XCTAssertEqual(s.state, .completed, "after the junk the listener is alive and none of its slots leaked")
++    }
++
++    /// Sealed control messages from a key nobody paired, and from a paired one: fragments that
++    /// lie about themselves, JSON that is not what it should be.
++    func testFuzz_SealedMessagesAndFragments() throws {
++        Tuning.strangerSeconds = 2
++        Tuning.pairQuietSeconds = 0.001
++        Tuning.pairQuietLongest = 0.001
++        let (sender, receiver) = try pairedMacs()
++        receiver.onRequest = { $0.proceed() }
++        var rng = SystemRandomNumberGenerator()
++        let deep = Data(String(repeating: "[", count: 15000).utf8)
++        let jsons: [Data] = [
++            Data(), Data("{}".utf8), Data("null".utf8), Data("[]".utf8), deep, Crypto.random(200),
++            Data(#"{"minor":1e999,"app":"x","name":"x","remaining":1,"paired":true,"purpose":"drop"}"#.utf8),
++            Data(#"{"minor":99999999999999999999999999,"app":"x","name":"x","remaining":-1e308,"paired":true,"purpose":"pair"}"#.utf8),
++            Data(#"{"minor":0,"app":"x","name":"x","remaining":1,"paired":true,"purpose":"nonsense"}"#.utf8),
++            Data(#"{"minor":0,"app":7,"name":["x"],"remaining":"soon","paired":1}"#.utf8),
++            Data(#"{"minor":0,"app":"x","name":"\u0000‮\n\r","remaining":0,"paired":true,"purpose":"pair"}"#.utf8),
++            Data(#"{"minor":0,"app":"x","name":""#.utf8) + Data(repeating: 0x41, count: 15000) + Data(#"","remaining":0,"paired":false,"purpose":"verify"}"#.utf8),
++            Data(#"{"items":[],"fileCount":-9223372036854775808,"totalBytes":-9223372036854775808}"#.utf8),
++            Data(#"{"items":["a"],"fileCount":9223372036854775807,"totalBytes":9223372036854775807}"#.utf8),
++            Data(#"{"session":"AAAA","proof":"AAAA"}"#.utf8), Data(#"{"value":"AAAA"}"#.utf8), Data(#"{"streams":-1}"#.utf8),
++        ]
++        let types: [UInt8] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 48, 49, 50, 255]
++        for i in 0..<500 {
++            // Odd rounds as the paired sender, even ones as a fresh key.
++            guard let p = try? RawPeer(port: receiver.port, keys: i % 2 == 1 ? sender.trust.keyPair : KeyPair()) else { continue }
++            let body = jsons[Int.random(in: 0..<jsons.count, using: &rng)]
++            let type = types[Int.random(in: 0..<types.count, using: &rng)]
++            do {
++                switch i % 10 {
++                case 0: try p.plain(Crypto.random(Int.random(in: 0...5, using: &rng)))                       // too short to be a message
++                case 1: try p.message(type, body)                                                             // any type, any body, first
++                case 2: try p.message(FrameType.hello.rawValue, body, more: 1, total: UInt32.max)             // announces 4 GB
++                case 3: try p.message(FrameType.hello.rawValue, body, more: 0, total: UInt32(body.count) + 7) // promises more, says done
++                case 4: try p.message(FrameType.hello.rawValue, body, more: 1)                                // done, says more
++                case 5:
++                    // A first fragment, then continuations that are empty, of another type, too long.
++                    try p.message(FrameType.hello.rawValue, Data("{".utf8), more: 1, total: 4000)
++                    for _ in 0..<20 { try p.plain(Data([FrameType.hello.rawValue, 1])) }
++                    try p.plain(Data([type, 1]) + Crypto.random(100))
++                    try p.plain(Data([FrameType.hello.rawValue, 0]) + Crypto.random(5000))
++                case 6:
++                    // A proper hello, then whatever comes to mind where the purpose's first message belongs.
++                    try p.hello([Purpose.drop, .pair, .verify, .resume, .retire][i / 10 % 5], paired: i % 20 < 10)
++                    try p.message(type, body)
++                    try p.message(type, body, more: 1, total: UInt32.random(in: 0...UInt32.max, using: &rng))
++                case 7:
++                    // A pairing that goes wrong at every step in turn.
++                    try p.hello(i % 20 < 10 ? .pair : .verify)
++                    try p.json(.pairRequest, Empty())
++                    let go = try p.read()
++                    guard go.type == FrameType.pairGo.rawValue else { break }
++                    let step = i / 10 % 6
++                    if step == 0 { try p.message(type, body) }
++                    if step >= 1 { try p.json(.commit, PairValue(value: Crypto.random(step == 1 ? 31 : 32))) }
++                    if step >= 2 { _ = try p.read() }
++                    if step == 2 { try p.message(type, body) }
++                    if step == 3 { try p.json(.reveal, PairValue(value: Crypto.random(32))) }
++                    if step >= 4 { try p.json(.paired, Empty()); try p.message(type, body) }
++                case 8:
++                    // A drop (taken, when the key is paired), then a manifest that is something else.
++                    try p.hello(.drop)
++                    try p.json(.offer, Offer(items: ["a"], fileCount: Int.random(in: 0...3, using: &rng), totalBytes: 5))
++                    guard try p.read().type == FrameType.accept.rawValue else { break }
++                    if i % 20 < 10 { try p.message(FrameType.manifest.rawValue, body) } else {
++                        try p.message(FrameType.manifest.rawValue, Data(#"{"chunkSize":4096,"entries":[{"p":"a","k":0,"s":5,"m":0,"o":420}"#.utf8), more: 1, total: 60000)
++                        try p.plain(Data([FrameType.manifest.rawValue, 1]) + Data(repeating: 0x20, count: 61000))
++                    }
++                default:
++                    try p.hello(nil)
++                    try p.message(type, body)
++                }
++                _ = try? p.read()
++            } catch {}
++            p.socket.shutdown()
++            if i % 40 == 39 { Thread.sleep(forTimeInterval: 0.2) }
++        }
++        XCTAssertEqual(receiver.trust.known.count, 1, "nothing was paired by any of it")
++        XCTAssertTrue(receiver.trust.standing(of: sender.key).isPaired, "and the pairing there was is still there")
++        Thread.sleep(forTimeInterval: 2.5)
++        let s = send([try file("after.bin", bytes: chunk * 3)], from: sender, to: receiver)
++        wait(s)
++        XCTAssertEqual(s.state, .completed)
++    }
++
++    /// A paired sender that means harm, after its drop is accepted: manifests with hostile
++    /// numbers, then records sealed under the right keys that describe what the manifest does
++    /// not have. Nothing may trap, and nothing may be written outside what was described.
++    func testFuzz_RecordsFromAPairedSenderThatMeansHarm() throws {
++        Tuning.attachSeconds = 1
++        let (sender, receiver) = try pairedMacs()
++        let entries: [Manifest.Entry] = [
++            .init(path: "d", kind: .directory), .init(path: "d/f.bin", kind: .file, size: Int64(chunk * 2 + 100)),
++            .init(path: "d/empty", kind: .file, size: 0), .init(path: "d/link", kind: .symlink, link: "f.bin"),
++        ]
++        let manifest = Manifest(chunkSize: chunk, entries: entries)
++        let p = try RawPeer(port: receiver.port, keys: sender.trust.keyPair)
++        try p.hello(.drop)
++        try p.json(.offer, Offer(items: ["d"], fileCount: 2, totalBytes: manifest.totalBytes))
++        XCTAssertEqual(try p.read().type, FrameType.accept.rawValue)
++        try p.json(.manifest, manifest)
++        XCTAssertEqual(try p.read().type, FrameType.plan.rawValue)
++        let keys = DropKeys(master: p.master)
++        var conn: UInt64 = 0
++
++        func attach() throws -> (Socket, CipherState) {
++            conn += 1
++            let s = try Socket.connect(host: "127.0.0.1", port: receiver.port)
++            s.setReadTimeout(2)
++            try Opening.data.withUnsafeBytes { try s.writeAll($0.baseAddress!, 5) }
++            var challenge = Data(count: 16)
++            try challenge.withUnsafeMutableBytes { try s.readExactly($0.baseAddress!, 16) }
++            let message = keys.sessionID + Crypto.be64(conn) + keys.attachTag(conn: conn, challenge: challenge)
++            try message.withUnsafeBytes { try s.writeAll($0.baseAddress!, message.count) }
++            return (s, keys.stream(conn))
++        }
++        let files: [UInt32] = [0, 1, 2, 3, 4, 5, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff]
++        let chunks: [UInt32] = [0, 1, 2, 3, 0x7fffffff, 0x80000000, 0xffffffff]
++        let lengths: [UInt32] = [0, 1, 100, UInt32(chunk) - 1, UInt32(chunk), UInt32(chunk) + 1, 1 << 20, 0x7fffffff, 0x80000000, 0xffffffff]
++        var sent = 0
++        for f in files { for c in chunks { for l in lengths {
++            // The one honest combination per chunk is left out: this is about the others.
++            if f == 1, c <= 2, Int(l) == manifest.chunkLength(file: 1, chunk: Int(c)) { continue }
++            guard var (s, cipher) = try? attach() else { XCTFail("could not attach connection \(conn)"); return }
++            let header = RecordHeader(file: f, chunk: c, length: l).bytes
++            var record = try cipher.seal(header)
++            // What follows is as long as it says, up to a point; the receiver should not get as far as reading it.
++            record += try cipher.seal(Data(count: Int(min(l, 70000))), ad: header)
++            try? record.withUnsafeBytes { try s.writeAll($0.baseAddress!, record.count) }
++            s.shutdown()
++            sent += 1
++            Thread.sleep(forTimeInterval: 0.004)   // under the listener's 500 arrivals a second
++        } } }
++        let session = try XCTUnwrap(receiver.offers.withLock { $0.first })
++        XCTAssertTrue(until(20) { session.stats.connectionFailures >= sent - 70 }, "\(session.stats.connectionFailures) of \(sent) refused")   // the end markers (file 0xffffffff, chunk 0, length 0) are not failures
++        XCTAssertEqual(session.stats.chunks, 0, "none of them was written")
++        XCTAssertFalse(session.state.isFinal, "and none of them ended the drop")
++        let partial = try FileManager.default.contentsOfDirectory(atPath: dst.path)
++        XCTAssertEqual(partial.count, 1)
++        let size = (try? FileManager.default.attributesOfItem(atPath: dst.appendingPathComponent(partial[0]).appendingPathComponent("items/d/f.bin").path))?[.size] as? Int
++        XCTAssertTrue(size == nil || size == 0, "nothing reached the file: \(String(describing: size))")
++        p.socket.shutdown()
++    }
++}

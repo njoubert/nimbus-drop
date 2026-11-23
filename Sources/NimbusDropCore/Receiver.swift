@@ -148,6 +148,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private var finished = 0
     private var roundStartBytes: Int64 = 0
     private var conducted = false
+    /// The control connection is gone and the session is waiting for the sender to bring another.
+    private var awaitingControl = false
 
     init(control: Socket, offer: Offer, listener: DropListener) {
         self.control = control
@@ -226,10 +228,22 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             control.shutdown()
             streams.lock()
             for s in active { s.shutdown() }
-            let deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
-            while incoming == nil, !isOver, streams.wait(until: min(deadline, Date().addingTimeInterval(0.2))) || Date() < deadline {}
+            awaitingControl = true
+            // The minute is counted from the last sign of the sender: while data connections are
+            // open and delivering, it is there, whatever has become of the control connection.
+            var deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+            var seen = progress.doneBytes
+            while incoming == nil, !isOver, Date() < deadline {
+                streams.wait(until: min(deadline, Date().addingTimeInterval(0.2)))
+                let bytes = progress.doneBytes
+                if bytes != seen {
+                    seen = bytes
+                    deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+                }
+            }
             let fresh = incoming
             incoming = nil
+            awaitingControl = false
             streams.unlock()
             if isOver { throw lost }
             guard let fresh else {
@@ -424,13 +438,22 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// connection only; the chunks it did not deliver are asked for again. Trouble with the disk
     /// ends the drop.
     func runStream(_ socket: Socket) {
+        let from = socket.peerAddress
         track(socket)
         streams.lock()
         active.append(socket)
+        let waiting = awaitingControl
         streams.unlock()
         update { $0.connections += 1 }
+        // The conversation's connection is still missing, but the sender is plainly there and
+        // sending: this is a drop that is moving, and it says so. (The sender finds out about
+        // the dead connection only when it next has something to say, which may be at the end.)
+        if waiting, state == .reconnecting {
+            log("data is arriving again from \(from), ahead of the control connection")
+            setState(.transferring)
+        }
         do { try receive(socket) } catch let fault as StreamFault {
-            log(fault == .damaged ? "a chunk arrived damaged from \(socket.peerAddress); closing that connection" : "a data connection from \(socket.peerAddress) was lost")
+            log(fault == .damaged ? "a chunk arrived damaged from \(from); closing that connection" : "a data connection from \(from) was lost")
             note {
                 $0.connectionFailures += 1
                 if fault == .damaged { $0.damagedChunks += 1 }
@@ -445,8 +468,11 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         streams.lock()
         active.removeAll { $0 === socket }
         finished += 1
+        let idleAgain = awaitingControl && active.isEmpty
         streams.broadcast()
         streams.unlock()
+        // Nothing arriving and still no conversation: back to waiting for the sender.
+        if idleAgain, state == .transferring { setState(.reconnecting) }
     }
 
     private enum StreamFault: Error { case lost, damaged }

@@ -569,7 +569,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             TransferRow(id: UUID(), direction: .send, peerName: "macstudio", peerAddress: "192.168.1.20", title: "render.mov and 2 more",
                         status: "Waiting for macstudio to accept…", fraction: 0, isActive: true, isIndeterminate: true, failed: false, canReveal: false),
             TransferRow(id: UUID(), direction: .receive, peerName: "macbookairm4", peerAddress: "192.168.1.52", title: "Scans",
-                        status: "1,204 files, 8.40 GB in 1:13 · 918 Mbps\n1 connection lost, 1 damaged chunk caught; re-sent", fraction: 1, isActive: false, isIndeterminate: false, failed: false, canReveal: true),
+                        status: "1,204 files, 8.40 GB in 1:13 · 918 Mbps\nRecovered: reconnected once, 8 connections dropped. Only the missing parts were sent again.", fraction: 1, isActive: false, isIndeterminate: false, failed: false, canReveal: true),
             TransferRow(id: UUID(), direction: .send, peerName: "macbookairm4", peerAddress: "192.168.1.52", title: "Backups",
                         status: "Lost the connection to macbookairm4 and could not get it back; send the drop again to continue it", fraction: 0.2, isActive: false, isIndeterminate: false, failed: true, canReveal: false, canRetry: true),
         ]

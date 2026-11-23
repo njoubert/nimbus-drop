@@ -662,14 +662,15 @@ final class AppModel: ObservableObject {
                            canRetry: failed && sends[t.id] != nil)
     }
 
-    /// "2 connections lost and 1 damaged chunk re-sent": what the drop got past.
+    /// What the drop got past, said so that it cannot be taken for starting over: after trouble
+    /// only the missing parts go again, never the whole drop.
     static func troubleText(_ s: TransferStats) -> String {
         var parts: [String] = []
         let lost = s.connectionFailures - s.damagedChunks
         if s.reconnects > 0 { parts.append("reconnected \(s.reconnects == 1 ? "once" : "\(s.reconnects) times")") }
-        if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") lost") }
+        if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") dropped") }
         if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
-        return parts.joined(separator: ", ") + (lost > 0 || s.damagedChunks > 0 ? "; re-sent" : "")
+        return "Recovered: " + parts.joined(separator: ", ") + (lost > 0 || s.damagedChunks > 0 ? ". Only the missing parts were sent again." : ".")
     }
 
     // MARK: Notifications

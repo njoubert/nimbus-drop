@@ -196,6 +196,19 @@ hello {} → hello {name, id, version, minor, app}: "who is at this address?", t
   a sender that fails for a reason of its own says so first (`SendSession.fail`), so the
   receiver does not wait out the minute. A 2.0 receiver drops the unknown `resume` frame and the
   sender's minute runs out: no worse than before.
+- **The two ends do not learn of a dead control connection at the same time**, and the gap
+  can be the rest of the drop. The owner pulled a cable for a minute on 0.2.0 (2026-11-22):
+  the receiver's keepalive timed its control connection out, the sender's never did, the
+  sender's data connections were replaced, and 5 GB crossed while the receiver sat in
+  `.reconnecting`. The sender found out only on writing `done` (Broken pipe), then resumed in
+  half a second. Two consequences, both fixed after 0.2.0: the receiver showed "lost the
+  connection, waiting" throughout, and its minute was running against a sender that was plainly
+  there (a remainder longer than a minute would have ended the drop). Now a data connection
+  attaching while the receiver waits puts it back in `.transferring`, and the minute is counted
+  from the last byte that arrived. `ChaosProxy.killFarSide` models it (dead on the target's
+  side; the client finds out when it writes), in
+  `testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd`, which fails against
+  0.2.0's receiver. Why the sender's keepalive did not fire is not known; do not count on it.
 - **Silence is treated as a lost connection.** The watchdog (`Transfer.silence`) closes the
   control connection instead of failing, which leads into the same reconnect. A link that went
   quiet and came back is thereby recovered; a peer that really is frozen costs one more minute.

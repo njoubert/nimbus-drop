@@ -293,6 +293,40 @@ final class ChaosTests: XCTestCase {
         try assertArrived(src)
     }
 
+    func testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd() throws {
+        // The owner's test with 0.2.0 on 2026-11-22: a cable out for a while. The receiver timed
+        // its control connection out; the sender's survived as far as the sender could tell,
+        // its data connections were replaced, and 5 GB went across while the receiver's window
+        // still said "lost the connection, waiting". The sender learned its control connection
+        // was dead only on writing "done", and then reconnected in half a second.
+        //
+        // Here: the control connection dies on the receiver's side only. The drop must carry
+        // on, must say it is moving while it moves, and must end with one reconnect.
+        let lines = Box<[String]>([])
+        DropLog.sink = { line in lines.value += [line] }
+        defer { DropLog.sink = nil }
+        Tuning.reconnectSeconds = 2   // far less than the rest of the drop takes
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { $0.killFarSide(.control) }
+        let s = send(src)
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertEqual(s.stats.reconnects, 1, "the sender reconnected once, when it had something to say")
+        XCTAssertEqual(received.value.count, 1, "the person was asked once")
+        let r = try receiverSide()
+        XCTAssertEqual(r.state, .completed, "the receiver did not give the drop up while data was still arriving")
+        try assertArrived(src)
+
+        // The receiver's story, in order: lost, moving again (before the sender is back), back.
+        let story = lines.value.filter { $0.contains(" recv] ") }
+        func index(_ text: String, after: Int = -1) -> Int? { story.indices.first { $0 > after && story[$0].contains(text) } }
+        let lost = try XCTUnwrap(index("lost the control connection"), story.joined(separator: "\n"))
+        let moving = try XCTUnwrap(index("] transferring", after: lost), "it never said it was receiving again:\n" + story.joined(separator: "\n"))
+        let back = try XCTUnwrap(index("the sender is back", after: lost), story.joined(separator: "\n"))
+        XCTAssertLessThan(moving, back, "it showed itself as moving while the conversation was still missing")
+    }
+
     func testTheReceiverComesBackAtAnotherAddress() throws {
         // The old way in goes away for good; the receiver is reachable somewhere else, and the
         // sender is told where when it asks.

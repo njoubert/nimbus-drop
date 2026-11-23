@@ -79,6 +79,8 @@ public final class ChaosProxy: @unchecked Sendable {
         var toTarget: Int64 = 0
         var open = 2
         var dead = false
+        /// Dead on the target's side; the client's side is kept open until the client writes.
+        var zombie = false
         init(index: Int, client: Int32, target: Int32) { self.index = index; self.client = client; self.target = target }
     }
 
@@ -155,6 +157,19 @@ public final class ChaosProxy: @unchecked Sendable {
     public func kill(_ scope: Scope = .all) -> Int {
         let victims = lock.withLock { connections.filter { !$0.dead && matches(scope, $0.index) } }
         for c in victims { drop(c) }
+        return victims.count
+    }
+
+    /// Kills connections on the target's side only. The target sees them close; the client sees
+    /// nothing until it next writes on one, and then finds it reset. This is a peer that gave a
+    /// connection up while the link was away: the other end learns of it only when it speaks.
+    @discardableResult
+    public func killFarSide(_ scope: Scope = .all) -> Int {
+        let victims = lock.withLock { connections.filter { !$0.dead && !$0.zombie && matches(scope, $0.index) } }
+        for c in victims {
+            lock.withLock { c.zombie = true; _stats.connectionsKilled += 1 }
+            shutdown(c.target, SHUT_RDWR)
+        }
         return victims.count
     }
 
@@ -252,6 +267,15 @@ public final class ChaosProxy: @unchecked Sendable {
             let want = rate.map { max(256, min(capacity, $0 / 20)) } ?? capacity
             let n = read(from, buffer, want)
             if n < 0, errno == EINTR { continue }
+            if lock.withLock({ c.zombie }) {
+                // The target's side is gone. Its closing is not passed on; the client speaking
+                // is what ends the connection for the client too.
+                if towardTarget, n > 0 { break }
+                if !towardTarget {
+                    while lock.withLock({ c.zombie && !c.dead && !stopped }) { usleep(20_000) }
+                    break
+                }
+            }
             // A link that swallows everything swallows the news that a connection closed, too:
             // neither bytes nor an end of stream get across until it lifts.
             while lock.withLock({ conditions.blackhole && !c.dead && !stopped }) { usleep(20_000) }

@@ -189,13 +189,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // `build.sh install` registers with --enable-login-item; a drag-install from the disk
-        // image has nobody to do that, so the first launch from /Applications registers instead.
-        // Once only: turning it off later (menu, System Settings) sticks across updates.
-        let installed = Bundle.main.bundlePath.hasPrefix("/Applications/")
+        // image has nobody to do that, so the first launch from an Applications folder registers
+        // instead: Open at login is on by default for a fresh install. Once only: turning it off
+        // later (Settings, System Settings) sticks across updates. Not from anywhere else (the
+        // disk image itself, Downloads): a Login Item pointing at a path that then goes away is a
+        // ghost entry. Such a copy registers on its first launch after it is moved into place.
+        let path = Bundle.main.bundlePath
+        let installed = path.hasPrefix("/Applications/") || path.hasPrefix(NSHomeDirectory() + "/Applications/")
         if installed, !UserDefaults.standard.bool(forKey: LoginItem.registeredDefaultsKey) {
             UserDefaults.standard.set(true, forKey: LoginItem.registeredDefaultsKey)
             try? LoginItem.setEnabled(true)
         }
+        // The switch in Settings was read before this ran; show what is true now.
+        model.openAtLogin = LoginItem.isEnabled
         // Opened by hand (not at login): show the window, as any app would.
         if showWindowAtLaunch || !launchedAtLogin { showWindow() }
     }
@@ -215,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The Settings window (⌘,), made on first use and kept.
     @objc func showSettings() {
         if settings == nil { settings = SettingsWindowController(model: model, updater: updater) }
+        model.openAtLogin = LoginItem.isEnabled   // it can be changed in System Settings too
         settings?.show()
     }
 

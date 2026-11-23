@@ -6,7 +6,12 @@ import Foundation
 /// The one error type the engine throws; its message is what the user reads.
 public struct DropError: Error, CustomStringConvertible, LocalizedError, Equatable {
     public let message: String
+    /// The link's fault rather than anybody's decision: the connection closed, timed out, could
+    /// not be made, or carried a damaged message. These are what a drop tries to reconnect after.
+    var connection = false
     public init(_ message: String) { self.message = message }
+    init(_ message: String, connection: Bool) { self.message = message; self.connection = connection }
+    public static func == (a: DropError, b: DropError) -> Bool { a.message == b.message }
     public var description: String { message }
     public var errorDescription: String? { message }
 }
@@ -29,7 +34,7 @@ func errnoError(_ what: String) -> DropError {
 /// What may never change, because it is how any two versions find out that they differ: the
 /// control frame layout (`Socket.send`), and the `version` field of `Offer` and `Hello`.
 public let protocolVersion = 2
-public let protocolMinor = 0
+public let protocolMinor = 1
 
 /// "2.0".
 public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
@@ -49,6 +54,9 @@ enum Tuning {
     nonisolated(unsafe) static var connectTimeout: Double = 10
     /// Repair rounds in a row that deliver nothing before the receiver gives up.
     nonisolated(unsafe) static var idleRounds = 5
+    /// How long both sides hold a drop open after the connection that carries the conversation
+    /// is lost: the sender trying to reconnect, the receiver waiting for it.
+    nonisolated(unsafe) static var reconnectSeconds: Double = 60
     /// How long a receiver waits for connections the sender says it opened but that never arrived.
     nonisolated(unsafe) static var settleSeconds: Double = 1
 }
@@ -97,9 +105,9 @@ final class Socket: @unchecked Sendable {
                 got += n
                 progress?(n)
             } else if n == 0 {
-                throw DropError("The connection closed")
+                throw DropError("The connection closed", connection: true)
             } else if errno != EINTR {
-                throw errnoError("Connection lost")
+                throw DropError("Connection lost: \(String(cString: strerror(errno)))", connection: true)
             }
         }
     }
@@ -113,7 +121,7 @@ final class Socket: @unchecked Sendable {
                 sent += n
                 progress?(n)
             } else if n < 0, errno != EINTR {
-                throw errnoError("Connection lost")
+                throw DropError("Connection lost: \(String(cString: strerror(errno)))", connection: true)
             }
         }
     }
@@ -153,10 +161,10 @@ final class Socket: @unchecked Sendable {
         var list: UnsafeMutablePointer<addrinfo>?
         let rc = getaddrinfo(host, String(port), &hints, &list)
         guard rc == 0, let first = list else {
-            throw DropError("Cannot resolve \(host): \(String(cString: gai_strerror(rc)))")
+            throw DropError("Cannot resolve \(host): \(String(cString: gai_strerror(rc)))", connection: true)
         }
         defer { freeaddrinfo(list) }
-        var last = DropError("Cannot connect to \(host)")
+        var last = DropError("Cannot connect to \(host)", connection: true)
         var next: UnsafeMutablePointer<addrinfo>? = first
         while let ai = next {
             next = ai.pointee.ai_next
@@ -182,7 +190,7 @@ final class Socket: @unchecked Sendable {
                 _ = fcntl(fd, F_SETFL, flags)
                 return Socket(fd: fd)
             }
-            last = DropError("Cannot connect to \(host): \(String(cString: strerror(errno)))")
+            last = DropError("Cannot connect to \(host): \(String(cString: strerror(errno)))", connection: true)
             Darwin.close(fd)
         }
         throw last
@@ -261,14 +269,14 @@ final class Socket: @unchecked Sendable {
 
 extension DropError {
     /// Either a damaged message or something that is not Nimbus Drop at all.
-    static let damagedMessage = DropError("A message from the other Mac arrived damaged")
+    static let damagedMessage = DropError("A message from the other Mac arrived damaged", connection: true)
 }
 
 /// The largest control frame accepted: a manifest of about two million files.
 let maxFrameBytes = 512 << 20
 
 enum FrameType: UInt8 {
-    case offer = 1, accept, decline, manifest, plan, done, complete, error, attach, hello
+    case offer = 1, accept, decline, manifest, plan, done, complete, error, attach, hello, resume
 }
 
 func decode<T: Decodable>(_ type: T.Type, from body: Data) throws -> T {

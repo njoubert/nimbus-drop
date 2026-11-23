@@ -346,6 +346,10 @@ private struct DropRow: View {
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            if row.canRetry {
+                Button { model.retry(row.id) } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                    .controlSize(.small).help("Send it again to \(row.peerName). It carries on from what already arrived.")
+            }
             if row.canReveal {
                 Button { model.reveal(row.id) } label: { Image(systemName: "magnifyingglass.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Show in Finder")
@@ -447,7 +451,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             TransferRow(id: UUID(), direction: .receive, peerName: "macbookairm4", peerAddress: "192.168.1.52", title: "Scans",
                         status: "1,204 files, 8.40 GB in 1:13 · 918 Mbps\n1 connection lost, 1 damaged chunk caught; re-sent", fraction: 1, isActive: false, isIndeterminate: false, failed: false, canReveal: true),
             TransferRow(id: UUID(), direction: .send, peerName: "macbookairm4", peerAddress: "192.168.1.52", title: "Backups",
-                        status: "macbookairm4 stopped responding; send the drop again to continue it", fraction: 0.2, isActive: false, isIndeterminate: false, failed: true, canReveal: false),
+                        status: "Lost the connection to macbookairm4 and could not get it back; send the drop again to continue it", fraction: 0.2, isActive: false, isIndeterminate: false, failed: true, canReveal: false, canRetry: true),
         ]
         let base = path.hasSuffix(".png") ? String(path.dropLast(4)) : path
         var ok = true

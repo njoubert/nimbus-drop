@@ -15,9 +15,14 @@ final class DropTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("nimbusdrop-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // A receiver holds a drop open for a minute after losing its sender; not in these tests.
+        Tuning.reconnectSeconds = 2
     }
 
-    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+    override func tearDownWithError() throws {
+        Tuning.reconnectSeconds = 60
+        try? FileManager.default.removeItem(at: root)
+    }
 
     // MARK: Helpers
 

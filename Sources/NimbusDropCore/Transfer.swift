@@ -22,6 +22,9 @@ public enum TransferState: Equatable, Sendable {
     /// Sender: the other person has not answered yet. Receiver: this Mac has not answered yet.
     case waitingForAccept
     case transferring
+    /// The connection carrying the conversation was lost mid-drop; the sender is trying to get
+    /// it back and the receiver is waiting for it, for up to a minute. Nothing is asked again.
+    case reconnecting
     /// Every byte has arrived; the receiver is setting times and moving the items into place.
     case finishing
     case completed
@@ -59,6 +62,8 @@ public struct TransferStats: Equatable, Sendable {
     public var connectionFailures = 0
     /// Chunks (or their headers) that arrived damaged and were thrown away.
     public var damagedChunks = 0
+    /// Times the whole drop lost its connection and got it back.
+    public var reconnects = 0
 }
 
 /// One drop, in either direction. Thread-safe: the engine's threads write it, the UI polls it.
@@ -150,15 +155,34 @@ public class Transfer: @unchecked Sendable, Identifiable {
                 // While the receiver puts a large drop in place the sender hears nothing; allow for it.
                 let limit = Tuning.stallSeconds * (state == .finishing ? 10 : 3)
                 if state == .transferring || (state == .finishing && self.direction == .send), self.idleSeconds > limit {
-                    self.fail(DropError("\(self.peerName) stopped responding; send the drop again to continue it"))
-                    return
+                    self.touch()
+                    self.silence()
                 }
                 Thread.sleep(forTimeInterval: min(0.25, Tuning.stallSeconds / 8))
             }
         }
     }
 
+    /// Nothing has moved and nothing has been said for too long. The sessions take it as a lost
+    /// connection and try to get it back; this is what is left when they cannot.
+    func silence() {
+        fail(DropError("\(peerName) stopped responding; send the drop again to continue it"))
+    }
+
     func setItems(_ items: [String]) { lock.withLock { _items = items } }
+    func setPeerAddress(_ address: String) { lock.withLock { _peerAddress = address } }
+
+    /// A new control connection takes the old one's place (first in the list, where `cancel`
+    /// looks for it); the old one is closed.
+    func replaceControl(_ old: Socket, with new: Socket) {
+        lock.lock()
+        sockets.removeAll { $0 === old }
+        sockets.insert(new, at: 0)
+        let dead = _state.isFinal || cancelRequested
+        lock.unlock()
+        old.shutdown()
+        if dead { new.shutdown() }
+    }
     func setSaved(_ urls: [URL]) { lock.withLock { _savedURLs = urls } }
 
     func untrack(_ socket: Socket) { lock.withLock { sockets.removeAll { $0 === socket } } }

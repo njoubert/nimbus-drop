@@ -27,6 +27,7 @@ final class ChaosTests: XCTestCase {
         Tuning.connectRetrySeconds = 3
         Tuning.connectTimeout = 2
         Tuning.settleSeconds = 0.5
+        Tuning.reconnectSeconds = 3
         let dst = self.dst
         let received = self.received
         listener = try DropListener(identity: Identity(name: "receiver", id: "receiver-id"), preferredPort: 0)
@@ -46,6 +47,7 @@ final class ChaosTests: XCTestCase {
         Tuning.connectRetrySeconds = 30
         Tuning.connectTimeout = 10
         Tuning.settleSeconds = 1
+        Tuning.reconnectSeconds = 60
         Tuning.idleRounds = 5
         try? FileManager.default.removeItem(at: root)
     }
@@ -255,35 +257,83 @@ final class ChaosTests: XCTestCase {
         try assertArrived(src)
     }
 
-    func testTheControlConnectionDropsAndTheDropStopsCleanlyThenResumes() throws {
-        // Large enough that the cut lands while most of it has not left the sender. (With a
-        // small drop everything is already in flight: the receiver finishes correctly and only
-        // the sender, which never hears "complete", reports a failure. No protocol can close
-        // that gap; what it must not do is leave wrong bytes, and it does not.)
+    func testTheControlConnectionDropsAndIsWonBack() throws {
+        // Large enough that the cut lands while most of it has not left the sender.
         let src = try makeTree(megabytes: 48)
         proxy.set { $0.bytesPerSecond = 6 << 20 }
-        proxy.whenForwarded(bytes: 2 << 20) { $0.kill(.control) }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            p.kill(.control)
+            p.set { $0.bytesPerSecond = nil }
+        }
         let s = send(src)
-        let took = wait(s)
-        guard case .failed = s.state else { return XCTFail("expected the drop to stop, got \(s.state)") }
-        XCTAssertLessThan(took, 10, "both sides must notice quickly")
-        let r = try receiverSide()
-        guard case .failed = r.state else { return XCTFail("the receiver carried on: \(r.state)") }
-        try assertNothingFinished()
-        try assertResendFinishes(src)
+        wait(s)
+        XCTAssertEqual(s.state, .completed, "losing the conversation's connection is not losing the drop")
+        XCTAssertEqual(s.stats.reconnects, 1)
+        XCTAssertEqual(received.value.count, 1, "the person was asked once, not again")
+        XCTAssertEqual(try receiverSide().stats.reconnects, 1)
+        try assertArrived(src)
     }
 
-    func testTheWholeLinkGoesDownThenComesBack() throws {
-        let src = try makeTree()
+    func testEverythingDropsForAMomentAndTheDropCarriesOn() throws {
+        // What a Mac changing Wi-Fi networks and coming back looks like: every connection dies,
+        // for a second and a half nothing can be opened, then it can.
+        let src = try makeTree(megabytes: 48)
         proxy.set { $0.bytesPerSecond = 6 << 20 }
-        proxy.whenForwarded(bytes: 3 << 20) { p in
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            p.set { $0.refuseNew = true; $0.bytesPerSecond = nil }
+            p.kill(.all)
+            p.after(seconds: 1.5) { $0.set { $0.refuseNew = false } }
+        }
+        let s = send(src)
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertGreaterThanOrEqual(s.stats.reconnects, 1)
+        XCTAssertGreaterThan(proxy.stats.connectionsRefused, 0, "it was turned away while the link was down")
+        XCTAssertEqual(received.value.count, 1)
+        try assertArrived(src)
+    }
+
+    func testTheReceiverComesBackAtAnotherAddress() throws {
+        // The old way in goes away for good; the receiver is reachable somewhere else, and the
+        // sender is told where when it asks.
+        let src = try makeTree(megabytes: 48)
+        let elsewhere = try ChaosProxy(targetPort: listener.port, seed: 9)
+        elsewhere.start()
+        defer { elsewhere.stop() }
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            p.set { $0.refuseNew = true }
+            p.kill(.all)
+        }
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender,
+                            streams: 4, chunkSize: chunk)
+        let asked = Box(0)
+        let newPort = elsewhere.port
+        s.relocate = { asked.value += 1; return ("127.0.0.1", newPort) }
+        s.start()
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertGreaterThanOrEqual(asked.value, 1, "the sender asked where the receiver is now")
+        XCTAssertGreaterThan(elsewhere.stats.bytesToTarget, 40 << 20, "and the rest went the new way")
+        XCTAssertEqual(received.value.count, 1)
+        try assertArrived(src)
+    }
+
+    func testALinkThatStaysDownEndsTheDropCleanlyAndItResumes() throws {
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
             p.set { $0.refuseNew = true }
             p.kill(.all)
         }
         let s = send(src)
-        wait(s)
-        guard case .failed = s.state else { return XCTFail("expected the drop to stop, got \(s.state)") }
-        _ = try receiverSide()
+        let took = wait(s)
+        guard case .failed(let why) = s.state else { return XCTFail("expected the drop to stop, got \(s.state)") }
+        XCTAssertTrue(why.contains("could not get it back"), why)
+        XCTAssertGreaterThan(took, 3, "it kept trying for the whole window")
+        XCTAssertLessThan(took, 15)
+        let r = try receiverSide()
+        guard case .failed = r.state else { return XCTFail("the receiver carried on: \(r.state)") }
         try assertNothingFinished()
         try assertResendFinishes(src)
     }
@@ -326,18 +376,75 @@ final class ChaosTests: XCTestCase {
         proxy.whenForwarded(bytes: 2 << 20) { $0.set { $0.blackhole = true } }
         let s = send(src)
         // Nothing is ever closed, and nothing gets across to say so: only each side's own watch
-        // can end this. Three stall periods of silence while bytes should be moving, ten once
-        // the sender has said "done" and is waiting to hear back.
-        let took = wait(s, timeout: 60)
+        // can end this. Silence is first taken for a lost connection; reconnecting gets no
+        // answer either; then the drop is given up.
+        let took = wait(s, timeout: 90)
         guard case .failed(let why) = s.state else { return XCTFail("expected the drop to be given up, got \(s.state)") }
-        XCTAssertTrue(why.contains("stopped responding"), why)
-        XCTAssertLessThan(took, 45)
+        XCTAssertTrue(why.contains("could not get it back"), why)
+        XCTAssertLessThan(took, 60)
         let r = try receiverSide()
-        guard case .failed(let theirs) = r.state else { return XCTFail("the receiver is still waiting: \(r.state)") }
-        XCTAssertTrue(theirs.contains("stopped responding"), theirs)
+        guard case .failed = r.state else { return XCTFail("the receiver is still waiting: \(r.state)") }
         try assertNothingFinished()
         proxy.kill(.all)
         try assertResendFinishes(src)
+    }
+
+    func testTheNetworkGoesSilentThenComesBack() throws {
+        // A Mac that walks out of Wi-Fi range and back, or changes networks and returns: for a
+        // while nothing gets through in either direction and nothing is closed. Long enough
+        // here that both sides notice the silence and start trying to get the drop back; then
+        // the link returns, and they must find each other again without anybody being asked.
+        Tuning.reconnectSeconds = 20
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            p.set { $0.blackhole = true; $0.bytesPerSecond = nil }
+            p.after(seconds: 7) { $0.set { $0.blackhole = false } }
+        }
+        let s = send(src)
+        wait(s, timeout: 90)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertGreaterThanOrEqual(s.stats.reconnects, 1)
+        XCTAssertEqual(received.value.count, 1, "the person was asked once, not again")
+        try assertArrived(src)
+    }
+
+    func testTheNetworkComesBackAndEveryOldConnectionIsReset() throws {
+        // What the owner saw on 2026-11-22 sending to a Mac that changed Wi-Fi networks: the
+        // drop sat waiting while the other Mac was away, and the moment it came back the old
+        // connections were reset ("connection reset by peer") and 0.1.0 ended the drop there.
+        // Silence, then every connection that was open is cut as the link returns.
+        Tuning.reconnectSeconds = 20
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            p.set { $0.blackhole = true; $0.bytesPerSecond = nil }
+            p.after(seconds: 2) { q in
+                q.kill(.all)
+                q.set { $0.blackhole = false }
+            }
+        }
+        let s = send(src)
+        wait(s, timeout: 90)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertGreaterThanOrEqual(s.stats.reconnects, 1)
+        XCTAssertEqual(received.value.count, 1)
+        try assertArrived(src)
+    }
+
+    func testTheAnswerThatItAllArrivedIsLostAndAskedForAgain() throws {
+        // Everything is across and the receiver is finishing when the conversation's connection
+        // dies: its "complete" never arrives. The sender reconnects and is told again, instead
+        // of reporting a failure for a drop that landed.
+        let src = try makeTree(megabytes: 2)
+        proxy.whenForwarded(bytes: Int64(2 << 20) + 20_000) { $0.kill(.control) }
+        let s = send(src)
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertEqual(s.stats.reconnects, 1, "the sender came back to ask")
+        XCTAssertEqual(try receiverSide().state, .completed)
+        XCTAssertEqual(received.value.count, 1)
+        try assertArrived(src)
     }
 
     func testOneConnectionStallsAndIsReplaced() throws {

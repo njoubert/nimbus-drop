@@ -96,21 +96,38 @@ private struct OfferView: View {
                 Text(detail).font(.body.monospacedDigit())
             }
             // One click for the usual case; the folder chooser for when it should go elsewhere.
+            // Coloured by what they do: blue to take it, red to refuse.
             VStack(spacing: 8) {
-                Button { answer(.downloads) } label: {
-                    Label("Save to Downloads", systemImage: "arrow.down.to.line").frame(maxWidth: .infinity)
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent).tint(Palette.receive)
+                Button { answer(.downloads) } label: { Label("Save to Downloads", systemImage: "arrow.down.to.line") }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(AnswerButton(fill: Palette.send, text: .white))
                 HStack(spacing: 8) {
-                    Button { answer(.decline) } label: { Text("Decline").frame(maxWidth: .infinity) }
+                    Button("Decline") { answer(.decline) }
                         .keyboardShortcut(.cancelAction)
-                    Button { answer(.choose) } label: { Text("Save to…").frame(maxWidth: .infinity) }
+                        .buttonStyle(AnswerButton(fill: Palette.failure, text: .white))
+                    Button("Save to…") { answer(.choose) }
+                        .buttonStyle(AnswerButton(fill: Color.primary.opacity(0.14), text: .primary))
                 }
             }
-            .controlSize(.large)
         }
         .padding(22)
         .frame(width: 380)
+    }
+}
+
+/// The panel's buttons, drawn here rather than left to the system so that they are the app's
+/// colours and look the same whether or not the panel is the key window.
+private struct AnswerButton: ButtonStyle {
+    let fill: Color
+    let text: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.medium))
+            .foregroundStyle(text)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(fill).opacity(configuration.isPressed ? 0.7 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }

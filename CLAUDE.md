@@ -15,6 +15,18 @@ rest: how to work here, how the engine is put together, and what was measured.
   `ReceiveSession.receive`, `Socket`, `Ledger.record`) gets measured before and after, over
   loopback and over the LAN (below). Do not add a copy, a lock per byte or a syscall per small
   write there without a number.
+- **Nothing is sent to, or shown from, a key that is not paired**, and nothing decides who a
+  Mac is but the key it proved. Names, addresses and Bonjour records are labels. A change that
+  lets a name, an address or a record affect what a paired key may do, or where its tile
+  points, is a vulnerability (the first plan had one; see The protocol).
+- **The plan is the specification**: `docs/plans/secure-drops-plan.html`, with the two reviews
+  it went through. A change to the cryptography, the pairing, the key schedule or the admission
+  limits is a change to the plan first, a vector in `scripts/vectors.py` (a second
+  implementation, in Python; never "fix" it to match the Swift), an attack in the tests, and a
+  line in `scripts/mutate.py` that breaks the new guard and names the test that must notice.
+  The first mutation run missed 4 of 17: tests that passed whether or not their guard existed.
+- **No cryptography of our own making.** Primitives from CryptoKit only. Speed is never a
+  reason to write a cipher or call a private API.
 - **Never write outside what the person chose.** A manifest is input from another machine and
   its paths become paths here. There are two gates and both must hold: `Manifest.validate()`
   (the text) and `SafeTree` (the disk). **Every file operation a receiver performs on a drop
@@ -28,7 +40,11 @@ rest: how to work here, how the engine is put together, and what was measured.
   not yet let in is held to `firstFrameBytes`), and counts (`Tuning.strangers`,
   `pendingOffers`, `streamsPerDrop`).
 - **Nothing is written before the person accepts.** The Accept panel's answers are Save to
-  Downloads (one click), Save to… (then the folder chooser; cancelling it declines) and Decline. `--receive` (the CLI) accepts everything and is for a machine the owner controls.
+  Downloads (one click), Save to… (then the folder chooser; cancelling it declines) and Decline.
+  `--receive` (the CLI) asks on the terminal for each drop; `--unattended-from <key tag>` is the
+  one standing grant (one paired key, one folder, a byte limit) and exists for tests between Macs.
+- **It works with no internet** (owner's requirement, 2026-11-23): no server, no trusted time,
+  no download at run time. Anything that would need one is designed out, not made optional.
 - **Grill me relentlessly** before building a feature: every question whose answer would change
   the work, with the facts already checked. Decisions, not options.
 - **Be concise.** Short reports, the salient facts only.
@@ -45,6 +61,7 @@ rest: how to work here, how the engine is put together, and what was measured.
   it may not arrive altered. Every chaos test asserts one or the other.
 - **The wire is versioned.** Anything that changes what two copies say to each other is a new
   `protocolVersion` (breaking) or `protocolMinor` (ignorable by an older copy); see The protocol.
+  Protocol 2 is not spoken at all (owner's decision: it ran on four Macs, all his).
 - **Licence headers.** Every new Swift file starts with `// Copyright (C) 2026 Niels Joubert` /
   `// SPDX-License-Identifier: GPL-3.0-or-later`. GPL-3.0-or-later; don't vendor incompatible code.
 - **It talks to the LAN, and to GitHub only for updates.** README must keep saying exactly this.
@@ -67,9 +84,20 @@ rest: how to work here, how the engine is put together, and what was measured.
 ```
 Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopback.
   Wire.swift                DropError; protocolVersion / protocolMinor; Tuning (the engine's
-                            patience, shortened by the tests); Socket (blocking TCP: connect,
-                            listen, exact read/write, keepalive, shutdown-to-cancel); control
-                            frames with their two CRCs; the messages; ChunkHeader (seal, verifies)
+                            patience and its admission limits, shortened by the tests); Socket
+                            (blocking TCP: connect, listen, exact read/write, writev, keepalive,
+                            shutdown-to-cancel); the messages
+  Crypto.swift              KDF, PublicKey (canonical form, tag, identity number), KeyPair,
+                            CipherState (AES-GCM with a counter nonce and a limit), Noise XX
+  Channel.swift             the opening, the handshake both ways, probe, sealed and fragmented
+                            control messages; DropKeys (everything derived from `master`);
+                            RecordHeader (a data record on the wire)
+  Trust.swift               this Mac's key and what it knows of others': Known Macs, tombstones,
+                            the pair-again list, expiry in elapsed time, withdrawing trust;
+                            TrustClock, TrustStorage, MemoryStorage
+  EnclaveStorage.swift      the trust file on disk, sealed under a Secure Enclave key agreement
+  Pairing.swift             PairCodes, PairingGate (one at a time, rationing), PairingSession
+  Retirement.swift          the retire notice, Trust.reset; Trust.paired() for tests
   Manifest.swift            Manifest (+ validate, key, chunk arithmetic); Scanner (walks what is
                             being sent); Naming.unique ("keep both"); checksum (zlib CRC-32)
   SafeTree.swift            every file operation a receiver performs on a drop, confined to its
@@ -82,9 +110,9 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
                             threads → done); replaces failed connections; closes stalled ones
   Receiver.swift            DropListener (accept loop; routes offers, data streams, hellos);
                             ReceiveSession (decision, tree, streams, rounds, settle, finalize)
-  Discovery.swift           Advertiser (dns_sd register); Probe.hello (who is at this address);
-                            PeerTable (pure: who is on the network, from what Bonjour reports);
-                            PeerBrowser (NWBrowser + resolve to IPv4 + restart on trouble)
+  Discovery.swift           Advertiser (dns_sd register; no key material); Probe (ask an address to
+                            prove a key), Prober (the same, rationed); PeerTable (pure: one peer
+                            per browse result); PeerBrowser (NWBrowser + resolve + probe)
   Host.swift                LocalHost: the Bonjour host name, the IPv4 addresses
   Log.swift                 DropLog (the engine's and the app's debug lines, to whatever sink the
                             app sets) and LogFile (stamped, appended from any thread, rotated)
@@ -120,12 +148,19 @@ Sources/NimbusDrop/         the app
   HistoryWindow.swift       every drop that has ended (HistoryStore in the core keeps it in
                             ~/Library/Application Support/<bundle id>/history.json); --dump-history
   OfferPanel.swift          the Accept / Decline panel for an incoming drop; --dump-offer
+  PairingPanel.swift        PeerStanding (what a tile is), the pairing window at either Mac in
+                            every stage; --dump-pairing writes all of them
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  20 tests: whole drops, decline, collisions, resume, cancel, a hostile
-                            manifest, version mismatch, hello, the peer table, arithmetic, naming
-Tests/NimbusDropChaosTests/ 22 tests: whole drops through ChaosProxy (about 85 s)
+Tests/NimbusDropCoreTests/  107 tests. DropTests (whole drops), SecurityTests (a hostile paired
+                            sender against the disk), ProtocolTests (impostors, replay, floods,
+                            retirement mid-drop), PairingTests (two people; a man in the middle
+                            who hears both codes), TrustTests (expiry against a clock that lies,
+                            the file), VectorTests (against scripts/vectors.py), CryptoTests
+                            (the published Noise vector)
+Tests/NimbusDropChaosTests/ 28 tests: whole drops through ChaosProxy (about 135 s)
+scripts/vectors.py          the second implementation; scripts/mutate.py, the mutation checks
 build.sh                    build / test / run / stop / app / dmg / release / install / uninstall /
                             status / icon / clean
 ```
@@ -142,24 +177,33 @@ main queue.
 ./build.sh run [--fg]        debug build as dist/debug/Nimbus Drop Dev.app (quits any running copy first)
 ./build.sh test              swift test
 swift build -c release       measure with this, never the debug build
-.build/release/NimbusDrop --receive DIR [--once] [--no-advertise] [--name N] [--port P]
+.build/release/NimbusDrop --receive DIR [--once] [--no-advertise] [--name N] [--port P]    asks per drop
+.build/release/NimbusDrop --unattended-from TAG --receive DIR      accepts from that one paired key
+.build/release/NimbusDrop --pair TARGET | --verify TARGET          codes | identity numbers
 .build/release/NimbusDrop [--streams N] --send TARGET PATH…    TARGET: a name from --peers, HOST, HOST:PORT
-.build/release/NimbusDrop --peers | --print
+.build/release/NimbusDrop --peers | --print | --identity | --known | --forget TAG | --reset-identity
+python3 scripts/mutate.py [word…]                                   break each guard, expect a test to fail
 .build/debug/NimbusDrop --dump-window P     the window with made-up data → P, P-light, P-empty
 .build/debug/NimbusDrop --dump-bar P        the status item's three looks, light and dark
 ```
 
 `--send` takes everything up to the next `--flag` as its arguments, so other flags go before it.
-`--name N` gives the CLI a separate identity (`cli-N`), which is what lets a headless receiver
-and the app run on one Mac and see each other.
+The CLI never uses the app's identity: its trust file is in
+`~/Library/Application Support/<bundle id or com.njoubert.nimbusdrop.cli>/cli-<name or default>/`,
+one per `--name`. Two names on one Mac are two Macs to each other, which is how the whole
+protocol is exercised on a single machine: `--name a --pair 127.0.0.1:PORT` against
+`--name b --port PORT --no-advertise --receive DIR`, each reading the other's code from its
+terminal (a script can drive both through pipes; that is how 0.3 was checked end to end).
 
 **The second Mac is `macbookairm4`** (ssh works, Apple silicon, gigabit Ethernet to the same
 switch, checkout at `~/Code/nimbus-drop`). A LAN test:
 
 ```
+.build/release/NimbusDrop --name pro-cli --identity          # note its key tag, then pair the two once:
+ssh -t macbookairm4 '… NimbusDrop --name air-cli --receive /tmp/nd-recv'   and   --name pro-cli --pair air-cli
 ssh macbookairm4 'cd ~/Code/nimbus-drop && git pull && swift build -c release && \
-  (nohup .build/release/NimbusDrop --receive /tmp/nd-recv --name air-cli >/tmp/nd-recv.log 2>&1 &)'
-.build/release/NimbusDrop --send air-cli <paths>
+  (nohup .build/release/NimbusDrop --name air-cli --unattended-from <pro-cli tag> --receive /tmp/nd-recv >/tmp/nd-recv.log 2>&1 &)'
+.build/release/NimbusDrop --name pro-cli --send air-cli <paths>
 ```
 
 then compare both trees (`find … -type f -print0 | sort -z | xargs -0 shasum | shasum`). Kill
@@ -170,107 +214,98 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 2.2)
+## The protocol (version 3.0)
 
-Control connection, sender → receiver. A frame is
-`[u32 length][u32 CRC of the length][u8 type][JSON][u32 CRC of type + JSON]`, big-endian.
+The specification is `docs/plans/secure-drops-plan.html` (draft 6); this is the map. Encrypted
+and authenticated end to end; not one byte in common with protocol 2.
 
 ```
-sender                               receiver
-offer {version, minor, app, name, id, items, fileCount, totalBytes}
-                                     another major: decline, naming both versions; nobody is asked
-                                     (the person decides)
-                                     accept {}  |  decline {message}
-manifest {chunkSize, entries[]}
-                                     validate, find or make the partial folder, read its ledger
-                                     plan {token, completeFiles[], partialFiles[{file, chunks[]}]}
-N data connections, each: attach {token}, then
-  [u32 file][u32 chunk][u32 length][u32 crc] + bytes, repeated;      crc covers the first twelve
-  file = 0xFFFFFFFF ends the stream                                   header bytes and the chunk
-done {streams: data connections opened so far, resent: chunks sent twice so far (2.2)}
-                                     settle: wait for those connections to finish, close the rest
-                                     everything here → set times and modes, rename, complete {saved[]}
-                                     something missing → plan {…} again, and the sender goes round
-error {message} from either side, at any point, ends the drop
-resume {token} on a NEW connection, after the control connection was lost (2.1):
-                                     the session waiting under that token takes the connection
-                                     as its control and answers plan {…}; a drop that finished
-                                     meanwhile answers complete {…} again
-hello {} → hello {name, id, version, minor, app}: "who is at this address?", then close
+every connection      "NDROP" count majors…  (control)   or   "NDATA"  (data), in the clear
+control               Noise_XX_25519_AESGCM_SHA256, prologue = "nimbus-drop/3" ‖ both openings
+                      -> e      <- e, ee, s, es      -> s, se        (frames: [u16 n][u16 ~n] bytes)
+                      the initiator checks the responder's key after message 2, before it says anything
+                      Split gives two transport keys and, as our one extension, a third output: master
+                      hello {minor, app, name, remaining, paired, purpose} each way, sealed
+                      purpose: drop | pair | verify | resume | retire        (nil: hello and hang up)
+a message             plaintext [u8 type][u8 more?][u32 total, first fragment] JSON; fragments of 65,519
+drop                  offer -> accept | decline -> manifest -> plan -> … done -> plan | complete
+                      (as protocol 2, minus the token; sizes bounded by what was accepted)
+keys of a drop        session_id, attach_key, resume_key, stream_key(conn) = KDF(master, label…)
+data connection       <- 16 random bytes      -> session_id ‖ conn u64 ‖ HMAC(attach_key, … ‖ challenge)[:16]
+                      records: seal(header 12 bytes) ‖ seal(chunk, ad = header); nonce = a counter
+                      end: a sealed header with file 0xFFFFFFFF, chunk 0, length 0
+resume                new handshake (same static keys), resume {session, HMAC(resume_key, "resume" ‖ h)}
+                      <- resumed {HMAC(resume_key, "resumed" ‖ h)}, then plan. master does not change.
+pair                  pair-request -> (a person says yes) pair-go -> commit -> nonce -> reveal
+                      codes = KDF(Ns ‖ Nr, label ‖ h, 16): two six-digit codes, one shown on each Mac
+                      each types the other's; paired {} each way; stored when both are true
+verify                the same without the exchange: each enters the other's 30-digit identity number
+retire                retire {} -> the key is tombstoned, its sessions ended -> retired {}
 ```
 
-- **Reconnecting (2.1).** Losing the control connection used to end the drop; the owner sent
-  to a Mac that changed Wi-Fi networks and it died with "connection reset by peer" the moment
-  the Mac came back (0.1.0, 2026-11-22). Now a connection-level failure (`DropError.connection`:
-  closed, timed out, refused, a damaged frame) on the control connection sends both sides into
-  `.reconnecting` for `Tuning.reconnectSeconds` (60): the receiver holds the session under its
-  token (`awaitSender`), the sender loops (`reconnect`): ask `relocate` where the receiver is
-  now (the app answers from Bonjour, so a new address is found), connect, `resume {token}`, take
-  the `plan`. A decision (`error` frame: cancelled, declined, disk full) still ends it at once;
-  a sender that fails for a reason of its own says so first (`SendSession.fail`), so the
-  receiver does not wait out the minute. A 2.0 receiver drops the unknown `resume` frame and the
-  sender's minute runs out: no worse than before.
-- **The two ends do not learn of a dead control connection at the same time**, and the gap
-  can be the rest of the drop. The owner pulled a cable for a minute on 0.2.0 (2026-11-22):
-  the receiver's keepalive timed its control connection out, the sender's never did, the
-  sender's data connections were replaced, and 5 GB crossed while the receiver sat in
-  `.reconnecting`. The sender found out only on writing `done` (Broken pipe), then resumed in
-  half a second. Two consequences, both fixed after 0.2.0: the receiver showed "lost the
-  connection, waiting" throughout, and its minute was running against a sender that was plainly
-  there (a remainder longer than a minute would have ended the drop). Now a data connection
-  attaching while the receiver waits puts it back in `.transferring`, and the minute is counted
-  from the last byte that arrived. `ChaosProxy.killFarSide` models it (dead on the target's
-  side; the client finds out when it writes), in
-  `testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd`, which fails against
-  0.2.0's receiver. Why the sender's keepalive did not fire is not known; do not count on it.
-- **Silence is treated as a lost connection.** The watchdog (`Transfer.silence`) closes the
-  control connection instead of failing, which leads into the same reconnect. A link that went
-  quiet and came back is thereby recovered; a peer that really is frozen costs one more minute.
-  Three reconnects in a row that find no new bytes at the receiver end it.
-- **A finished drop remembers its answer** for five minutes (`DropListener.remember`), so a
-  sender whose connection died before it heard `complete` is told on reconnecting. This closed
-  most of the "last answer lost" gap.
-- **One session per partial folder** (`DropListener.claim`): a new offer of the same drop ends
-  an earlier session still waiting on that folder before touching it.
-- **Versions.** `protocolVersion` (major, now 2) changes when two copies can no longer exchange
-  a drop; `protocolMinor` when something is added that an older copy ignores (JSON decoding skips
-  unknown fields). The app version rides along for people to read and never decides anything.
-  The same three are in the Bonjour TXT record (`v=2.0`, `app=…`), the offer and the hello.
-  **Frozen for good**, because it is how any two versions find out that they differ: the control
-  frame layout and the `version` field of `Offer` and `Hello`. (Version 1, 2026-11-22, was never
-  released; it had neither frame CRCs nor rounds and its frames do not parse here.)
-- **Why two CRCs on a frame:** a flipped bit in the JSON is a wrong file name or size; a flipped
-  bit in the length leaves the reader waiting for bytes that never come. Both happened in the
-  chaos tests before the checks existed (the first as a wrong drop delivered).
-- **Why the chunk CRC covers the header:** one flipped bit in the file or chunk index sends
-  intact bytes to the wrong, already-written place. A CRC over the bytes alone passes them.
-- **Rounds.** A data connection that dies, stalls or carries damage ends alone: the receiver
-  counts it (`TransferStats`), throws away the chunk in hand, and closes it (after damage the
-  framing cannot be trusted). The sender replaces a failed connection at once (`carry`), up to
-  three replacements that deliver nothing. After `done` the receiver's `settle` waits for the
-  connections the sender opened, then closes any still attached so nothing writes into a drop
-  being judged. Missing chunks go in the next plan. `Tuning.idleRounds` (5) rounds in a row that
-  deliver nothing end the drop.
-- **Patience (`Tuning`).** A data connection silent for `stallSeconds` (60) is closed by the
-  sender. A drop with no byte and no message for 3× that is given up by either side; a sender
-  waiting for `complete` allows 10×, because the receiver may be putting a million files in
-  place. TCP's own timeouts (keepalive 10 s + 3×5 s on a read, `TCP_RXT_CONNDROPTIME` 30 s on a
-  write) catch a peer that is gone; the watchdog is for one that is there and frozen, which TCP
-  will wait on for ever (a zero window is answered politely).
-- **The last answer can still be lost**, if the sender cannot get back within the minute: the
-  receiver finished, the sender reports a failure, and sending again delivers a second copy
-  ("keep both"). No protocol closes that gap entirely.
-- **The drop's key** is SHA-256 over the sender's id, the chunk size and every entry's path,
-  kind, size, mtime and link. Same key + same destination folder = a resume. The partial folder
-  is `<first item>.<key, 12 hex>.nimbusdrop-partial/` holding `items/` (the tree being built)
-  and `ledger` (8 bytes per finished chunk, appended after the `pwrite`).
-- **The ledger survives the process, not a power cut**: its records and the data reach the page
-  cache, and nothing is fsynced (that would cost the speed this exists for). On load a record is
-  kept only if its file is still there and long enough.
-- **Cancel** is a best-effort `error` frame, then `shutdown()` on every socket 0.3 s later, so
-  the other side reads "Cancelled on the other Mac" rather than "The connection closed". The
-  sender reads the control connection on a thread of its own for the whole drop, so a reason
-  sent mid-transfer is heard.
+- **Who a Mac is.** `Trust.standing(of:)`: mine, paired, expired, retired, renew, unknown.
+  `AppModel.standing(peer)` turns that and `Trust.nameClash` into a tile's `PeerStanding`.
+  Bonjour carries a name, the major and `i` (random per launch, to leave one's own record out);
+  each address found is probed (`Channel.probe`: opening and two handshake messages, with a
+  throwaway key) and a peer is one browse result, never merged by what it claims.
+- **Pairing is one transaction**: each message once, in order, nothing recomputed
+  (`PairingSession`). A second `Nr` after `Ns` is known would let a responder choose its code;
+  `testAMacThatDoesNotKeepToThePairingIsDropped` is that and three more. A Mac stores a pairing
+  only when its own person typed the right code AND the other said the same. One pairing at a
+  time per Mac (`PairingGate`); requests from others are shown one at a time, at most four
+  waiting, with a pause after each refusal that doubles (`Tuning.pairQuiet…`).
+- **The first plan read the code aloud into a PAKE** (CPace, libsodium). A PAKE's code is a
+  secret; the plan's own assumption was that the room may hold the attacker. The first review
+  found a man in the middle within earshot pairing with both Macs, silently. Now the codes are
+  a commitment-bound fingerprint of the connection: hearing them is worth nothing.
+  `testSomeoneInTheMiddleWhoHearsBothCodesStillFails`.
+- **Keys end.** Every key has an end, 90 days by default down to an hour, no "never". A
+  pairing lasts until either key does. Time is counted on the continuous clock
+  (`mach_continuous_time`: runs through sleep, cannot be set), with the calendar only as a
+  second way to end sooner; the trust file records boot session, continuous and wall time, and
+  after a reboot counts the larger of time-since-boot and the calendar's gap. The second review
+  showed the earlier rule (never let the calendar go back) kept a key alive under a calendar
+  held still. Not counted: time switched off under someone who controls the clock.
+  At a key's end nobody is asked anything; the next drop needs a pairing. The other Mac knows
+  the date (each states its `remaining` in the hello, capped at 90 days), so a new key under
+  that name after it reads as a renewal and before it as a surprise.
+- **Withdrawing trust is one ordered procedure** (`Trust.withdrawLocked`): written to disk,
+  then the store refuses the key, then every session it authenticated is ended and its keys
+  wiped (`Transfer.withdrawn`), then listeners drop what it had waiting, and only then is a
+  retire notice acknowledged. Retire and "It Replaces…" leave a tombstone (refused for good);
+  Forget does not. Scheduled expiry is different on purpose: a running drop may finish, within
+  a day or one key lifetime, whichever is shorter.
+- **Admission** (`DropListener.admit`, `serve`): a slot before a thread. Not yet a key: 64 at
+  once, 500 a second, 1 KB, 10 s. A key nobody paired: 8 at once, 16 KB, pair/verify only.
+  A data connection before its attach is accepted: 16 per drop in progress, 5 s, none when no
+  drop is. After accept: a manifest of 64 KB + 2 KB per file offered, out of 1 GB shared.
+  The arrival rate was 50 a second at first, and fifty strangers in a second kept a paired
+  sender out (`testCompletingAHandshakeWithAFreshKeyEarnsNothing` failed on it).
+- **One master per drop.** A reconnect proves the same two Macs and re-keys control only;
+  data connections that outlive a control connection (it happens: see below) keep their keys.
+  A connection number is taken from one counter for the whole drop and never reused, so a
+  replacement for a failed connection has a new key, never an old one from counter zero.
+  A stream key carries at most 2^38 bytes and 2^24 seals, then the sender moves on (`spent`).
+- **A record that fails to open is a damaged chunk**: that connection closes, the chunk is
+  asked for again. It never ends a drop by itself (an earlier draft's three-strikes rule would
+  have let anyone stop one). The receiver's data-path checks are in `ReceiveSession.receive`.
+- **The trust file** (`EnclaveStorage`): `device` (a Secure Enclave P-256 key's opaque form,
+  a public key `w`, this Mac's hardware UUID; written once) and `trust` (AES-GCM under the
+  key agreed between them). Every write is whole-file, fsync, rename, fsync the folder. It is
+  never quietly replaced: foreign hardware → set aside and start fresh; enclave failing → throw
+  and change nothing; damaged → the app asks (`AppModel.askAboutDamagedIdentity`). On a Mac
+  with no enclave (CI's virtual machines) it falls back to a key in the device file and says so.
+- **Reconnecting, rounds, patience, cancel and the drop's key** work as in protocol 2 (the
+  notes on them from 2026-11-22 still describe the engine): a lost control connection sends
+  both sides into `.reconnecting` for `Tuning.reconnectSeconds`; the two ends do not learn of
+  a dead control connection at the same time; silence is treated as a lost connection; a
+  finished drop remembers its answer for five minutes (now with its `resume_key`, the one key
+  kept); one session per partial folder. The drop's key is SHA-256 over the sender's static
+  key, the chunk size and every entry, so a resume needs the same sender key: after a key is
+  replaced, an interrupted drop starts over.
+- **Not proved:** bytes left in a partial folder between attempts (the ledger's word, as
+  before). Not hidden: volume and timing. Not claimed: anything against software running as
+  the user.
 
 ## Security (reviewed 2026-11-22)
 
@@ -300,10 +335,10 @@ Until 0.2.2, yes, with one accepted drop.
 - **A stranger's reach** (no accept needed) was: a frame header promising 512 MB, allocated on
   the spot; a connection kept open for ever a byte at a time; any number of offers, each a panel
   on screen. Now 1 MB, ten seconds in all, 64 at once, and two questions per address.
-- **Not defended, by design, and said so in the README:** no encryption, no authentication of
-  either end. A name is a claim (Bonjour, the offer, the hello); the address is real. Someone
-  on the path can read a drop, and with the token they see go by could attach a data connection
-  or resume a control connection of a drop in progress.
+- **Through 0.2.2 there was no encryption and no authentication of either end**: a name was a
+  claim, someone on the path could read a drop, and with the token they saw go by could attach
+  a data connection or resume a control connection. Protocol 3 (0.3.0) is the answer to that;
+  everything above this line still applies to a paired Mac that means harm.
 - **Decided by the owner the same day, in 0.2.2:** everything received is quarantined
   (`Quarantine.value()` has macOS itself make the attribute once per drop, by marking a scratch
   file through `URLResourceValues.quarantineProperties` and reading it back:
@@ -461,11 +496,28 @@ After the security changes (0.2.2): 10,000 small files in 1.1 s over loopback (t
 mark is an `open` and an `fsetxattr` per file; `SafeTree` alone measured no cost), 200 × 8 MB at
 4.6 GB/s.
 
-**Not measured yet:** Wi-Fi, 10 GbE, a drop larger than the receiver's
+**Protocol 3, encrypted (2026-11-23, release build, loopback on the MacBook Pro, both ends on
+the one Mac, so sealing and opening share its cores):** one 6 GB file, 3.16 GB/s (25 Gbit/s)
+with 8 connections and 2.58 GB/s with 1; 200 × 8 MB at 4.7 GB/s; 10,000 small files in 1.1 s.
+Against protocol 2 on the same Mac: level or better with 8 connections, about half with one
+(one thread now seals as well as reads). CryptoKit's in-place AES-GCM exists only from macOS 27;
+on 15 a seal returns a new buffer and that is what was measured. The plan's gate (within 5% of
+an unencrypted build on a real link, 9.0 Gbit/s of file bytes on 10 GbE) has NOT been run:
+there is no unencrypted build of protocol 3, and nothing was measured between two Macs.
+
+**Not measured yet:** encryption between two Macs on any link, Wi-Fi, 10 GbE, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 
-## Not verified by a person yet (as of 2026-11-22)
+## Not verified by a person yet (as of 2026-11-23)
+
+- **Everything on screen in 0.3**: the pairing panel in every stage on two real Macs, the
+  familiar-name alert, Known Macs (Rename, Forget), Reset Identity, the identity number, the
+  one-time "Drops are now encrypted" notice, the notification for a retired identity, the
+  damaged-identity alert. The engine under all of it is tested; nobody has clicked any of it.
+  The command line was driven end to end by a script on one Mac (pair, a wrong code first, a
+  drop asked about, a decline, the unattended grant, a reset).
+- Protocol 3 between two Macs at all, and Bonjour probing across a real network.
 
 - Accepting a drop (the Accept / Decline panel, then the folder chooser) and seeing it land;
   the notification afterwards.
@@ -489,6 +541,10 @@ Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count
 `./build.sh release NOTES.md` builds the stapled app, the DMG and the updater's zip, tags
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
 from the git-ignored `.signing` (copied from a sibling on this machine).
+
+`VERSION` in build.sh is 0.3.0 and has not been released: 0.3 does not talk to 0.2, so every
+Mac is updated together, and the auto-updater will carry a 0.2 Mac to it without asking whether
+the others are ready.
 
 Releases: **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
 **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows

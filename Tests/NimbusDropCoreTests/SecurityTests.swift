@@ -233,7 +233,7 @@ final class SecurityTests: XCTestCase {
         let t = try dial(l)
         try t.send(.offer, Offer(items: ["a"], fileCount: 1, totalBytes: 1))
         XCTAssertEqual(try t.read().type, .accept)
-        try t.send(.manifest, Manifest(chunkSize: chunk, entries: (0..<20_000).map { .init(path: "f\($0)", kind: .file, size: 0) }))
+        try? t.send(.manifest, Manifest(chunkSize: chunk, entries: (0..<20_000).map { .init(path: "f\($0)", kind: .file, size: 0) }))
         t.socket.setReadTimeout(3)
         let reply = try? t.read()
         XCTAssertTrue(reply == nil || reply!.type == .error, "refused, or the connection closed")

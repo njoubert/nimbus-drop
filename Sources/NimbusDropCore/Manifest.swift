@@ -3,7 +3,6 @@
 import CryptoKit
 import Darwin
 import Foundation
-import zlib
 
 /// Everything in a drop: every folder, file and symlink with its size, time and mode. Folders
 /// come before what they hold.
@@ -234,11 +233,4 @@ public enum Naming {
         while taken("\(stem) \(n)\(ext)") { n += 1 }
         return "\(stem) \(n)\(ext)"
     }
-}
-
-/// CRC-32 (zlib's, which uses the CPU's CRC instructions on Apple silicon). `seed` continues an
-/// earlier checksum, so a header and its chunk are covered as one.
-@inline(__always)
-func checksum(_ p: UnsafeRawPointer, _ count: Int, seed: UInt32 = 0) -> UInt32 {
-    UInt32(truncatingIfNeeded: crc32(uLong(seed), p.assumingMemoryBound(to: UInt8.self), uInt(count)))
 }

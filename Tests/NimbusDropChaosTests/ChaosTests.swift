@@ -538,14 +538,15 @@ final class ChaosTests: XCTestCase {
     }
 
     func testAChunkRedirectedByOneFlippedBitIsNotWritten() throws {
-        // The dangerous flip is not in the data but in the 16 bytes before it. On one connection
-        // the chunks go out in manifest order: the folder is entry 0, IMG_0…IMG_7 are entries
-        // 1…8 (one 64 KB chunk each, with a 1 MB tree), then movie.bin's nine chunks.
-        //
-        //  - Turn IMG_2's file index (3) into 1: IMG_2's bytes, intact, aimed at IMG_0, which
-        //    is already written. A checksum over the data alone would pass them.
-        //  - Turn movie.bin chunk 5's index into 4: the same, inside one file.
-        let attach = 61, framed = 16 + chunk   // the attach frame, then header + chunk each
+        // The dangerous flip is not in the data but in the header before it, which says where the
+        // data goes. On one connection the chunks go out in manifest order: the folder is entry
+        // 0, IMG_0…IMG_7 are entries 1…8 (one 64 KB chunk each, with a 1 MB tree), then
+        // movie.bin's nine chunks. Under protocol 2 these two flips turned IMG_2's file index
+        // into IMG_0's, and one chunk index into its neighbour's: intact bytes aimed at a place
+        // already written, which a checksum over the data alone passed. Under protocol 3 the
+        // header is sealed by itself: the same flips, at the same places, now make a header
+        // that does not open, and nothing after it on that connection is believed.
+        let attach = 45, framed = 28 + chunk + 16   // "NDATA" and the attach, then sealed header + chunk + tag each
         for (name, offset, bit) in [("file index", attach + 2 * framed + 3, 1),
                                     ("chunk index", attach + 8 * framed + 5 * framed + 7, 0)] {
             try? FileManager.default.removeItem(at: dst)
@@ -563,10 +564,10 @@ final class ChaosTests: XCTestCase {
     }
 
     func testABitFlippedInAChunkHeaderDoesNotPutBytesInTheWrongPlace() throws {
-        // A data connection begins with its attach frame (about 70 bytes), then 16-byte chunk
-        // headers. One flip at each offset through the first header and into the chunk: the
-        // file index, the chunk index, the length, the checksum itself.
-        for offset in stride(from: 60, to: 110, by: 3) {
+        // A data connection begins with "NDATA" and its attach (45 bytes), then a sealed header
+        // of 28 bytes and the chunk. One flip at each offset from inside the attach's proof,
+        // through the whole first header and its tag, and into the chunk.
+        for offset in stride(from: 31, to: 100, by: 3) {
             try? FileManager.default.removeItem(at: dst)
             try FileManager.default.createDirectory(at: dst, withIntermediateDirectories: true)
             try? FileManager.default.removeItem(at: root.appendingPathComponent("src"))

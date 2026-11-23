@@ -43,7 +43,11 @@ final class AppModel: ObservableObject {
     let identity: Identity
     /// This Mac's key and what it knows of others'. Always there; when the stored identity could
     /// not be opened it is a stand-in held in memory, and `trustProblem` says so.
-    let trust: Trust
+    private(set) var trust: Trust
+    /// Bumped whenever the trust store changes, so that what is drawn from it is drawn again.
+    @Published var trustChanges = 0
+    /// The pairing windows open right now.
+    private var pairings: [UUID: PairingPanel] = [:]
     @Published var peers: [Peer] = []
     @Published var rows: [TransferRow] = []
     @Published var receiving: Bool
@@ -79,8 +83,29 @@ final class AppModel: ObservableObject {
     /// Bonjour did not also find.
     var destinations: [Peer] {
         let found = Set(peers.map(\.id))
-        return peers + manual.filter { !found.contains($0.id) }
+        let mine = trust.publicKey
+        // This Mac's own record never appears in its own list, whatever it is announced as.
+        return (peers + manual.filter { !found.contains($0.id) }).filter { $0.key != mine || $0.isManual }
     }
+
+    /// What a destination is to this Mac: from the key its address proved, and nothing else.
+    func standing(_ peer: Peer) -> PeerStanding {
+        if let demo = demoStandings[peer.id] { return demo }
+        if !peer.isCompatible { return .needsUpdate }
+        guard let key = peer.key else { return peer.unproved || (peer.isManual && peer.unreachable) ? .unproved : .checking }
+        switch trust.standing(of: key) {
+        case .mine: return .unproved
+        case .paired(let mac): return .paired(mac)
+        case .expired(let mac): return .refused("\(mac.name)'s key has run out; it will have a new one after Nimbus Drop is opened there")
+        case .retired(let t): return .refused("An identity that \(t.name) gave up")
+        case .renew(let r): return .renew(r.name)
+        case .unknown:
+            guard let clash = trust.nameClash(peer.name, key: key) else { return .new }
+            return clash.expected ? .renew(clash.name) : .nameInUse(clash)
+        }
+    }
+    /// Made-up standings for the pictures.
+    var demoStandings: [String: PeerStanding] = [:]
 
     /// Called after every change the status item cares about.
     var onChange: (() -> Void)?
@@ -125,6 +150,8 @@ final class AppModel: ObservableObject {
 
     /// Why this Mac's stored identity could not be used, when it could not.
     @Published var trustProblem: String?
+    /// Reset Identity is telling the other Macs.
+    @Published var resetting = false
 
     /// Opens the stored identity. If it cannot be opened the app still runs, on an identity held
     /// in memory that nothing is paired with, and says why; nothing stored is replaced.
@@ -161,6 +188,27 @@ final class AppModel: ObservableObject {
         }
         b.start()
         browser = b
+        trust.onChange = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.trustChanged() } }
+        }
+        if trustProblem == "damaged" { DispatchQueue.main.async { MainActor.assumeIsolated { self.askAboutDamagedIdentity() } } }
+        // Said once, to someone who had an earlier version: what changed and what they will be asked.
+        if !UserDefaults.standard.bool(forKey: "toldEncrypted") {
+            UserDefaults.standard.set(true, forKey: "toldEncrypted")
+            if UserDefaults.standard.object(forKey: "receiving") != nil || !history.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    let alert = NSAlert()
+                    alert.messageText = "Drops are now encrypted"
+                    alert.informativeText = "This Mac has its own identity. The first time you exchange a drop with another Mac, each of you will read out a 6-digit code and type the other's. Keys are replaced every 90 days, and you pair again then.\n\nEvery Mac needs Nimbus Drop 0.3 or later: this version does not talk to earlier ones."
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                }
+            }
+        }
+        if trust.startNote == "foreign" {
+            DropLog.write("identity: this copy's files came from another Mac; this Mac has a new identity and is paired with nobody", .warn)
+        }
+        DropLog.write("identity: this Mac's key is \(trust.publicKey.tag), good until \(trust.ends.formatted(date: .abbreviated, time: .shortened)); paired with \(trust.known.count) Macs")
         // Beside the preferences, under the bundle's own name, so the development copy keeps its own.
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(Bundle.main.bundleIdentifier ?? "NimbusDrop", isDirectory: true)
@@ -180,6 +228,9 @@ final class AppModel: ObservableObject {
                     self.onChange?()
                 }
                 self.probeManual()
+                // Keys end on their dates whether or not anything is happening.
+                let trust = self.trust
+                DispatchQueue.global(qos: .utility).async { trust.tick() }
             }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -224,12 +275,18 @@ final class AppModel: ObservableObject {
         listener = nil
         listenProblem = nil
         if !receiving { DropLog.write("receiving is off") }
-        if receiving {
+        if receiving, trustProblem == nil {
             do {
                 let l = try DropListener(identity: identity, trust: trust)
                 l.localOnly = localOnly
                 l.onOffer = { [weak self] session in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.offered(session) } }
+                }
+                l.onPairRequest = { [weak self] pairing in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.pairRequested(pairing) } }
+                }
+                l.onRefusedIdentity = { [weak self] name, address in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.refusedIdentity(name: name, address: address) } }
                 }
                 l.start()
                 listener = l
@@ -244,7 +301,7 @@ final class AppModel: ObservableObject {
     }
 
     private func updateProblem() {
-        problem = listenProblem ?? browser?.problem.map { "Cannot look for other Macs: \($0). Check System Settings › Privacy & Security › Local Network." }
+        problem = (trustProblem == "damaged" ? "This Mac's identity cannot be read." : trustProblem) ?? listenProblem ?? browser?.problem.map { "Cannot look for other Macs: \($0). Check System Settings › Privacy & Security › Local Network." }
     }
 
     /// Something that quitting would interrupt; an offer nobody has answered yet does not count.
@@ -258,6 +315,12 @@ final class AppModel: ObservableObject {
     /// file the person is asked which kinds to send (`kindQuestion`), unless `kinds` already says or `asking` is off (a retry).
     func send(_ urls: [URL], to peer: Peer, kinds: Set<String>? = nil, asking: Bool = true) {
         guard live, !urls.isEmpty else { return }
+        // Nothing goes to a Mac that is not paired: pair first, then send.
+        let standing = standing(peer)
+        guard standing.canSend else {
+            if standing.canPair { pair(with: peer, then: urls) } else { explain(peer, standing) }
+            return
+        }
         pendingURLs = []
         let name = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items"
         scanning = "Reading “\(name)”…"
@@ -350,6 +413,176 @@ final class AppModel: ObservableObject {
         sends[session.id] = (urls, peer, kinds)
         add(session)
         session.start()
+    }
+
+    // MARK: Pairing
+
+    private func explain(_ peer: Peer, _ standing: PeerStanding) {
+        let alert = NSAlert()
+        alert.messageText = "Cannot send to \(peer.name)"
+        switch standing {
+        case .needsUpdate: alert.informativeText = "It runs a version of Nimbus Drop from before drops were encrypted. Update Nimbus Drop there."
+        case .checking: alert.informativeText = "This Mac is still finding out who that is. Try again in a moment."
+        case .unproved: alert.informativeText = "The Mac at \(peer.address ?? "that address") did not answer when asked to prove who it is. Check that Nimbus Drop 0.3 or later is running there with receiving on."
+        case .refused(let why): alert.informativeText = "\(why). It cannot be used; the Mac behind it needs a new identity."
+        default: alert.informativeText = "It is not paired with this Mac."
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// Starts a pairing with a destination, as the person asked by dropping files on it or from
+    /// its menu. `then`: what to send once it is made. When the Mac's name is that of one this
+    /// Mac already knows under another key, the person is stopped and asked what it is first.
+    func pair(with peer: Peer, then urls: [URL] = [], byNumber: Bool = false) {
+        guard live, let address = peer.address, let key = peer.key else { return }
+        var replacing: PublicKey?
+        if case .nameInUse(let clash) = standing(peer) {
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "This is not the \(clash.name) you paired with"
+            alert.informativeText = "The Mac at \(address) calls itself \(peer.name) but has a different identity from the one you paired with\(clash.pairedAt.map { " on \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""). Nothing was sent.\n\nIt may be a Mac that was erased or replaced, another Mac with the same name, or someone pretending. Ask the person there before going on."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "It Replaces \(clash.name)…")
+            alert.addButton(withTitle: "It Is Another Mac…")
+            NSApp.activate(ignoringOtherApps: true)
+            switch alert.runModal() {
+            case .alertSecondButtonReturn: replacing = clash.key
+            case .alertThirdButtonReturn: break
+            default: return
+            }
+            trust.noteImpostor(of: clash.key, at: address)
+        } else if case .renew = standing(peer), let clash = trust.nameClash(peer.name, key: key), clash.expected {
+            // The key it had ran out, as scheduled: the new one takes its place.
+            replacing = clash.key
+        }
+        let title = urls.isEmpty ? nil : (urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items")
+        let session = PairingSession(host: address, port: peer.port ?? defaultPort, peerName: peer.name, identity: identity, trust: trust,
+                                     expect: key, replacing: replacing, byNumber: byNumber)
+        present(session, pending: title) { [weak self] send in
+            guard let self, send, !urls.isEmpty else { return }
+            self.send(urls, to: peer)
+        }
+    }
+
+    /// Another Mac asks to pair, and its request has reached the front of the queue.
+    private func pairRequested(_ session: PairingSession) {
+        NSSound(named: "Glass")?.play()
+        present(session, pending: nil) { _ in }
+    }
+
+    private func present(_ session: PairingSession, pending: String?, done: @escaping (Bool) -> Void) {
+        let id = session.id
+        let panel = PairingPanel(session: session, pending: pending, myNumber: trust.publicKey.identityNumber) { [weak self] _, send in
+            self?.pairings[id] = nil
+            done(send)
+        }
+        pairings[id] = panel
+        panel.show()
+    }
+
+    /// A retired identity was used. Said in a notification, not a window that takes the keyboard;
+    /// the engine has already rationed how often.
+    private func refusedIdentity(name: String, address: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "A retired identity of \(name) was used"
+        content.body = "The Mac at \(address) proved an identity that was given up or replaced. Someone may hold a copy of it. Nothing was sent or received. (The name is what this Mac called it; the address is all that is known of the caller.)"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    private func trustChanged() {
+        trustChanges += 1
+        onChange?()
+    }
+
+    // MARK: Known Macs and this Mac's identity
+
+    func forget(_ mac: KnownMac) {
+        let alert = NSAlert()
+        alert.messageText = "Forget \(mac.name)?"
+        alert.informativeText = "Drops to and from it stop until the two of you pair again. Anything it is sending or receiving now is ended."
+        alert.addButton(withTitle: "Forget")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let trust = trust
+        DispatchQueue.global().async { trust.forget(mac.key) }
+    }
+
+    func rename(_ mac: KnownMac) {
+        let alert = NSAlert()
+        alert.messageText = "What do you call \(mac.name)?"
+        alert.informativeText = "This is the name shown on this Mac, whatever that Mac calls itself."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = mac.name
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        trust.rename(mac.key, to: field.stringValue)
+    }
+
+    func setKeyLifetime(_ seconds: Double) {
+        let trust = trust
+        DispatchQueue.global().async { trust.setLifetime(seconds) }
+    }
+
+    func setRequestsOff(_ off: Bool) { trust.requestsOff = off }
+
+    func showIdentityNumber() {
+        let number = PublicKey.grouped(trust.publicKey.identityNumber)
+        let alert = NSAlert()
+        alert.messageText = "This Mac's identity number"
+        alert.informativeText = "\(number)\n\nGive it to someone who wants to check this Mac; it is safe to send in a message. They enter it on their Mac, which does the comparing. It is good until \(trust.ends.formatted(date: .abbreviated, time: .omitted)), when this Mac's key is replaced."
+        alert.addButton(withTitle: "Copy")
+        alert.addButton(withTitle: "Done")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(number, forType: .string)
+        }
+    }
+
+    /// Reset Identity: for when this Mac's key may have been copied. Tells every paired Mac that
+    /// can be reached to stop trusting the old key, then makes a new one.
+    func resetIdentity() {
+        let count = trust.known.count
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Reset This Mac's Identity?"
+        alert.informativeText = "Do this if you think this Mac's identity was copied. "
+            + (count == 0 ? "This Mac is paired with no other." : "The \(count) \(count == 1 ? "Mac" : "Macs") you are paired with will be told to stop trusting the old identity, and you will need to pair with \(count == 1 ? "it" : "each of them") again.")
+            + " This cannot be undone."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Reset and Unpair Everything")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        var places: [PublicKey: (String, UInt16)] = [:]
+        for p in destinations { if let key = p.key, let a = p.address, let port = p.port { places[key] = (a, port) } }
+        let reach = places
+        let trust = trust, identity = identity
+        resetting = true
+        DispatchQueue.global().async {
+            trust.reset(identity: identity, reach: { reach[$0].map { (host: $0.0, port: $0.1) } })
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.resetting = false; self.browser?.probeAll() } }
+        }
+    }
+
+    /// The stored identity is there and will not open. It is never replaced without asking,
+    /// because the record of retired identities would go with it.
+    private func askAboutDamagedIdentity() {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "This Mac's identity cannot be read"
+        alert.informativeText = "The file that holds this Mac's identity and the Macs it is paired with is damaged. It has not been changed.\n\nYou can start afresh with a new identity. Every Mac will need pairing again, and the record of identities that were retired or have run out is lost with the old file, which is kept beside the new one."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Start Afresh")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertSecondButtonReturn else { NSApp.terminate(nil); return }
+        guard let fresh = try? Trust.startFresh(storage: EnclaveStorage.standard(bundleID: Settings.bundleID)) else { return }
+        trust = fresh
+        trustProblem = nil
+        fresh.onChange = { [weak self] in DispatchQueue.main.async { MainActor.assumeIsolated { self?.trustChanged() } } }
+        applyReceiving()
+        trustChanged()
     }
 
     /// Sends a drop that did not arrive once more, to the same Mac. What the first attempt
@@ -671,13 +904,17 @@ final class AppModel: ObservableObject {
         var out: [String] = []
         func line(_ label: String, _ text: String) { out.append(label.padding(toLength: 13, withPad: " ", startingAt: 0) + text) }
         line("This Mac", "\(identity.name) · \(addresses.isEmpty ? "no network" : addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", ")) · Nimbus Drop \(identity.appVersion) · protocol \(protocolVersionText)")
+        line("Identity", "key \(trust.publicKey.tag) · made \(trust.made.formatted(date: .abbreviated, time: .shortened)) · good until \(trust.ends.formatted(date: .abbreviated, time: .shortened)) (keys last \(Format.lifetime(trust.lifetime)))"
+             + (trustProblem.map { " · PROBLEM: \($0)" } ?? ""))
+        line("Known Macs", trust.known.isEmpty ? "none" : trust.known.map { "\($0.name) [\($0.key.tag)] until \($0.endsWall.formatted(date: .abbreviated, time: .omitted))\($0.impostors > 0 ? ", name used by another key \($0.impostors)×" : "")" }.joined(separator: "; "))
+        if !trust.again.isEmpty { line("Pair again", trust.again.filter { !$0.pairedAgain }.map { "\($0.name) [\($0.key.tag)]\($0.told.map { $0 ? " told" : " NOT REACHED" } ?? "")" }.joined(separator: "; ")) }
         line("Receiving", (receiving ? "on" + (listener.map { ", port \($0.port), \(localOnly ? "local network only" : "from any address")" } ?? ", NOT LISTENING") : "off")
              + " · open at login: \(LoginItem.statusDescription)" + (problem.map { " · PROBLEM: \($0)" } ?? ""))
         line("Discovery", "\(browser?.problem.map { "PROBLEM: \($0)" } ?? "browsing") · \(destinations.count) \(destinations.count == 1 ? "destination" : "destinations")")
         for p in destinations {
             line("", p.name.padding(toLength: 22, withPad: " ", startingAt: 0) + " "
                  + ("\(p.address ?? "address not known")\(p.port.map { ":\($0)" } ?? "")").padding(toLength: 22, withPad: " ", startingAt: 0)
-                 + " Nimbus Drop \(p.appVersion ?? "?") · protocol \(p.protocolText)"
+                 + " protocol \(p.protocolText) · \(p.key?.tag ?? "no key proved") · \(standing(p).badge?.text ?? "checking")"
                  + (p.isManual ? " · added by address\(p.unreachable ? ", not answering" : "")" : "") + (p.isCompatible ? "" : " · INCOMPATIBLE"))
         }
         out.append("")
@@ -735,7 +972,7 @@ final class AppModel: ObservableObject {
         case .completed:
             let seconds = max(0.001, (t.finishedAt ?? now).timeIntervalSince(t.transferStartedAt ?? t.startedAt))
             let moved = p.totalBytes - p.resumedBytes
-            status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
+            status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.lifetime(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
             if p.resumedBytes > 0 { status += " · continued from \(Format.bytes(p.resumedBytes))" }
             if let trouble = Self.troubleText(t.stats) { status += "\n" + trouble }
             if let links = Self.linksText(t.stats) { status += "\n" + links }

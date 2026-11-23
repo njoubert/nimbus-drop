@@ -156,7 +156,7 @@ enum CLI {
             Swift.print("key:             \(trust.publicKey.tag)")
             Swift.print("identity number: \(PublicKey.grouped(trust.publicKey.identityNumber))")
             Swift.print("made:            \(trust.made.formatted(date: .abbreviated, time: .shortened))")
-            Swift.print("good until:      \(trust.ends.formatted(date: .abbreviated, time: .shortened))  (keys last \(Format.duration(trust.lifetime)))")
+            Swift.print("good until:      \(trust.ends.formatted(date: .abbreviated, time: .shortened))  (keys last \(Format.lifetime(trust.lifetime)))")
             return 0
 
         case .known:
@@ -182,7 +182,7 @@ enum CLI {
             let choices: [String: Double] = ["1h": 3600, "1d": 86400, "1w": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400]
             guard let seconds = choices[text] else { fputs("--key-lifetime takes one of 1h, 1d, 1w, 30d, 90d\n", stderr); return 1 }
             trust.setLifetime(seconds)
-            Swift.print("keys last \(Format.duration(seconds)); this one is good until \(trust.ends.formatted(date: .abbreviated, time: .shortened))")
+            Swift.print("keys last \(Format.lifetime(seconds)); this one is good until \(trust.ends.formatted(date: .abbreviated, time: .shortened))")
             return 0
 
         case .resetIdentity:

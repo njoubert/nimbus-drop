@@ -63,6 +63,10 @@ public struct NameClash: Equatable, Sendable {
     public var expected: Bool
     /// It is paired now (as opposed to waiting to be paired again).
     public var paired: Bool
+
+    public init(name: String, key: PublicKey, pairedAt: Date?, expected: Bool, paired: Bool) {
+        self.name = name; self.key = key; self.pairedAt = pairedAt; self.expected = expected; self.paired = paired
+    }
 }
 
 /// What a key is to this Mac.
@@ -213,7 +217,7 @@ public final class Trust: @unchecked Sendable {
         } else {
             (file, pair) = Trust.fresh(clock: clock, lifetime: lifetime, elapsed: 0)
             try storage.save(try JSONEncoder().encode(file))
-            DropLog.write("identity: made this Mac's key \(pair.publicKey.tag), good for \(Format.duration(file.lifetime))")
+            DropLog.write("identity: made this Mac's key \(pair.publicKey.tag), good for \(Format.lifetime(file.lifetime))")
         }
         tick()
     }

@@ -8,7 +8,8 @@
   Send large files and whole folders to another Mac on your local network, as fast as the
   network allows. Like AirDrop, but for 30 GB of photos over the LAN: you drag a folder onto
   the other Mac, the person there chooses where to save it, and it arrives checked and
-  complete.<br>
+  complete. Every drop is encrypted, and goes only to a Mac the two of you have paired.
+  No internet is needed.<br>
   A menu bar icon that opens a small window. Swift, SwiftPM, AppKit and SwiftUI. One dependency: our own
   <a href="https://github.com/njoubert/nimbus-updater">nimbus-updater</a>, which keeps it up to date.
 </p>
@@ -38,16 +39,35 @@ Drops, Open at Login, History, Internals, Settings, updates, Quit. A cloud
 with an arrow while receiving is on, a hollow cloud while it is off, a percentage beside it
 while a drop moves. The app has a Dock icon and its own menu only while the window is open.
 
+**Pairing, once per pair of Macs.** A Mac you have not paired with shows as *New*. Drop a file
+on it and the person there is asked whether to pair. Then each Mac shows a 6-digit code of its
+own: each of you reads yours out and types the one you hear. That is all. The codes are safe to
+say aloud; they are not passwords. After that the two Macs know each other by their keys,
+whatever they are called and wherever they are, and nothing another Mac announces can take
+either one's place. (No voice to hand? Right-click the tile, *Pair by Identity Number…*: each
+of you enters the other's 30-digit number, sent by any means you trust.)
+
+<p align="center">
+  <img src="docs/pairing.png" alt="The pairing panel: read this code out, type the code they read to you" width="400">
+</p>
+
+**Keys do not last for ever.** Each Mac's key is replaced after 90 days (Settings: down to an
+hour), and a pairing lasts until either key is. Nobody is asked to do anything then: the next
+time you send to that Mac, the two of you exchange codes again. *Reset Identity* in Settings is
+for when you think a key was copied: it tells every paired Mac it can reach to stop trusting
+the old one at once, and lists any it could not reach.
+
 **Receiving.** While *Receive drops* is on, this Mac announces itself on the local network and
-other Macs running Nimbus Drop can offer it files. Nothing is written until you say so. An offer raises a small
-panel that says who is sending (host name and IP address), what, how many files and how big,
-with three answers: *Save to Downloads* (one click, and Return), *Save to…* (choose a folder
+Macs it is paired with can offer it files. Nothing is written until you say so. An offer raises a small
+panel that says who is sending (the name you know that Mac by, and its IP address), what, how many files and how big,
+with three answers: *Save to Downloads* (one click), *Save to…* (choose a folder
 first; cancelling that declines) and *Decline*. Several drops arriving at once each get their
 own panel and can be answered in any order. Turn
 receiving off and this Mac disappears from everyone's list.
 
-**Sending.** Under *Destinations* every Mac found is a tile showing its host name
-and IP address. Drag a file, a folder, or a whole selection onto a tile, or click it and choose
+**Sending.** Under *Destinations* every Mac found is a tile showing its name, its IP address
+and what it is to this Mac: *Paired*, *New*, *Renew pairing*, or *New · name in use* for an
+unknown Mac using the name of one you know (it stands beside the real one, which keeps working). Drag a file, a folder, or a whole selection onto a tile, or click it and choose
 from a panel. Files dropped beside the tiles go to the destination if there is only one, and
 otherwise wait for you to click one. The other person accepts, and it goes.
 
@@ -62,7 +82,7 @@ the JPEGs of a shoot, say. Folders keep their shape; folders left empty are not 
 **Add by Address…** is for when a Mac is not found on its own (Bonjour blocked, a different
 subnet, a VPN): type its IP address or host name, with `:port` if it is not 47823. (A Mac on
 another subnet must have *Only from the local network* turned off in its Settings to take it.) It is asked
-who it is, shows up as a tile with its host name, and is remembered.
+to prove who it is, shows up as a tile with its host name, and is remembered.
 
 **The drops list** shows each one's progress, its rate in Mbps, how many connections it is
 using and the time left, and lets you stop it. If connections were lost or damaged chunks were
@@ -112,12 +132,15 @@ again, save to the same folder, and only what is missing is sent.
   is a different drop: it gets a partial folder of its own and the old one stays.
 - A partial folder you no longer want can simply be deleted.
 
-**Versions.** Every copy announces its app version and its protocol version. A Mac that speaks a
-different protocol major shows as *Needs an update* and cannot be sent to; an offer from one is
-declined with both versions named. Settings shows this copy's.
+**Versions.** Every copy announces its protocol version, and every connection begins with the
+versions each side speaks, bound into the handshake so they cannot be altered on the way. This
+version (protocol 3) does not talk to 0.2 or earlier at all: such a Mac shows as *Needs an
+update*. Update every Mac together.
 
 **Settings** (⌘, or right-click the menu bar icon): how many parallel connections a send uses,
-*Open at login*, the history, updates, and which version and protocol this copy is.
+this Mac's identity (its key, when it ends, how long keys last, its identity number, *Reset
+Identity*), the Known Macs with *Rename* and *Forget*, *Open at login*, the history, updates,
+and which version and protocol this copy is.
 
 ## How fast
 
@@ -131,22 +154,38 @@ Apple silicon, internal SSDs):
 | The same Mac to itself (no network), one 6 GB file | 3.2 GB/s with 8 connections, 3.9 GB/s with 1 |
 | The same Mac to itself, 400 × 8 MB files | 3.1 GB/s |
 
-So on gigabit, 30 GB takes a little over four minutes; on a faster link the engine has room up
-to about 3 GB/s before the Macs themselves are the limit.
+Those are protocol 2, before encryption. **Encrypted (protocol 3, 2026-11-23), the same Mac to
+itself**, which does the sealing and the opening on one machine:
+
+| | |
+|---|---|
+| One 6 GB file | 3.2 GB/s (25 Gbit/s) with 8 connections, 2.6 GB/s with 1 |
+| 200 × 8 MB files | 4.7 GB/s |
+| 10,000 files of 4 to 13 KB | 1.1 s |
+
+A 10 GbE link carries 1.25 GB/s. Encryption has not been measured between two Macs over a link
+faster than gigabit yet; on gigabit the wire stays the limit.
 
 ## How it works
 
-- **Finding each other:** Bonjour, service type `_nimbusdrop._tcp`. The listener prefers port
-  47823 and takes any free one otherwise.
-- **A drop:** one control connection carries the offer, the answer, the manifest (every file,
+- **Finding each other:** Bonjour, service type `_nimbusdrop._tcp`, says where a Mac is. Who it
+  is, it has to prove: each address found is asked to show it holds a key (the first two
+  messages of a handshake), and a tile's state comes from that and from nothing the Mac
+  announces. The listener prefers port 47823 and takes any free one otherwise.
+- **Identity:** each Mac has an X25519 key, kept in a file that only that Mac's Secure Enclave
+  can open, so a backup or Migration Assistant does not carry it to another machine.
+- **A drop:** one control connection, a Noise XX handshake between the two Macs' keys
+  (`Noise_XX_25519_AESGCM_SHA256`), carries the offer, the answer, the manifest (every file,
   folder and symlink with size, time and mode) and the receiver's note of what it already has.
-  Then 8 parallel TCP connections (*Parallel connections* in Settings: 1 to 16) carry the
-  data in 4 MiB chunks. Every connection takes the next unsent chunk from one shared list, so a
-  single huge file is spread across all of them and so is a folder of small ones.
-- **Checked end to end:** every chunk carries a CRC-32 over its header and its bytes, verified
-  before it is written, and every control message carries its own. TCP's checksum is weak; these
-  are what catch a flipped bit in a photo, in a file name, or in the index that says where a
-  chunk belongs.
+  The sender checks the receiver's key before saying anything about itself or the drop. Then 8
+  parallel TCP connections (*Parallel connections* in Settings: 1 to 16) carry the data in
+  4 MiB chunks, each connection under a key of its own derived from that handshake. Every
+  connection takes the next unsent chunk from one shared list, so a single huge file is spread
+  across all of them and so is a folder of small ones.
+- **Sealed end to end:** every chunk is sealed with AES-256-GCM, and so is the small header
+  before it that says which file and chunk it is; each is opened whole before anything is
+  written. A flipped bit, a replayed record or a record moved to another place does not open.
+  Fresh keys for every drop, discarded afterwards.
 - **Repaired in rounds:** when the sender has written everything it says so, the receiver
   answers with what is still missing, and the sender sends that. A lost connection or a damaged
   chunk therefore costs a re-send of a few megabytes, not the drop.
@@ -155,13 +194,14 @@ to about 3 GB/s before the Macs themselves are the limit.
 - **Written where it belongs:** each chunk is written straight to its offset in its file
   (`pwrite`), so nothing is reassembled afterwards. Modification times and permissions are set
   at the end and the finished items are moved into place in one rename each.
-- **Versioned:** the protocol is 2.2 (2.1 added reconnecting, 2.2 a count of retransmitted
-  chunks; all of 2.x work together). The first number changes when two copies could no longer
+- **Works with no internet:** no server, no account, no time server. Key lifetimes are counted
+  on the Mac's own clock that runs through sleep and cannot be set, so they hold on a network
+  with no route out.
+- **Versioned:** the protocol is 3.0. The first number changes when two copies could no longer
   exchange a drop, the second when something is added that an older copy can ignore.
-- **No encryption and no accounts,** by design: this is for a network you trust, and the
-  safeguard is that a person at the receiving Mac approves every drop. Anyone on the same
-  network can *offer* you a drop while receiving is on; nobody can make you take one. Data
-  crosses the network in the clear.
+
+The design, the two independent reviews it went through and the answer to each finding are in
+[docs/plans/secure-drops-plan.html](docs/plans/secure-drops-plan.html).
 
 Not carried over: extended attributes (Finder tags), resource forks and ownership. Symlinks are
 sent as symlinks, and recreated when they point within the drop. Sockets, devices and pipes are
@@ -184,24 +224,39 @@ restart; turn that off in Settings (*Open at login*) or in System Settings.
 The same engine without the app, for scripts and for a Mac you reach over ssh:
 
 ```
-NimbusDrop --receive ~/Incoming          # take every drop into that folder without asking (--once: just one)
+NimbusDrop --pair macstudio               # pair with it: prints this side's code, asks for the other's
+NimbusDrop --receive ~/Incoming          # take drops from paired Macs, asking on the terminal for each
 NimbusDrop --send macstudio ~/Pictures/Christmas   # by the name --peers shows, or HOST, or HOST:PORT
-NimbusDrop --peers                        # the Macs found in three seconds
-NimbusDrop --print                        # this Mac's name, addresses and settings
+NimbusDrop --peers                        # the Macs found in three seconds, and what each is to this one
+NimbusDrop --identity                     # this identity's key tag, identity number and end date
+NimbusDrop --known                        # who it is paired with (--forget TAG, --reset-identity)
 ```
 
-`--receive` accepts everything offered to it. It is a tool for a machine you control, not
-something to leave running on a network you do not.
+The command line has an identity of its own, separate from the app's (and one per `--name`), so
+a terminal and the app on one Mac are two Macs to each other. `--receive` asks before each drop
+and answers requests to pair the same way. For a Mac nobody is sitting at there is one explicit
+grant: `--unattended-from <key tag> --receive DIR` accepts without asking, but only from that
+one paired key, into that folder, one drop at a time (`--max-bytes N` caps each).
 
 ## Security
 
-**What it is not:** private or authenticated. Drops cross the network unencrypted, anyone who can
-reach the port can offer you one, and a sender can call itself anything; only the IP address
-shown is real. Someone able to watch your network could read a drop in transit or interfere
-with one. Use it on a network you trust, and turn *Receive drops* off on one you do not.
+**What it protects on the network.** Someone listening sees that two Macs are exchanging
+something, roughly how much, and when; not the names, the folders or the contents. Someone in
+the middle cannot read or alter a drop, and cannot get between two Macs at pairing either, even
+if they hear the codes read out: the codes describe the connection, they are not a password,
+and a Mac in the middle makes the two codes disagree. A Mac using the name of one you know is
+shown as a new Mac with a warning, beside the real one. A key that was given up (*Reset
+Identity*), replaced or has run out is refused from then on and reported. Recording traffic now
+and stealing a key later does not open past drops.
 
-**What it defends:** your Mac. Accepting a drop means receiving the files you were shown into
-the folder you chose, and nothing else:
+**What it does not.** Nothing is padded, so volume and timing can be read (one file's drop
+shows roughly that file's size). Software already running as you on your own Mac can read your
+files, and this Mac's key while the app runs. Pairing means "this is that Mac", not "what it
+sends is safe": every drop still has to be accepted by a person.
+
+**What it defends on your Mac**, from a paired Mac that means harm as much as from anyone.
+Accepting a drop means receiving the files you were shown into the folder you chose, and
+nothing else:
 
 - Nothing is written until you click (the accept button has no Return key, so typing in another
   app cannot accept one by accident), and what arrives must be exactly what was offered: the
@@ -218,13 +273,20 @@ the folder you chose, and nothing else:
   within the drop are kept.
 - By default only Macs on the same subnet as this one can connect at all. *Settings › Receiving
   › Only from the local network* turns that off, for a VPN or another subnet.
-- A stranger cannot make it use up memory or bury the screen in questions: connections that
-  have not been let in are few, small and short-lived, and at most two offers from one address
-  wait for an answer at once.
+- A stranger cannot make it use up memory, hold connections open or bury the screen in
+  questions. Every connection is held to what it has proved: a kilobyte and ten seconds before
+  a key, a few connections and no more for a key nobody paired, one request to pair on screen
+  at a time with a growing pause after each refusal. Nothing is sent to, or shown from, a Mac
+  that is not paired.
 
-A security review on 2026-11-22 found that versions before 0.2.2 could be made to write a file
-outside the chosen folder by a sender whose drop was accepted. **Update to 0.2.2 or later.**
-`Tests/NimbusDropCoreTests/SecurityTests.swift` holds that attack and the others tried.
+**History.** A review on 2026-11-22 found that versions before 0.2.2 could be made to write a
+file outside the chosen folder by a sender whose drop was accepted, and 0.2.x was unencrypted
+and unauthenticated throughout. **Use 0.3 or later.** The design of 0.3 was reviewed twice
+before it was built, by two different models asked to break it; `Tests/NimbusDropCoreTests`
+holds their attacks (`ProtocolTests`, `PairingTests`, `TrustTests`, `SecurityTests`), vectors
+from a second implementation written in another language (`VectorTests`, `scripts/vectors.py`),
+and `scripts/mutate.py` breaks each guard in turn to check that a test notices. It has not had
+a review by a professional cryptographer.
 
 ## Testing it against a bad network
 
@@ -246,7 +308,8 @@ and root, and is not part of the suite.
 
 ## What it talks to
 
-Other copies of Nimbus Drop on your local network, and nothing else, with one exception:
+Other copies of Nimbus Drop on your local network, and nothing else, with one exception that
+it works perfectly well without (an air-gapped network is a supported place to use it):
 unless *Check for Updates Automatically* is off, it asks `api.github.com` once a day for the
 newest release and downloads it from `release-assets.githubusercontent.com`. Your files never
 leave your network.

@@ -21,6 +21,7 @@ import NimbusUpdater
 //   --dump-history PATH     render the History window with a made-up history to PATH, exit
 //   --dump-internals PATH   render the Internals panel with a staged drop to PATH, exit
 //   --dump-offer PATH       render the "do you want this drop?" panel to PATH, exit
+//   --dump-pairing PATH     render every stage of the pairing panel to PATH-<stage>.png, exit
 //   --show-window           open the window at launch (the app otherwise starts in the menu bar only)
 //
 // The engine without the app:
@@ -105,6 +106,7 @@ while !args.isEmpty {
     case "--dump-settings": let v = takeValue(a); exit(MainActor.assumeIsolated { SettingsWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-history": let v = takeValue(a); exit(MainActor.assumeIsolated { HistoryWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-internals": let v = takeValue(a); exit(MainActor.assumeIsolated { InternalsPanelController.dump(to: v) ? 0 : 1 })
+    case "--dump-pairing": let v = takeValue(a); exit(MainActor.assumeIsolated { PairingPanel.dump(to: v) ? 0 : 1 })
     case "--dump-offer": let v = takeValue(a); exit(MainActor.assumeIsolated { OfferPanel.dump(to: v) ? 0 : 1 })
     case "--crowd": dumpCrowd = Int(takeValue(a)) ?? 0
     case "--show-window": showWindowAtLaunch = true

@@ -152,7 +152,8 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
 <nav aria-label="Sections">
   <p class="label">The plan</p>
   <a href="#summary">Summary</a>
-  <a href="#today">Where we are</a>
+  <a href="#built">What has been built</a>
+  <a href="#today">Where we were</a>
   <a href="#threats">Who we defend against</a>
   <a href="#signal">What we take from Signal</a>
   <a href="#model">The trust model</a>
@@ -181,7 +182,7 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
 
 <main>
 <section id="summary">
-  <span class="eyebrow">Nimbus Drop · protocol 3 · draft 6, revised after two independent reviews · 22 Nov 2026</span>
+  <span class="eyebrow">Nimbus Drop · protocol 3 · draft 6, revised after two independent reviews · built as 0.3.0 on 23 Nov 2026, not yet released · 22 Nov 2026</span>
   <h1>Secure drops: identity, encryption, and still filling a 10 GbE link</h1>
   <p class="lede">Every Mac gets its own identity key, which lasts 90 days and is then replaced. Every drop is encrypted and authenticated end to end. A Mac you have never met is paired with two 6-digit codes: each person reads theirs aloud and types the one they hear. After that it is remembered until either Mac's key runs out, and no other key can take its place, whatever name it uses.</p>
   <div class="facts">
@@ -194,8 +195,20 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
   <p>Draft 2 of this plan was reviewed adversarially and found unsafe to build from. Draft 5 was reviewed again by a different model, which found no break in the handshake or the pairing but withheld approval over expiry, resource limits, revocation and storage. This draft answers every finding of both; the <a href="#record">review record</a> lists them.</p>
 </section>
 
+<section id="built">
+  <h2>What has been built (23 Nov 2026)</h2>
+  <p>Everything in this plan is implemented on the <code>secure-drops</code> branch as version 0.3.0, on one Mac. What that does and does not mean:</p>
+  <ul>
+    <li><strong>Tested:</strong> 135 automated tests. The handshake against a published Noise vector; every byte of a connection, every derived key, a record, the pairing codes and identity numbers against a second implementation written in Python from this page (<code>scripts/vectors.py</code>); each finding of both reviews as an attack; a man in the middle who is told both codes; expiry against a clock that is held still, set back, and rebooted; whole drops through a proxy that cuts, stalls and corrupts. <code>scripts/mutate.py</code> breaks 17 guards one at a time and each is noticed by a test (the first run missed four, which were tests that passed with or without their guard).</li>
+    <li><strong>Run for real:</strong> the command line end to end on one Mac with two identities and the real Secure Enclave storage: refused while unpaired, paired with two codes after one deliberate slip, a drop accepted on the terminal and compared byte for byte, a decline, the unattended grant, a reset.</li>
+    <li><strong>Measured:</strong> encrypted, over loopback with both ends on one Mac: 3.2 GB/s with 8 connections, 2.6 GB/s with one, 10,000 small files in 1.1 s. A 10 GbE link carries 1.25 GB/s.</li>
+    <li><strong>Not done:</strong> nothing has run between two Macs. The speed gate has not been run (it needs a second Mac and a fast link). No person has used any of the new windows. Phase 5's review of the code has not happened, and no professional cryptographer has looked at any of it.</li>
+  </ul>
+  <p>Where building it changed the plan, the plan was changed: the arrival limit (500 a second, not 50), the hello's <code>remaining</code> (a duration, not a date), a random per-launch value in the Bonjour record, pairing on a connection of its own, and the fallback for a Mac with no Secure Enclave. Each is marked where it occurs.</p>
+</section>
+
 <section id="today">
-  <h2>Where we are today (0.2.2)</h2>
+  <h2>Where we were (0.2.2)</h2>
   <p>After the security release, a Mac is safe from a hostile drop: writes are confined, consent means what was shown, received files are quarantined. What 0.2.2 does not have is any notion of <em>who</em> the other Mac is, or any privacy on the wire.</p>
   <ul>
     <li><strong>A name is a claim.</strong> Any Mac can announce itself as "macbookairm4". Only the IP address is real, and on a LAN that can be spoofed too.</li>
@@ -597,7 +610,7 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
   <ul>
     <li>Each installation has one static X25519 key pair at a time, <code>s</code>, with the time it was made and the time it ends (see Key expiry).</li>
     <li><strong>What counts as the same key.</strong> An identity is the 32 bytes of the public key in canonical form: the top bit of the last byte clear and the value below 2<sup>255</sup> − 19. Any other encoding is refused when it is read, before any lookup, tag or number is computed, and a key agreement whose result is all zeros ends the handshake. X25519 still has a handful of distinct canonical encodings that behave alike in a key agreement. To this protocol each is a different key: one of them presented by the holder of a retired key is an unknown key, which is New and needs two people to pair it, exactly like any fresh key that holder could have made. Retirement and expiry are claimed for the key as recorded, not for every equivalent.</li>
-    <li><strong>Where it is kept.</strong> One file, <code>~/Library/Application Support/&lt;bundle id&gt;/trust</code>, mode 0600, excluded from backups, holding both the identity and the Known Macs store so that they can never disagree after a crash. Beside it, <code>device</code>: a Secure Enclave P-256 key (the opaque form only that Mac's chip can use) and a P-256 public key <code>w</code>, both made once per installation. <code>device</code> is never rewritten: it survives key expiry and Reset Identity, which replace only <code>s</code>. The trust file is sealed with AES-256-GCM under <code>KDF(ECDH(enclave key, w), "nimbus-drop trust v1", 32)</code>, with a fresh random nonce for every write and <code>"nimbus-drop trust v1" ‖ schema version</code> as associated data. Opening it takes one Secure Enclave operation per launch.</li>
+    <li><strong>Where it is kept.</strong> One file, <code>~/Library/Application Support/&lt;bundle id&gt;/trust</code>, mode 0600, excluded from backups, holding both the identity and the Known Macs store so that they can never disagree after a crash. Beside it, <code>device</code>: a Secure Enclave P-256 key (the opaque form only that Mac's chip can use), a P-256 public key <code>w</code>, and this Mac's hardware id (by which files from another Mac are told from a failing enclave), all made once per installation. <code>device</code> is never rewritten: it survives key expiry and Reset Identity, which replace only <code>s</code>. The trust file is sealed with AES-256-GCM under <code>KDF(ECDH(enclave key, w), "nimbus-drop trust v1", 32)</code>, with a fresh random nonce for every write and <code>"nimbus-drop trust v1" ‖ schema version</code> as associated data. Opening it takes one Secure Enclave operation per launch.</li>
     <li><strong>Every change is one atomic replacement:</strong> write the whole new file beside the old, <code>fsync</code> it, rename it over the old, <code>fsync</code> the folder. A change is not acted on, acknowledged to another Mac or shown as done until that has returned. A lock file (<code>flock</code>) keeps two processes of the same identity from writing at once.</li>
     <li><strong>Why not the Keychain</strong> (draft 2 said Keychain). The properties draft 2 claimed, "this device only" and "readable only by our code", belong to the data protection keychain, which needs an entitlement backed by a provisioning profile. Tested on both Macs on 22 Nov 2026 with a bare binary: the data protection keychain answers <code>errSecMissingEntitlement</code> (-34018), in a terminal and over ssh. The login keychain works in a terminal but refuses over ssh ("User interaction is not allowed", -25308), which is how the second Mac is driven in every LAN test; and it travels with Migration Assistant, which would put one identity on two Macs. The Secure Enclave wrap needs no entitlement and worked in both settings: made, reloaded and unwrapped in 4.6 ms on the MacBook Pro and 4.7 ms on the Air over ssh.</li>
     <li><strong>What that gives, exactly.</strong> A copy of the file on any other hardware cannot be opened (tested: the MacBook Pro's enclave key, copied to the Air, loads and then fails with "unable to compute shared secret"), so backups, migration and a stolen disk image do not carry the identity. Software running as you on this Mac can ask the Secure Enclave the same question the app does; that attacker was already out of scope.</li>
@@ -606,6 +619,7 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
         <li><em>Neither file exists:</em> a first installation. Make both.</li>
         <li><em>The enclave reports that <code>device</code> is not its own:</em> the files came from other hardware (migration, a restored backup). Set them aside under a dated name, start fresh, say so once.</li>
         <li><em>The enclave cannot be reached, or fails for another reason:</em> temporary. Nothing is regenerated. Receiving is off and nothing that changes trust is possible until it works; the window says why.</li>
+        <li><em>The Mac has no Secure Enclave at all</em> (a virtual machine, as the project's test runners are): the wrapping key is kept in <code>device</code> itself, protected by file permissions only, and the log says so. Added while building.</li>
         <li><em>The file is there and will not open</em> (damage, an interrupted disk): set it aside, untouched, and ask. The person may start fresh, and is told in so many words that the record of retired and expired identities is lost with it.</li>
       </ul></li>
     <li>The development copy and each command-line <code>--name</code> have their own bundle id or folder, and so their own identities.</li>
@@ -631,7 +645,7 @@ data connection:  initiator → "NDATA" ‖ attach (below)
 
   <h3>Discovery</h3>
   <ul>
-    <li>The Bonjour record carries <code>v=3</code> and the name. No key, no tag, no id. <strong>Bonjour says where; only a handshake says who.</strong></li>
+    <li>The Bonjour record carries <code>v=3</code>, the name, and <code>i</code>: a random value made at each launch, by which a Mac leaves its own record out of its list (added while building; it identifies nothing and lasts no longer than the process). No key, no tag, nothing lasting. <strong>Bonjour says where; only a handshake says who.</strong></li>
     <li>Each address found is <strong>probed</strong>: the openings, then Noise messages 1 and 2, then close. After message 2 the responder has proved its static key and the prober has revealed nothing about itself. The tile's state comes from that key and from nothing else.</li>
     <li>Probes run when Bonjour reports a result or a change, and the full handshake at the start of a drop proves the key again.</li>
     <li>Results are kept per address, not merged by claimed identity. Two addresses that prove the same key are one Mac with two addresses; an address that announces a name and proves another key is its own tile. A record cannot move, capture or unmark a Paired tile.</li>
@@ -653,11 +667,9 @@ sequenceDiagram
     Note over S: Receiver's key is proved here. Not the key expected for this tile: stop, having revealed nothing.
     S->>R: s, se
     Note over S,R: Both hold h. Split gives two control keys and the master.
-    S->>R: hello {minor, app, name, key ends, paired: yes or no, purpose}  (encrypted)
-    R->>S: hello {minor, app, name, key ends, paired: yes or no}  (encrypted)
-    alt either side answered "paired: no"
-        Note over S,R: Pairing (below). Failure ends the connection.
-    end
+    S->>R: hello {minor, app, name, remaining, paired: yes or no, purpose}  (encrypted)
+    R->>S: hello {minor, app, name, remaining, paired: yes or no}  (encrypted)
+    Note over S,R: Either side answered "paired: no": the connection ends, and pairing runs on a connection of its own (purpose pair).
     S->>R: offer {items, file count, bytes}  (encrypted)
     R->>S: accept, or decline
 </pre>
@@ -686,7 +698,7 @@ sequenceDiagram
   <ul>
     <li>Over a limit, a connection is closed at once (<code>busy</code> where a message can be sent), without work being done for it.</li>
     <li><strong>Accepting a drop authorises metadata in proportion to it.</strong> The manifest may be at most 64 KB plus 2 KB per file the offer announced, and the plan at most 64 KB plus 8 bytes per chunk; either is refused beyond that before reassembly. All control messages being reassembled, across all drops, share a budget of 1 GB; a drop that would exceed it waits.</li>
-    <li>Log lines and Known Macs events caused by strangers are counted, not listed one by one: one line per kind per minute with a count, and at most 100 events kept per entry.</li>
+    <li>Log lines caused by strangers are counted, not listed one by one: one line per kind per minute with a count. A Known Mac keeps a count of the times another key used its name and the last address, not a list.</li>
   </ul>
 
   <h3>The control channel</h3>
@@ -702,7 +714,7 @@ plaintext = [u8 type][u8 flags: bit 0 = more follows][u32 total length, first fr
   </ul>
 
   <h3>Pairing</h3>
-  <p>Runs inside the Noise channel, between the two static keys being paired. Used for a first pairing, a renewal, a replacement and a pairing again after a reset: there is one procedure.</p>
+  <p>Runs inside a Noise channel of its own (purpose <code>pair</code>), between the two static keys being paired; a drop then follows on a new connection. Used for a first pairing, a renewal, a replacement and a pairing again after a reset: there is one procedure.</p>
 <pre class="spec">
 S → R   pair-request {}                    R's person is asked. Nothing below exists until they choose "Pair…"
 R → S   pair-go {}
@@ -745,7 +757,7 @@ each side: stores the pairing when it has BOTH its own person's right code AND t
   <h3>Key expiry</h3>
   <ul>
     <li><strong>Every key has an end.</strong> A key ends its lifetime after it was made. The lifetime is this Mac's setting: 90 days by default, or 30 days, 1 week, 1 day or 1 hour. There is no setting for "never" (decision D8).</li>
-    <li><strong>The end date is stated, and capped.</strong> Each side sends <code>key ends</code> in the encrypted hello, so it is vouched for by the key it describes. At pairing the other Mac records the earlier of that date and 90 days from now. A modified copy cannot claim a longer life than that, and a recorded date is never moved later.</li>
+    <li><strong>The end date is stated, and capped.</strong> Each side sends <code>remaining</code> in the encrypted hello: the seconds its key has left, so it is vouched for by the key it describes. (A duration and not a date, as built: two Macs on a network with no time server need not agree what day it is.) At pairing the other Mac records the earlier of that date and 90 days from now. A modified copy cannot claim a longer life than that, and a recorded date is never moved later.</li>
     <li><strong>A pairing lasts until either key ends.</strong> There is no separate clock for pairings.</li>
     <li><strong>After its end date a key is refused</strong> by every Mac that recorded one for it, exactly like a retired key, and cannot be paired again; the record of it is kept as a tombstone when the rest of its entry is dropped. The Mac that owned it has destroyed it by then: at the end date (or at the next launch after it) the app makes a new key, marks each of its Known Macs "renew" (keeping your name for it and its key, so that a later renewal can say it is the same Mac), and destroys the old key. Nothing is shown and nobody is asked: a marked Mac is renewed if and when a drop to or from it is next wanted, and its entry is dropped when its own key's end date passes unused. A drop in progress keeps its session, within the limit below.</li>
     <li><strong>Why this and not expiring pairings</strong> (draft 4 did that). Renewing a pairing with the same key renews trust in every copy of that key, a thief's included. Replacing the key is what ends an unnoticed copy. It also needs no message at the moment of change: both sides already know the date.</li>
@@ -935,19 +947,19 @@ end marker   = a sealed header with file index 0xFFFFFFFF, chunk index 0 and len
   <div>
     <div class="phase"><span class="k">Phase 0</span><div><h3>Measure before changing anything</h3>
       <p>Thunderbolt link between the two Macs. Current engine, large files and many small ones. Find where it tops out and why.</p>
-      <p class="exit">Done when: there is a written baseline above 10 Gbit/s, or we know what stops us.</p></div></div>
+      <p class="exit">Done when: there is a written baseline above 10 Gbit/s, or we know what stops us. <strong>Not done:</strong> the build was made on one Mac at the owner's direction; only loopback has been measured.</p></div></div>
     <div class="phase"><span class="k">Phase 1</span><div><h3>Independent review of this plan</h3>
       <p>Two reviews done, on 22 and 23 Nov 2026, by different models, and answered in this draft (see the review record). The second asked that the next review be given a normative byte-level specification, independent vectors and an implementation with adversarial tests, so the next one comes after Phase 3, not before it. </p>
       <p class="exit">Done when: every finding of both reviews is answered in the plan, by a change or a stated limit. (Now.)</p></div></div>
     <div class="phase"><span class="k">Phase 2</span><div><h3>Identity, with no change on the wire</h3>
       <p>The byte-level specification as a document of its own, with vectors from a second implementation. Then key generation and the Secure Enclave wrap, the trust file with its recovery cases and crash tests, elapsed-time expiry, identity numbers, key tags in Internals. Can ship in a 0.2.x release.</p>
-      <p class="exit">Done when: each Mac accepts the other's identity number, and the identity file copied to the other Mac will not open.</p></div></div>
+      <p class="exit">Done when: each Mac accepts the other's identity number, and the identity file copied to the other Mac will not open. <strong>Built and tested.</strong></p></div></div>
     <div class="phase"><span class="k">Phase 3</span><div><h3>Protocol 3: the encrypted channel</h3>
       <p>The opening, handshake, probing, sealed and fragmented control messages, sealed records, per-connection keys, reconnect. The man-in-the-middle tests are written alongside.</p>
-      <p class="exit">Done when: test vectors pass, every attack test refuses cleanly, the speed gate holds.</p></div></div>
+      <p class="exit">Done when: test vectors pass, every attack test refuses cleanly, the speed gate holds. <strong>Built; vectors and attacks pass; the gate has not been run.</strong></p></div></div>
     <div class="phase"><span class="k">Phase 4</span><div><h3>Pairing and the interface</h3>
       <p>The two codes, the states, the familiar-name stop, Known Macs, key expiry and renewal, reset and retirement, the command line.</p>
-      <p class="exit">Done when: you and one other person pair two Macs with no instructions, a staged impostor with a familiar name stops you both, a man in the middle who is told both codes fails, and all of it works again with the internet and the time servers cut off.</p></div></div>
+      <p class="exit">Done when: you and one other person pair two Macs with no instructions, a staged impostor with a familiar name stops you both, a man in the middle who is told both codes fails, and all of it works again with the internet and the time servers cut off. <strong>Built; nobody has used it yet.</strong></p></div></div>
     <div class="phase"><span class="k">Phase 5</span><div><h3>Second review, then release 0.3</h3>
       <p>Review of the code against the specification, with the vectors and the adversarial tests in hand. Fuzzing of the handshake, fragmentation and pairing parsers. Migration notes.</p>
       <p class="exit">Done when: the findings are tests, and all are green.</p></div></div>

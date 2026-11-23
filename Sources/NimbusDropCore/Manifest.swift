@@ -72,6 +72,30 @@ public struct Manifest: Codable, Equatable, Sendable {
     /// insensitive to case and to how accents are composed.
     static func folded(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
 
+    /// Whether a symlink at `path` pointing to `link` stays inside its own top-level item.
+    /// A link that does not (an absolute one, or one that climbs out with "..") is not
+    /// recreated by a receiver: it would leave in the received folder a door to somewhere else
+    /// on that Mac. The rule is strict on purpose: "relative, with any ".." only at the start
+    /// and no more of them than there are folders to climb". A link like "a/../b" is refused
+    /// though it is harmless, because telling the harmless ones apart means resolving links
+    /// through other links.
+    public static func linkStaysInside(path: String, link: String) -> Bool {
+        guard !link.isEmpty, !link.hasPrefix("/") else { return false }
+        // Folders between the top-level item and the link: "Photos/a/b/link" has two.
+        let room = path.split(separator: "/").count - 2
+        guard room >= 0 else { return false }   // the top-level item itself is a link: nothing to stay inside
+        var climbing = true, climbed = 0
+        for part in link.split(separator: "/", omittingEmptySubsequences: true) where part != "." {
+            if part == ".." {
+                guard climbing else { return false }
+                climbed += 1
+            } else {
+                climbing = false
+            }
+        }
+        return climbed <= room
+    }
+
     /// What a receiver checks before it creates anything: a manifest is input from another
     /// machine, and its paths become paths on this one. This is the check of the text;
     /// `SafeTree` is the check against the disk, and both must hold.

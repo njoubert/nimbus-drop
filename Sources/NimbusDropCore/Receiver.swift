@@ -17,6 +17,15 @@ public final class DropListener: @unchecked Sendable {
     private var sessions: [String: ReceiveSession] = [:]
     private var holders: [String: ReceiveSession] = [:]
     private var strangers = 0
+    private var turnedAway = Set<String>()
+    private var _localOnly = true
+    /// Take connections only from the local network (the default). Off: from anything that can reach the port.
+    public var localOnly: Bool {
+        get { lock.withLock { _localOnly } }
+        set { lock.withLock { _localOnly = newValue; turnedAway = [] } }
+    }
+    /// Tests only: decides which addresses are let in, in place of the subnet rule.
+    var allows: ((String) -> Bool)?
     private var waiting: [(session: ReceiveSession?, address: String)] = []
     private var completed: [String: (answer: Complete, at: Date)] = [:]
 
@@ -48,7 +57,24 @@ public final class DropListener: @unchecked Sendable {
     /// Stops taking new drops. Drops already under way carry on.
     public func stop() { lock.withLock { stopped = true } }
 
+    /// Whether a connection from this address is taken at all. By default only the local
+    /// network: this Mac itself and addresses on the same subnet as one of its interfaces.
+    /// Anything else is closed before a byte of it is read.
+    private func admits(_ address: String) -> Bool {
+        if let allows { return allows(address) }
+        return !localOnly || LocalNetwork.isLocal(address, among: LocalNetwork.current())
+    }
+
     private func serve(_ socket: Socket) {
+        let from = socket.peerAddress
+        guard admits(from) else {
+            // Said once per address: a scanner knocking every second should not fill the log.
+            if lock.withLock({ turnedAway.insert(from).inserted }) {
+                DropLog.write("turned away a connection from \(from): not on the local network (Settings › Receiving)", .warn)
+            }
+            socket.shutdown()
+            return
+        }
         // Bonjour resolution opens a connection and closes it again; anything that does not
         // speak within ten seconds is not a sender.
         // Until it has said what it is, a connection is a stranger: a bounded number of them, a
@@ -74,7 +100,6 @@ public final class DropListener: @unchecked Sendable {
             let session = ReceiveSession(control: socket, offer: offer, listener: self)
             // No more questions on screen than a person can read, and no more than two from
             // one address: the rest are declined without being shown.
-            let from = socket.peerAddress
             let room = lock.withLock { () -> Bool in
                 waiting = waiting.filter { $0.session?.state == .waitingForAccept }
                 guard waiting.count < Tuning.pendingOffers,
@@ -477,7 +502,15 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         for e in manifest.entries {
             switch e.kind {
             case .directory: try tree.makeDirectory(e.path)
-            case .symlink: try tree.makeSymlink(e.path, to: e.link ?? "")
+            case .symlink:
+                // A link out of the drop is not recreated: it would be a door from the received
+                // folder to somewhere else on this Mac. Links within the drop are kept.
+                guard Manifest.linkStaysInside(path: e.path, link: e.link ?? "") else {
+                    note { $0.skippedLinks += 1 }
+                    log("left out the link \(Sanitize.label(e.path, limit: 200)) → \(Sanitize.label(e.link ?? "", limit: 200)): it points outside the drop", .warn)
+                    continue
+                }
+                try tree.makeSymlink(e.path, to: e.link ?? "")
             case .file where e.size == 0: close(try tree.openFile(e.path))
             case .file: break
             }
@@ -587,15 +620,20 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
 
     /// Modes and times, deepest first; then each top-level item moves into the destination.
     private func finalize(partial: URL, destination: URL) throws -> [URL] {
+        // Everything received is marked as having come from elsewhere, as AirDrop marks it:
+        // an app or a script in the drop then gets Gatekeeper's question the first time it is run.
+        let quarantine = Quarantine.value()
         for e in manifest.entries.reversed() where e.kind != .symlink {
             // The owner keeps access to what they were just sent, whatever the mode was; and
             // nothing arrives set-uid (the mask drops every bit above the permissions).
-            tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600))
+            tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
         }
         tree.release()
         var saved: [URL] = []
         let fm = FileManager.default
         for e in manifest.entries where !e.path.contains("/") {
+            // A top-level item that was a link out of the drop was left out; there is nothing to move.
+            if e.kind == .symlink, !Manifest.linkStaysInside(path: e.path, link: e.link ?? "") { continue }
             let name = Naming.unique(e.path, isDirectory: e.kind == .directory) {
                 fm.fileExists(atPath: destination.appendingPathComponent($0).path)
             }

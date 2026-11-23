@@ -107,9 +107,17 @@ final class SafeTree {
     }
 
     /// Sets the modification time and the permission bits of the thing itself, never of
-    /// something it might point to.
-    func finish(_ path: String, mtime: Double, mode: mode_t) {
+    /// something it might point to; and marks it quarantined, when a mark is given.
+    func finish(_ path: String, mtime: Double, mode: mode_t, quarantine: [UInt8]? = nil) {
         guard let (fd, name) = try? parent(of: path) else { return }
+        if let quarantine {
+            // On the thing itself, through a descriptor that is never a symlink's target.
+            let item = openat(fd, name, O_RDONLY | O_NOFOLLOW)
+            if item >= 0 {
+                fsetxattr(item, Quarantine.attribute, quarantine, quarantine.count, 0, 0)
+                close(item)
+            }
+        }
         var times = [timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)),
                      timespec(tv_sec: Int(mtime), tv_nsec: Int((mtime - mtime.rounded(.down)) * 1e9))]
         utimensat(fd, name, &times, AT_SYMLINK_NOFOLLOW)

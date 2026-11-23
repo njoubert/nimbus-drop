@@ -257,4 +257,123 @@ final class SecurityTests: XCTestCase {
         XCTAssertEqual(r.items, ["holiday photos"])
         XCTAssertEqual(r.peerAddress, "127.0.0.1", "the address is the connection's, not the sender's say-so")
     }
+
+    // MARK: What a drop leaves behind
+
+    func testWhatIsReceivedIsQuarantinedAsADownloadIs() throws {
+        // An app or a script in a drop must get Gatekeeper's question when first run, as one
+        // from AirDrop or a browser does; that is what this mark is.
+        let fm = FileManager.default
+        let src = root.appendingPathComponent("src/Tools")
+        try fm.createDirectory(at: src.appendingPathComponent("Run.app/Contents/MacOS"), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n".utf8).write(to: src.appendingPathComponent("Run.app/Contents/MacOS/Run"))
+        try Data("#!/bin/sh\n".utf8).write(to: src.appendingPathComponent("install.command"))
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: src.appendingPathComponent("install.command").path)
+        let l = try victim()
+        defer { l.stop() }
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, chunkSize: chunk)
+        s.start()
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        func mark(_ path: String) -> String? {
+            var buffer = [UInt8](repeating: 0, count: 256)
+            let n = getxattr(downloads.appendingPathComponent(path).path, "com.apple.quarantine", &buffer, buffer.count, 0, XATTR_NOFOLLOW)
+            return n > 0 ? String(decoding: buffer.prefix(n), as: UTF8.self) : nil
+        }
+        for path in ["Tools", "Tools/install.command", "Tools/Run.app", "Tools/Run.app/Contents/MacOS/Run"] {
+            let value = try XCTUnwrap(mark(path), "\(path) is not quarantined")
+            XCTAssertTrue(value.hasPrefix("0081;") || value.hasPrefix("0083;"), value)
+            XCTAssertTrue(value.contains("Nimbus"), value)
+        }
+        XCTAssertEqual(try fm.attributesOfItem(atPath: downloads.appendingPathComponent("Tools/install.command").path)[.posixPermissions] as? Int, 0o755,
+                       "it is still the executable it was; macOS asks before running it")
+    }
+
+    func testLinksThatPointOutOfTheDropAreLeftOut() throws {
+        let fm = FileManager.default
+        let src = root.appendingPathComponent("src/Project")
+        try fm.createDirectory(at: src.appendingPathComponent("lib/deep"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: src.appendingPathComponent("lib/real.txt"))
+        for (name, target) in [("inside", "lib/real.txt"), ("lib/deep/up", "../real.txt"), ("lib/deep/top", "../../lib"),
+                               ("absolute", "/etc/hosts"), ("climbs", "../../../Library"), ("lib/deep/too-far", "../../../x"),
+                               ("sneaky", "lib/../../.."), ("home", "/Users")] {
+            try fm.createSymbolicLink(atPath: src.appendingPathComponent(name).path, withDestinationPath: target)
+        }
+        let seen = Box<ReceiveSession?>(nil)
+        let downloads = self.downloads
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        l.onOffer = { seen.value = $0; $0.accept(destination: downloads) }
+        l.start()
+        defer { l.stop() }
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, chunkSize: chunk)
+        s.start()
+        wait(s)
+        XCTAssertEqual(s.state, .completed, "the drop itself is fine; only the links are left out")
+        let got = downloads.appendingPathComponent("Project")
+        func link(_ name: String) -> String? { try? fm.destinationOfSymbolicLink(atPath: got.appendingPathComponent(name).path) }
+        XCTAssertEqual(link("inside"), "lib/real.txt")
+        XCTAssertEqual(link("lib/deep/up"), "../real.txt")
+        XCTAssertEqual(link("lib/deep/top"), "../../lib", "as far up as the drop's own top is still inside")
+        for name in ["absolute", "climbs", "lib/deep/too-far", "sneaky", "home"] {
+            XCTAssertNil(link(name), "\(name) points outside and was recreated")
+            XCTAssertFalse(fm.fileExists(atPath: got.appendingPathComponent(name).path))
+        }
+        let r = try XCTUnwrap(seen.value)
+        wait(r)
+        XCTAssertEqual(r.stats.skippedLinks, 5, "and the receiver can say how many")
+    }
+
+    func testWhichLinksStayInside() {
+        func inside(_ path: String, _ link: String) -> Bool { Manifest.linkStaysInside(path: path, link: link) }
+        XCTAssertTrue(inside("Photos/a", "b.jpg"))
+        XCTAssertTrue(inside("Photos/sub/a", "../b.jpg"))
+        XCTAssertTrue(inside("App.app/Contents/Frameworks/X.framework/X", "Versions/Current/X"))
+        XCTAssertTrue(inside("Photos/sub/a", "./x/./y"))
+        XCTAssertFalse(inside("Photos/a", "../elsewhere"), "out of the top-level item")
+        XCTAssertFalse(inside("Photos/sub/a", "../../elsewhere"))
+        XCTAssertFalse(inside("Photos/a", "/Users/someone/.ssh"))
+        XCTAssertFalse(inside("Photos/a", "sub/../../.."), "'..' after a name: refused rather than resolved")
+        XCTAssertFalse(inside("link", "anything"), "a top-level item that is itself a link has nothing to stay inside")
+        XCTAssertFalse(inside("Photos/a", ""))
+    }
+
+    // MARK: Who may connect
+
+    func testWhichAddressesAreOnThisNetwork() {
+        let home = [LocalNetwork.Net(address: [192, 168, 1, 107], mask: [255, 255, 255, 0]),
+                    LocalNetwork.Net(address: [10, 8, 0, 2], mask: [255, 255, 255, 255]),          // a point-to-point VPN
+                    LocalNetwork.Net(address: LocalNetwork.parse("2001:db8:1:2::10")!, mask: [UInt8](repeating: 0xFF, count: 8) + [UInt8](repeating: 0, count: 8))]
+        func local(_ a: String) -> Bool { LocalNetwork.isLocal(a, among: home) }
+        XCTAssertTrue(local("192.168.1.143"), "the same subnet")
+        XCTAssertTrue(local("127.0.0.1"), "this Mac")
+        XCTAssertTrue(local("::1"))
+        XCTAssertTrue(local("fe80::1c2b:3aff:fe4d:5e6f%en0"), "a link-local neighbour")
+        XCTAssertTrue(local("169.254.10.20"))
+        XCTAssertTrue(local("2001:db8:1:2::99"), "the same IPv6 prefix")
+        XCTAssertFalse(local("192.168.2.143"), "the subnet next door")
+        XCTAssertFalse(local("8.8.8.8"))
+        XCTAssertFalse(local("10.8.0.9"), "another end of the VPN: the mask covers one address")
+        XCTAssertFalse(local("2001:db8:1:3::99"))
+        XCTAssertFalse(local("not an address"))
+        XCTAssertFalse(LocalNetwork.isLocal("192.168.1.143", among: [.init(address: [0, 0, 0, 0], mask: [0, 0, 0, 0])]), "an empty mask matches nothing, not everything")
+        XCTAssertFalse(LocalNetwork.current().isEmpty, "this Mac has at least its loopback")
+    }
+
+    func testAnAddressThatIsNotLocalIsTurnedAwayUnread() throws {
+        let asked = Box(0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        l.onOffer = { _ in asked.value += 1 }
+        l.allows = { _ in false }   // as if 127.0.0.1 were somewhere far away
+        l.start()
+        defer { l.stop() }
+        XCTAssertTrue(l.localOnly, "the default")
+        let s = try connect(l)
+        try? s.send(.offer, Offer(version: protocolVersion, minor: 0, app: "x", senderName: "far away", senderID: "a",
+                                  items: ["f"], fileCount: 1, totalBytes: 1))
+        s.setReadTimeout(3)
+        var b: UInt8 = 0
+        XCTAssertThrowsError(try s.readExactly(&b, 1), "the connection was closed, not answered")
+        XCTAssertEqual(asked.value, 0, "and nobody was asked anything")
+        XCTAssertThrowsError(try Probe.hello(host: "127.0.0.1", port: l.port, timeout: 2), "not even who it is")
+    }
 }

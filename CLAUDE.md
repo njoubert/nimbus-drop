@@ -304,11 +304,16 @@ Until 0.2.2, yes, with one accepted drop.
   either end. A name is a claim (Bonjour, the offer, the hello); the address is real. Someone
   on the path can read a drop, and with the token they see go by could attach a data connection
   or resume a control connection of a drop in progress.
-- **Left as they are, deliberately, pending the owner's word:** received files carry no
-  quarantine flag (an app or script received and double-clicked runs without Gatekeeper's
-  question, unlike AirDrop); symlinks are recreated whatever they point to (never written
-  through, but a link out of the drop arrives as one); the listener answers any address that
-  can reach it, not only the local network.
+- **Decided by the owner the same day, in 0.2.2:** everything received is quarantined
+  (`Quarantine.value()` has macOS itself make the attribute once per drop, by marking a scratch
+  file through `URLResourceValues.quarantineProperties` and reading it back:
+  `0081;<time>;Nimbus\x20Drop;<uuid>`; `SafeTree.finish` puts it on every file and folder with
+  `fsetxattr`, so an app bundle's folder carries it); a symlink that points out of its drop is
+  not recreated (`Manifest.linkStaysInside`: relative, `..` only at the start and no more than
+  there are folders to climb; the receiver counts them in `stats.skippedLinks`); and the
+  listener takes connections only from the local network unless Settings says otherwise
+  (`LocalNetwork.isLocal`: this Mac, link-local, or the same subnet as one of its interfaces;
+  anything else is closed unread, logged once per address). `--any-network` for the CLI.
 - The updater's own checks (Developer ID team, HTTPS) live in nimbus-updater and were not part
   of this review. The app is not sandboxed: anything that got code running would have the
   user's whole account, which is why the gates above are what they are.
@@ -452,6 +457,10 @@ nothing that shows). More connections do not help when the
 memory bus is the limit; they are there for real links and for small files. 400 × 8 MB files:
 3.1 GB/s. 10,000 files of 4 to 14 KB: 0.9 s, about 11,000 files a second, finalize included.
 
+After the security changes (0.2.2): 10,000 small files in 1.1 s over loopback (the quarantine
+mark is an `open` and an `fsetxattr` per file; `SafeTree` alone measured no cost), 200 × 8 MB at
+4.6 GB/s.
+
 **Not measured yet:** Wi-Fi, 10 GbE, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
@@ -481,7 +490,8 @@ Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
 from the git-ignored `.signing` (copied from a sibling on this machine).
 
-Releases: **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
+Releases: **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
+**0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
 or counts itself as waiting; chunks retransmitted, counted; Internals; log levels), **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
 service, Settings) and **0.1.0 on 2026-11-22** (DMG + zip, Developer ID, notarized, protocol 2.0). 0.1.0 was
 published step by step rather than with `build.sh release`: `./build.sh dmg`, check the

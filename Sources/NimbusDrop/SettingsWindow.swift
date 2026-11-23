@@ -29,6 +29,10 @@ struct SettingsView: View {
                 Text("How many connections a drop you send is spread over. More helps on fast wired networks and with many small files. The receiving Mac takes however many the sender opens.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Receiving") {
+                Toggle("Only from the local network", isOn: Binding(get: { model.localOnly }, set: { model.setLocalOnly($0) }))
+                    .help("On: drops are taken only from Macs on the same subnet as this one. Off: from any address that can reach this Mac, such as over a VPN or from another subnet. Every drop still has to be accepted.")
+            }
             Section("General") {
                 Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
                     .disabled(Bundle.main.bundleIdentifier == nil)

@@ -313,6 +313,10 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   button with it; it is written to the history the moment it ends. The poll timer therefore
   runs while anything is listed (four times a second while something moves, once a second
   otherwise) and stops when the list is empty; the sleep hold is only for drops that are moving.
+- **The Internals list is the log file's tail plus this run**: `Diagnostics.seed` reads the
+  last 3000 lines (the rotated file first) at launch. It used to start empty, and the owner
+  took that for the log resetting on relaunch (2026-11-22); the file never did. Lines from
+  another day show their date. Clear empties the list, not the file.
 - **Internals is the first place to look, and the first thing to ask an owner to copy.** Its
   status text is `AppModel.internalsStatus()` (plain text on purpose: Copy puts it, and the lines
   listed, on the clipboard). Per-connection figures come from `Transfer.dataConnections`

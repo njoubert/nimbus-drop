@@ -27,6 +27,16 @@ struct InternalsView: View {
         f.dateFormat = "HH:mm:ss.SSS"
         return f
     }()
+    private static let day: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d  HH:mm:ss.SSS"
+        return f
+    }()
+
+    /// The time, with the date in front for a line from another day.
+    private static func when(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date) ? clock.string(from: date) : day.string(from: date)
+    }
 
     private var shown: [Diagnostics.Event] {
         events.filter { e in
@@ -60,6 +70,7 @@ struct InternalsView: View {
                     Button(paused ? "Resume" : "Pause") { paused.toggle(); if !paused { reload(force: true) } }
                     Button("Copy") { copy() }.help("Copies what is listed, with the status above it: safe to paste into a bug report.")
                     Button("Clear") { Diagnostics.shared.clear(); reload(force: true) }
+                        .help("Empties this list. The log file keeps everything.")
                     Button("Show Log File") { AppDelegate.shared?.showLog() }
                 }
                 .controlSize(.small)
@@ -89,7 +100,7 @@ struct InternalsView: View {
 
     private func row(_ e: Diagnostics.Event) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(Self.clock.string(from: e.at)).foregroundStyle(.secondary)
+            Text(Self.when(e.at)).foregroundStyle(.secondary)
             Text(e.kind.rawValue).foregroundStyle(colour(e.kind)).frame(width: 36, alignment: .leading)
             Text(e.tag ?? "").foregroundStyle(.secondary).frame(width: 84, alignment: .leading)
             Text(e.text).foregroundStyle(e.isError ? AnyShapeStyle(Palette.failure) : AnyShapeStyle(.primary))
@@ -116,7 +127,7 @@ struct InternalsView: View {
     }
 
     private func copy() {
-        let lines = shown.map { "\(Self.clock.string(from: $0.at)) \($0.kind.rawValue.padding(toLength: 4, withPad: " ", startingAt: 0)) \($0.tag.map { "[\($0)] " } ?? "")\($0.text)" }
+        let lines = shown.map { "\(Self.when($0.at)) \($0.kind.rawValue.padding(toLength: 4, withPad: " ", startingAt: 0)) \($0.tag.map { "[\($0)] " } ?? "")\($0.text)" }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(model.internalsStatus() + "\n\n" + lines.joined(separator: "\n") + "\n", forType: .string)
     }

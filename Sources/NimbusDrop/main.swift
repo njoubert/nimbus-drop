@@ -184,7 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // copy keeps its own. Everything the engine and the app note goes there.
         let log = LogFile(url: AppDelegate.logURL)
         self.log = log
-        // The same lines go to the Internals panel's buffer, which fills from launch.
+        // The same lines go to the Internals panel's buffer, which starts with what the file
+        // already holds: the panel shows earlier runs too, not only this one.
+        Diagnostics.shared.seed(from: AppDelegate.logURL)
         DropLog.sink = { line in
             log.append(line)
             Diagnostics.shared.record(line)

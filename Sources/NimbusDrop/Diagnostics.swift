@@ -5,7 +5,8 @@ import Foundation
 /// The app's flight recorder, as in Nimbus Leviton Bar: every line that goes to the log file is
 /// also kept here, in memory, for the Internals panel to show live. It records from launch, not
 /// from when the panel opens (what is worth seeing has usually happened by the time anyone
-/// looks), and it is bounded: the newest `capacity` lines.
+/// looks), it starts each launch with the end of the log file (so earlier runs are there too),
+/// and it is bounded: the newest `capacity` lines.
 ///
 /// Safe from any thread: one lock, and nothing is called while it is held. The panel polls
 /// `version` rather than being called back.
@@ -43,8 +44,28 @@ final class Diagnostics: @unchecked Sendable {
         lock.withLock { events = []; _version += 1 }
     }
 
+    /// Fills the buffer with the end of the log file, so that what happened before this launch
+    /// (which is often the thing being looked for) is in the panel too. The file is the record;
+    /// this is its last `capacity` lines read back.
+    func seed(from url: URL) {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        var lines: [Substring] = []
+        // The file before the last rotation first, so a recent rotation does not empty the panel.
+        for file in [url.appendingPathExtension("1"), url] {
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            lines += text.split(separator: "\n", omittingEmptySubsequences: true)
+        }
+        for line in lines.suffix(Self.capacity) where line.count > 24 {
+            let cut = line.index(line.startIndex, offsetBy: 23)
+            guard let at = stamp.date(from: String(line[..<cut])) else { continue }
+            record(String(line[line.index(after: cut)...]), at: at)
+        }
+    }
+
     /// Takes a log line as the engine and the app write it and files it under its kind.
-    func record(_ line: String) {
+    func record(_ line: String, at: Date = Date()) {
         var kind = Kind.app, tag: String?, text = line
         if line.hasPrefix("["), let end = line.firstIndex(of: "]") {
             kind = .drop
@@ -58,7 +79,7 @@ final class Diagnostics: @unchecked Sendable {
         let isError = ["failed", "lost", "damaged", "gave up", "cannot", "could not", "no sign of life", "moved nothing"].contains { lowered.contains($0) }
         lock.withLock {
             nextID += 1
-            events.append(Event(id: nextID, at: Date(), kind: kind, tag: tag, text: text, isError: isError))
+            events.append(Event(id: nextID, at: at, kind: kind, tag: tag, text: text, isError: isError))
             if events.count > Self.capacity { events.removeFirst(events.count - Self.capacity) }
             _version += 1
         }

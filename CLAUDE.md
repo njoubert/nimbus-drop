@@ -103,6 +103,10 @@ Sources/NimbusDrop/         the app
                             --dump-kinds
   SettingsWindow.swift      Settings (⌘,): parallel connections, Open at login, updates, the
                             version and protocol. Nothing of the kind is on the main window.
+  Diagnostics.swift         the flight recorder: every log line, in memory, from launch (3000)
+  InternalsPanel.swift      Internals (⌘I), after Nimbus Leviton Bar's: live status (this Mac,
+                            destinations, each drop and each of its connections) over the log as
+                            it is written, with filter, Pause, Copy, Clear; --dump-internals
   HistoryWindow.swift       every drop that has ended (HistoryStore in the core keeps it in
                             ~/Library/Application Support/<bundle id>/history.json); --dump-history
   OfferPanel.swift          the Accept / Decline panel for an incoming drop; --dump-offer
@@ -156,7 +160,7 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 2.1)
+## The protocol (version 2.2)
 
 Control connection, sender → receiver. A frame is
 `[u32 length][u32 CRC of the length][u8 type][JSON][u32 CRC of type + JSON]`, big-endian.
@@ -173,7 +177,7 @@ manifest {chunkSize, entries[]}
 N data connections, each: attach {token}, then
   [u32 file][u32 chunk][u32 length][u32 crc] + bytes, repeated;      crc covers the first twelve
   file = 0xFFFFFFFF ends the stream                                   header bytes and the chunk
-done {streams: data connections opened so far}
+done {streams: data connections opened so far, resent: chunks sent twice so far (2.2)}
                                      settle: wait for those connections to finish, close the rest
                                      everything here → set times and modes, rename, complete {saved[]}
                                      something missing → plan {…} again, and the sender goes round
@@ -196,6 +200,19 @@ hello {} → hello {name, id, version, minor, app}: "who is at this address?", t
   a sender that fails for a reason of its own says so first (`SendSession.fail`), so the
   receiver does not wait out the minute. A 2.0 receiver drops the unknown `resume` frame and the
   sender's minute runs out: no worse than before.
+- **The two ends do not learn of a dead control connection at the same time**, and the gap
+  can be the rest of the drop. The owner pulled a cable for a minute on 0.2.0 (2026-11-22):
+  the receiver's keepalive timed its control connection out, the sender's never did, the
+  sender's data connections were replaced, and 5 GB crossed while the receiver sat in
+  `.reconnecting`. The sender found out only on writing `done` (Broken pipe), then resumed in
+  half a second. Two consequences, both fixed after 0.2.0: the receiver showed "lost the
+  connection, waiting" throughout, and its minute was running against a sender that was plainly
+  there (a remainder longer than a minute would have ended the drop). Now a data connection
+  attaching while the receiver waits puts it back in `.transferring`, and the minute is counted
+  from the last byte that arrived. `ChaosProxy.killFarSide` models it (dead on the target's
+  side; the client finds out when it writes), in
+  `testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd`, which fails against
+  0.2.0's receiver. Why the sender's keepalive did not fire is not known; do not count on it.
 - **Silence is treated as a lost connection.** The watchdog (`Transfer.silence`) closes the
   control connection instead of failing, which leads into the same reconnect. A link that went
   quiet and came back is thereby recovered; a peer that really is frozen costs one more minute.
@@ -296,6 +313,27 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   button with it; it is written to the history the moment it ends. The poll timer therefore
   runs while anything is listed (four times a second while something moves, once a second
   otherwise) and stops when the list is empty; the sleep hold is only for drops that are moving.
+- **The Internals list is the log file's tail plus this run**: `Diagnostics.seed` reads the
+  last 3000 lines (the rotated file first) at launch. It used to start empty, and the owner
+  took that for the log resetting on relaunch (2026-11-22); the file never did. Lines from
+  another day show their date. Clear empties the list, not the file.
+- **Internals is the first place to look, and the first thing to ask an owner to copy.** Its
+  status text is `AppModel.internalsStatus()` (plain text on purpose: Copy puts it, and the lines
+  listed, on the clipboard). Per-connection figures come from `Transfer.dataConnections`
+  (`streamOpened` / `streamCarried` / `streamClosed` in the engine). A drop's last lines are a
+  `summary:` (bytes, time, rate, chunks, retransmitted, rounds, connections dropped, reconnects
+  and attempts) on each side; each round logs how many chunks it sent.
+- **Log levels are set where a line is written, and are the only thing that colours it.**
+  `debug` (step-by-step detail: connections opened, what a round sent, an address looked up),
+  `info` (the story: offered, accepted, moving, done, a Mac found), `warn` (trouble a drop is
+  getting past: a connection lost, a damaged chunk, the control connection gone, a reconnect
+  attempt that failed), `error` (trouble that ended something: a drop failed, reconnecting given
+  up, cannot listen). The first version of the panel coloured by keywords and painted a clean
+  drop's summary red for containing "0 damaged" and "connections lost 0" (the owner asked what
+  had gone wrong; nothing had). `testLogLevelsSayWhatHappenedNotWhatWordsWereUsed` holds that a
+  good drop logs nothing at `warn` or above. A new line gets a level on purpose:
+  `log("…", .warn)`. The file holds every level, as `<time> LEVEL <line>`; the panel's picker
+  chooses the least important one listed.
 - **The debug log** is `~/Library/Logs/<bundle name>/nimbus-drop.log` (so "Nimbus Drop Dev" for
   the development copy), 4 MB then rotated to `.1`. Read it first when a drop misbehaves: every
   line about a drop starts with its tag (`[3F9A2C send]`), and a state change that ends or
@@ -392,7 +430,8 @@ Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
 from the git-ignored `.signing` (copied from a sibling on this machine).
 
-Releases: **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
+Releases: **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
+or counts itself as waiting; chunks retransmitted, counted; Internals; log levels), **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
 service, Settings) and **0.1.0 on 2026-11-22** (DMG + zip, Developer ID, notarized, protocol 2.0). 0.1.0 was
 published step by step rather than with `build.sh release`: `./build.sh dmg`, check the
 artefacts (`spctl` on the app, on the DMG, on the app inside the mounted DMG, and on the app

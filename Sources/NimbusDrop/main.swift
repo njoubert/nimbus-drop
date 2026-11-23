@@ -19,6 +19,7 @@ import NimbusUpdater
 //   --dump-kinds PATH       render the "which kinds of file?" sheet to PATH, exit
 //   --dump-settings PATH    render the Settings window to PATH, exit
 //   --dump-history PATH     render the History window with a made-up history to PATH, exit
+//   --dump-internals PATH   render the Internals panel with a staged drop to PATH, exit
 //   --dump-offer PATH       render the "do you want this drop?" panel to PATH, exit
 //   --show-window           open the window at launch (the app otherwise starts in the menu bar only)
 //
@@ -94,6 +95,7 @@ while !args.isEmpty {
     case "--dump-kinds": let v = takeValue(a); exit(MainActor.assumeIsolated { MainWindowController.dumpKinds(to: v) ? 0 : 1 })
     case "--dump-settings": let v = takeValue(a); exit(MainActor.assumeIsolated { SettingsWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-history": let v = takeValue(a); exit(MainActor.assumeIsolated { HistoryWindowController.dump(to: v) ? 0 : 1 })
+    case "--dump-internals": let v = takeValue(a); exit(MainActor.assumeIsolated { InternalsPanelController.dump(to: v) ? 0 : 1 })
     case "--dump-offer": let v = takeValue(a); exit(MainActor.assumeIsolated { OfferPanel.dump(to: v) ? 0 : 1 })
     case "--crowd": dumpCrowd = Int(takeValue(a)) ?? 0
     case "--show-window": showWindowAtLaunch = true
@@ -115,7 +117,7 @@ while !args.isEmpty {
     case "--only": let v = takeValue(a).split(separator: ",").map { String($0).replacingOccurrences(of: ".", with: "") }; MainActor.assumeIsolated { CLI.only = v }
     case "--streams": let v = Int(takeValue(a)); MainActor.assumeIsolated { CLI.streams = v }
     case "--print": cli = .print
-    case "--verbose": DropLog.sink = { line in FileHandle.standardError.write(Data(("  " + line + "\n").utf8)) }
+    case "--verbose": DropLog.sink = { level, line in FileHandle.standardError.write(Data(("  \(level.label) \(line)\n").utf8)) }
     case "--check-update": cli = .checkUpdate
     case "--preflight": cli = .preflight(app: takeValue(a))
     case "-h", "--help": usage()
@@ -155,11 +157,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var settings: SettingsWindowController?
     var history: HistoryWindowController?
     var log: LogFile?
+    var internals: InternalsPanelController?
 
     static var logURL: URL {
         let name = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "Nimbus Drop"
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/\(name)/nimbus-drop.log")
+    }
+
+    /// What the app is doing, live: status, connections, and the log as it is written.
+    @objc func showInternals() {
+        if internals == nil { internals = InternalsPanelController(model: model) }
+        internals?.show()
     }
 
     /// The log file, selected in Finder (it opens in Console with a double-click).
@@ -175,7 +184,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // copy keeps its own. Everything the engine and the app note goes there.
         let log = LogFile(url: AppDelegate.logURL)
         self.log = log
-        DropLog.sink = { log.append($0) }
+        // The same lines go to the Internals panel's buffer, which starts with what the file
+        // already holds: the panel shows earlier runs too, not only this one.
+        Diagnostics.shared.seed(from: AppDelegate.logURL)
+        DropLog.sink = { level, line in
+            log.append("\(level.label) \(line)")
+            Diagnostics.shared.record(level, line)
+        }
         DropLog.write("—— \(StatusBarController.versionString()) started from \(Bundle.main.bundlePath); macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
 
         // One copy only, the newest: two copies on one Mac would both announce it and split the

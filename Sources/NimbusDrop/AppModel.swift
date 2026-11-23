@@ -166,7 +166,7 @@ final class AppModel: ObservableObject {
             if was == nil {
                 DropLog.write("discovery: found \(p.name) at \(place) (Nimbus Drop \(p.appVersion ?? "?"), protocol \(p.protocolText))")
             } else if was?.address != p.address || was?.port != p.port {
-                DropLog.write("discovery: \(p.name) is at \(place)")
+                DropLog.write("discovery: \(p.name) is at \(place)", .debug)
             }
         }
         for p in old where after[p.id] == nil { DropLog.write("discovery: \(p.name) is gone") }
@@ -207,7 +207,7 @@ final class AppModel: ObservableObject {
                 DropLog.write("receiving as \(identity.name) on port \(l.port); addresses \(LocalHost.addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", "))")
             } catch {
                 listenProblem = (error as? DropError)?.message ?? error.localizedDescription
-                DropLog.write("cannot receive: \(listenProblem ?? "")")
+                DropLog.write("cannot receive: \(listenProblem ?? "")", .error)
             }
         }
         updateProblem()
@@ -614,8 +614,58 @@ final class AppModel: ObservableObject {
         entry.connectionsLost = stats.connectionFailures
         entry.damagedChunks = stats.damagedChunks
         entry.reconnects = stats.reconnects
+        entry.retransmittedChunks = stats.retransmittedChunks
         historyStore?.add(entry)
         history = historyStore?.entries ?? []
+    }
+
+    // MARK: Internals
+
+    /// Staged text for `--dump-internals`.
+    var demoInternals: String?
+
+    /// The live status at the top of the Internals panel: this Mac, who it can see, and every
+    /// drop with each of its connections. Plain text, so it copies into a bug report as it is.
+    func internalsStatus() -> String {
+        if let demoInternals { return demoInternals }
+        let now = Date()
+        var out: [String] = []
+        func line(_ label: String, _ text: String) { out.append(label.padding(toLength: 13, withPad: " ", startingAt: 0) + text) }
+        line("This Mac", "\(identity.name) · \(addresses.isEmpty ? "no network" : addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", ")) · Nimbus Drop \(identity.appVersion) · protocol \(protocolVersionText)")
+        line("Receiving", (receiving ? "on" + (listener.map { ", port \($0.port)" } ?? ", NOT LISTENING") : "off")
+             + " · open at login: \(LoginItem.statusDescription)" + (problem.map { " · PROBLEM: \($0)" } ?? ""))
+        line("Discovery", "\(browser?.problem.map { "PROBLEM: \($0)" } ?? "browsing") · \(destinations.count) \(destinations.count == 1 ? "destination" : "destinations")")
+        for p in destinations {
+            line("", p.name.padding(toLength: 22, withPad: " ", startingAt: 0) + " "
+                 + ("\(p.address ?? "address not known")\(p.port.map { ":\($0)" } ?? "")").padding(toLength: 22, withPad: " ", startingAt: 0)
+                 + " Nimbus Drop \(p.appVersion ?? "?") · protocol \(p.protocolText)"
+                 + (p.isManual ? " · added by address\(p.unreachable ? ", not answering" : "")" : "") + (p.isCompatible ? "" : " · INCOMPATIBLE"))
+        }
+        out.append("")
+        let moving = transfers.filter { !$0.state.isFinal }.count
+        line("Drops", transfers.isEmpty ? "none (finished drops are in History)" : "\(moving) moving, \(transfers.count - moving) ended in the last minute")
+        for t in transfers {
+            let p = t.progress, s = t.stats
+            let since = Format.duration(now.timeIntervalSince(t.transferStartedAt ?? t.startedAt))
+            line(String(t.id.uuidString.prefix(6)) + (t.direction == .send ? " send" : " recv"),
+                 "“\(t.title)” \(t.direction == .send ? "→" : "←") \(t.peerName) (\(t.peerAddress))   \(t.state) for \(since)")
+            let rate = meters[t.id]?.current ?? 0
+            line("", "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) (\(Int(p.fraction * 100)) %) · \(Format.bitRate(rate)) · \(Format.files(p.totalFiles)), \(p.doneFiles) done"
+                 + (p.resumedBytes > 0 ? " · \(Format.bytes(p.resumedBytes)) were already there" : ""))
+            line("", "round \(max(1, s.rounds)) · \(s.chunks) chunks \(t.direction == .send ? "sent" : "received"), \(s.retransmittedChunks) retransmitted"
+                 + " · \(s.connectionFailures) connections dropped · \(s.damagedChunks) damaged chunks · \(s.reconnects) reconnects in \(s.reconnectAttempts) attempts")
+            let connections = t.dataConnections
+            for (i, c) in connections.enumerated() {
+                let idle = now.timeIntervalSince(c.lastActivity)
+                line(i == 0 ? "" : "", (i == 0 ? "connections  " : "             ") + "#\(c.id)".padding(toLength: 5, withPad: " ", startingAt: 0)
+                     + c.remote.padding(toLength: 18, withPad: " ", startingAt: 0)
+                     + "\(c.chunks) chunks".padding(toLength: 14, withPad: " ", startingAt: 0)
+                     + Format.bytes(c.bytes).padding(toLength: 10, withPad: " ", startingAt: 0)
+                     + (idle < 1 ? "active now" : "idle \(String(format: "%.0f", idle)) s"))
+            }
+            if connections.isEmpty, !t.state.isFinal { line("", "connections  none open") }
+        }
+        return out.joined(separator: "\n")
     }
 
     func clearHistory() {
@@ -636,8 +686,7 @@ final class AppModel: ObservableObject {
             let rate = meters[t.id]?.rate(bytes: p.doneBytes, now: now) ?? 0
             status = "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) · \(Format.bitRate(rate)) · \(Format.connections(p.connections))"
             if rate > 0 { status += " · \(Format.duration(Double(p.totalBytes - p.doneBytes) / rate)) left" }
-            let trouble = t.stats
-            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 || trouble.reconnects > 0 { status += "\n" + Self.troubleText(trouble) }
+            if let trouble = Self.troubleText(t.stats) { status += "\n" + trouble }
         case .reconnecting:
             status = t.direction == .send ? "Lost the connection to \(t.peerName); trying to get it back…"
                                           : "Lost the connection to \(t.peerName); waiting for it to come back…"
@@ -649,8 +698,7 @@ final class AppModel: ObservableObject {
             let moved = p.totalBytes - p.resumedBytes
             status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
             if p.resumedBytes > 0 { status += " · continued from \(Format.bytes(p.resumedBytes))" }
-            let trouble = t.stats
-            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 || trouble.reconnects > 0 { status += "\n" + Self.troubleText(trouble) }
+            if let trouble = Self.troubleText(t.stats) { status += "\n" + trouble }
         case .declined(let why): status = why; failed = true
         case .failed(let why): status = why; failed = true
         case .cancelled: status = "Cancelled"; failed = true
@@ -662,14 +710,16 @@ final class AppModel: ObservableObject {
                            canRetry: failed && sends[t.id] != nil)
     }
 
-    /// "2 connections lost and 1 damaged chunk re-sent": what the drop got past.
-    static func troubleText(_ s: TransferStats) -> String {
+    /// What the drop got past, as what it cost: the chunks that went a second time. How many
+    /// connections were dropped along the way is in Internals and the log, not here (the owner:
+    /// "I don't think there's much value in showing the number of connections that were
+    /// dropped"). Nil when there is nothing to say.
+    static func troubleText(_ s: TransferStats) -> String? {
         var parts: [String] = []
-        let lost = s.connectionFailures - s.damagedChunks
         if s.reconnects > 0 { parts.append("reconnected \(s.reconnects == 1 ? "once" : "\(s.reconnects) times")") }
-        if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") lost") }
         if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
-        return parts.joined(separator: ", ") + (lost > 0 || s.damagedChunks > 0 ? "; re-sent" : "")
+        if s.retransmittedChunks > 0 { parts.append("\(s.retransmittedChunks) \(s.retransmittedChunks == 1 ? "chunk" : "chunks") retransmitted") }
+        return parts.isEmpty ? nil : "Recovered: " + parts.joined(separator: ", ")
     }
 
     // MARK: Notifications
@@ -719,10 +769,14 @@ private final class Located: @unchecked Sendable {
 private final class RateMeter {
     private var samples: [(time: Date, bytes: Int64)] = []
 
+    /// The last figure worked out, for anything else that wants to show it.
+    private(set) var current: Double = 0
+
     func rate(bytes: Int64, now: Date) -> Double {
         samples.append((now, bytes))
         samples.removeAll { now.timeIntervalSince($0.time) > 4 }
         guard let first = samples.first, now.timeIntervalSince(first.time) >= 0.5 else { return 0 }
-        return Double(bytes - first.bytes) / now.timeIntervalSince(first.time)
+        current = Double(bytes - first.bytes) / now.timeIntervalSince(first.time)
+        return current
     }
 }

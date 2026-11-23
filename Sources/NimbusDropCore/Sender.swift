@@ -55,6 +55,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
         var lastProgress = Date()
         /// Chunks written in full on this connection.
         var chunks = 0
+        /// What the drop knows this connection by (`Transfer.dataConnections`).
+        var info = 0
         init(_ socket: Socket) { self.socket = socket }
     }
     private var live: [Stream] = []
@@ -145,6 +147,12 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 setState(.transferring)
                 if !jobs.isEmpty {
                     let sockets = try openStreams(token: plan.token)
+                    log("opened \(sockets.count) data connections to \(lock.withLock { "\(host):\(port)" })", .debug)
+                    let before = stats
+                    defer {
+                        let now = stats
+                        log("round \(now.rounds) over: \(now.chunks - before.chunks) chunks sent (\(now.chunks) in all, \(now.retransmittedChunks) of them retransmissions), \(now.connectionFailures - before.connectionFailures) connections dropped, \(progress.doneBytes) of \(manifest.totalBytes) bytes written", .debug)
+                    }
                     let group = DispatchGroup()
                     for s in sockets {
                         group.enter()
@@ -157,11 +165,12 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 }
                 if isOver { return }
                 setState(.finishing)
-                try control.send(.done, Done(streams: lock.withLock { opened }))
+                try control.send(.done, Done(streams: lock.withLock { opened }, resent: stats.retransmittedChunks))
                 reply = try nextFrame()
                 switch reply.type {
                 case .complete:
                     update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
+                    summarize()
                     finish(.completed)
                     return
                 case .plan: continue
@@ -171,11 +180,21 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 // The conversation's own connection is gone (the other Mac changed networks,
                 // slept, lost Wi-Fi). The drop is still wanted on both sides: get it back.
                 if isOver { return }
-                log("lost the control connection: \(lost.message)")
+                log("lost the control connection: \(lost.message)", .warn)
                 reply = try reconnect(after: lost)
                 reconnected = true
             }
         }
+    }
+
+    /// The drop in one line, for the log: how much, how fast, and what it took.
+    private func summarize() {
+        let p = progress, s = stats
+        let seconds = max(0.001, Date().timeIntervalSince(transferStartedAt ?? startedAt))
+        let moved = p.totalBytes - p.resumedBytes
+        log("summary: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) sent in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(moved) / seconds))"
+            + (p.resumedBytes > 0 ? " (\(Format.bytes(p.resumedBytes)) were already there)" : "")
+            + "; \(s.chunks) chunks, \(s.retransmittedChunks) retransmitted; \(s.rounds) rounds; \(s.connectionFailures) connections dropped; \(s.reconnects) reconnects in \(s.reconnectAttempts) attempts")
     }
 
     /// Tries for `Tuning.reconnectSeconds` to reach the receiver again and pick the drop up
@@ -184,6 +203,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
     private func reconnect(after lost: DropError) throws -> (type: FrameType, body: Data) {
         guard !token.isEmpty else { throw lost }
         setState(.reconnecting)
+        log("trying to reach \(peerName) again for up to \(Int(Tuning.reconnectSeconds)) s")
         for s in lock.withLock({ live }) { s.socket.shutdown() }
         let deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
         var attempt = 0
@@ -195,10 +215,11 @@ public final class SendSession: Transfer, @unchecked Sendable {
             }
             let (h, p) = lock.withLock { (host, port) }
             attempt += 1
+            note { $0.reconnectAttempts += 1 }
             let fresh: Socket?
             do { fresh = try Socket.connect(host: h, port: p, timeout: min(Tuning.connectTimeout, 5)) } catch {
                 fresh = nil
-                log("reconnect attempt \(attempt) to \(h):\(p): \((error as? DropError)?.message ?? "\(error)")")
+                log("reconnect attempt \(attempt) to \(h):\(p): \((error as? DropError)?.message ?? "\(error)")", .warn)
             }
             if let fresh {
                 fresh.setNoDelay()
@@ -219,13 +240,14 @@ public final class SendSession: Transfer, @unchecked Sendable {
                         log("reconnected on attempt \(attempt); the receiver answered \(answer.type)")
                         return answer
                     }
-                    log("reconnect attempt \(attempt) to \(h):\(p): connected, but no answer to resume")
+                    log("reconnect attempt \(attempt) to \(h):\(p): connected, but no answer to resume", .warn)
                 }
             }
             if isOver { break }
             Thread.sleep(forTimeInterval: 1)
         }
         if isOver { throw lost }
+        log("gave up reconnecting after \(attempt) attempts in \(Int(Tuning.reconnectSeconds)) s", .error)
         throw DropError("Lost the connection to \(peerName) and could not get it back; send the drop again to continue it")
     }
 
@@ -244,7 +266,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// minute if the other Mac really is frozen.
     override func silence() {
         guard let control, !token.isEmpty, state != .reconnecting else { return super.silence() }
-        log("no sign of life from \(peerName); treating the connection as lost")
+        log("no sign of life from \(peerName); treating the connection as lost", .warn)
         control.shutdown()
     }
 
@@ -342,16 +364,18 @@ public final class SendSession: Transfer, @unchecked Sendable {
         var fruitless = 0
         while true {
             let stream = Stream(socket)
+            stream.info = streamOpened(remote: socket.peerAddress)
             lock.withLock { live.append(stream) }
             update { $0.connections += 1 }
             var failed = false
             do { try runStream(stream) } catch {
                 failed = true
-                log("a data connection failed after \(stream.chunks) chunks: \((error as? DropError)?.message ?? "\(error)")")
+                log("a data connection failed after \(stream.chunks) chunks: \((error as? DropError)?.message ?? "\(error)")", .warn)
                 note { $0.connectionFailures += 1 }
                 socket.shutdown()
             }
             lock.withLock { live.removeAll { $0 === stream } }
+            streamClosed(stream.info)
             untrack(socket)
             update { $0.connections -= 1 }
             fruitless = stream.chunks == 0 ? fruitless + 1 : 0
@@ -372,7 +396,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
         while !state.isFinal {
             let now = Date()
             for s in lock.withLock({ live }) where now.timeIntervalSince(lock.withLock { s.lastProgress }) > Tuning.stallSeconds {
-                log("a data connection has moved nothing for \(Int(Tuning.stallSeconds)) s; closing it")
+                log("a data connection has moved nothing for \(Int(Tuning.stallSeconds)) s; closing it", .warn)
                 lock.withLock { s.lastProgress = now }
                 s.socket.shutdown()
             }
@@ -410,6 +434,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
         }
     }
 
+    /// Every chunk that has been written to a connection once; one taken again is a retransmission.
+    private var written = Set<UInt64>()
+
     private func takeJob() -> Job? {
         jobLock.lock()
         defer { jobLock.unlock() }
@@ -421,7 +448,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
         }
         chunksSent += 1
         nextJob += 1
-        return jobs[nextJob - 1]
+        let job = jobs[nextJob - 1]
+        if !written.insert(UInt64(job.file) << 32 | UInt64(job.chunk)).inserted { note { $0.retransmittedChunks += 1 } }
+        return job
     }
 
     private func runStream(_ stream: Stream) throws {
@@ -466,6 +495,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 }
             }
             stream.chunks += 1
+            streamCarried(stream.info, bytes: length)
             if chunk == manifest.chunkCount(file) - 1 { update { $0.doneFiles += 1 } }
         }
         if isOver { return }

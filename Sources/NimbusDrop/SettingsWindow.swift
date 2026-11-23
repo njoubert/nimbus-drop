@@ -40,9 +40,9 @@ struct SettingsView: View {
                     Button("Show History…") { AppDelegate.shared?.showHistory() }
                 }
                 HStack {
-                    Text("What each drop did, step by step, for when one fails.")
+                    Text("What the app is doing, live, and its debug log.")
                     Spacer()
-                    Button("Show Log") { AppDelegate.shared?.showLog() }
+                    Button("Show Internals…") { AppDelegate.shared?.showInternals() }
                 }
             }
             Section("Updates") {

@@ -34,7 +34,7 @@
 
 **The menu bar icon opens the window**, and the window is the app. A right-click on the icon
 gives the app's menu, the same one that sits under its name while the window is open: Receive
-Drops, Open at Login, History, Show Log, Settings, updates, Quit. A cloud
+Drops, Open at Login, History, Internals, Settings, updates, Quit. A cloud
 with an arrow while receiving is on, a hollow cloud while it is off, a percentage beside it
 while a drop moves. The app has a Dock icon and its own menu only while the window is open.
 
@@ -74,10 +74,15 @@ to or from whom, when, how big, how it ended, with *Show in Finder* for what was
 a file on this Mac (`~/Library/Application Support/com.njoubert.nimbusdrop/history.json`, the
 last 500 drops), goes nowhere, and *Clear History* empties it.
 
-**A debug log** is kept at `~/Library/Logs/Nimbus Drop/nimbus-drop.log` (*Show Log* in the menu,
-in History and in Settings): every step of every drop with its time, each connection lost and
-each attempt to get it back, Macs appearing and leaving. It is what to look at, or send, when a
-drop fails. Two files of 4 MB at most, on this Mac only.
+**Internals** (in the menu, ⌘I) shows what the app is doing, live: this Mac's place on the
+network, the Macs it can see with their versions, and every drop with each of its connections
+(how many chunks each has carried, and whether it is moving). Under that runs the debug log as
+it is written: every step of every drop with its time, each connection lost, each attempt to
+reconnect, how many chunks were sent and how many had to go twice. Every line has a level
+(debug, info, warning, error) and is coloured by it: amber for trouble a drop is getting past,
+red for trouble that ended something. Filter by level, kind or text, pause it, copy it into a
+bug report. The same lines are kept in `~/Library/Logs/Nimbus Drop/nimbus-drop.log` (two
+files of 4 MB at most, on this Mac only), which is what to look at, or send, when a drop fails.
 
 **Nothing is overwritten.** If `~/Downloads/Christmas 2026` already exists, the new one lands as
 `Christmas 2026 2`, the way Finder keeps both.
@@ -149,7 +154,8 @@ to about 3 GB/s before the Macs themselves are the limit.
 - **Written where it belongs:** each chunk is written straight to its offset in its file
   (`pwrite`), so nothing is reassembled afterwards. Modification times and permissions are set
   at the end and the finished items are moved into place in one rename each.
-- **Versioned:** the protocol is 2.1 (2.1 added reconnecting; it works with 2.0, without that). The first number changes when two copies could no longer
+- **Versioned:** the protocol is 2.2 (2.1 added reconnecting, 2.2 a count of retransmitted
+  chunks; all of 2.x work together). The first number changes when two copies could no longer
   exchange a drop, the second when something is added that an older copy can ignore.
 - **No encryption and no accounts,** by design: this is for a network you trust, and the
   safeguard is that a person at the receiving Mac approves every drop. Anyone on the same

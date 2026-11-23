@@ -71,19 +71,14 @@ final class MainMenu: NSObject, NSMenuDelegate {
             item.isEnabled = enabled
             menu.addItem(item)
         }
-        let version = NSMenuItem(title: StatusBarController.versionString(), action: #selector(copyVersion), keyEquivalent: "")
-        version.target = self
-        version.toolTip = "Click to copy"
-        menu.addItem(version)
-        menu.addItem(.separator())
-
+        // The version and protocol are in Settings and in Internals, not here.
         add("Open Nimbus Drop", #selector(AppDelegate.showWindow), key: "o", target: AppDelegate.shared)
         add("Receive Drops", #selector(toggleReceiving), key: "r", target: self, on: model.receiving)
         add("Open at Login", #selector(toggleLoginItem), target: self, on: LoginItem.isEnabled, enabled: Bundle.main.bundleIdentifier != nil)
         menu.addItem(.separator())
 
         add("History…", #selector(AppDelegate.showHistory), key: "y", target: AppDelegate.shared)
-        add("Show Log", #selector(AppDelegate.showLog), target: AppDelegate.shared)
+        add("Internals…", #selector(AppDelegate.showInternals), key: "i", target: AppDelegate.shared)
         add("Settings…", #selector(AppDelegate.showSettings), key: ",", target: AppDelegate.shared)
         menu.addItem(.separator())
 
@@ -95,10 +90,6 @@ final class MainMenu: NSObject, NSMenuDelegate {
 
     @objc private func toggleReceiving() { model.setReceiving(!model.receiving) }
     @objc private func toggleLoginItem() { model.setOpenAtLogin(!LoginItem.isEnabled) }
-    @objc private func copyVersion() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(StatusBarController.versionString(), forType: .string)
-    }
 
     // MARK: Updates (the same rows as the sibling apps; the behaviour lives in NimbusUpdater)
 

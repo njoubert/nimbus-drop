@@ -146,7 +146,11 @@ final class ChaosTests: XCTestCase {
         let s = send(src)
         wait(s)
         XCTAssertEqual(s.state, .completed)
-        XCTAssertEqual(s.stats, TransferStats(rounds: 1, connectionFailures: 0, damagedChunks: 0))
+        var untroubled = TransferStats(rounds: 1)
+        untroubled.chunks = s.stats.chunks
+        XCTAssertEqual(s.stats, untroubled, "one round, nothing dropped, nothing sent twice")
+        XCTAssertGreaterThan(s.stats.chunks, 128, "8 MB in 64 KB chunks, counted")
+        XCTAssertEqual(try receiverSide().stats.chunks, s.stats.chunks, "and the receiver counted the same")
         XCTAssertEqual(proxy.stats.connections, 5, "one control connection and four for data")
         XCTAssertGreaterThan(proxy.stats.bytesToTarget, 8 << 20)
         try assertArrived(src)
@@ -243,6 +247,12 @@ final class ChaosTests: XCTestCase {
         XCTAssertEqual(s.state, .completed)
         XCTAssertGreaterThanOrEqual(s.stats.rounds, 2, "the missing chunks went out in a later round")
         XCTAssertEqual(received.value.count, 1)
+        // What the trouble cost is counted, and the receiver is told the same number. (Here it
+        // is most of the drop, twice: behind a 6 MB/s proxy nearly all 8 MB is sitting in
+        // buffers when the connections are cut, and what is in a buffer is lost with it. On a
+        // real link it is a chunk or two per connection: 9 for the owner's 6 GB.)
+        XCTAssertGreaterThan(s.stats.retransmittedChunks, 0)
+        XCTAssertEqual(try receiverSide().stats.retransmittedChunks, s.stats.retransmittedChunks)
         try assertArrived(src)
     }
 
@@ -291,6 +301,40 @@ final class ChaosTests: XCTestCase {
         XCTAssertGreaterThan(proxy.stats.connectionsRefused, 0, "it was turned away while the link was down")
         XCTAssertEqual(received.value.count, 1)
         try assertArrived(src)
+    }
+
+    func testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd() throws {
+        // The owner's test with 0.2.0 on 2026-11-22: a cable out for a while. The receiver timed
+        // its control connection out; the sender's survived as far as the sender could tell,
+        // its data connections were replaced, and 5 GB went across while the receiver's window
+        // still said "lost the connection, waiting". The sender learned its control connection
+        // was dead only on writing "done", and then reconnected in half a second.
+        //
+        // Here: the control connection dies on the receiver's side only. The drop must carry
+        // on, must say it is moving while it moves, and must end with one reconnect.
+        let lines = Box<[String]>([])
+        DropLog.sink = { _, line in lines.value += [line] }
+        defer { DropLog.sink = nil }
+        Tuning.reconnectSeconds = 2   // far less than the rest of the drop takes
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { $0.killFarSide(.control) }
+        let s = send(src)
+        wait(s)
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertEqual(s.stats.reconnects, 1, "the sender reconnected once, when it had something to say")
+        XCTAssertEqual(received.value.count, 1, "the person was asked once")
+        let r = try receiverSide()
+        XCTAssertEqual(r.state, .completed, "the receiver did not give the drop up while data was still arriving")
+        try assertArrived(src)
+
+        // The receiver's story, in order: lost, moving again (before the sender is back), back.
+        let story = lines.value.filter { $0.contains(" recv] ") }
+        func index(_ text: String, after: Int = -1) -> Int? { story.indices.first { $0 > after && story[$0].contains(text) } }
+        let lost = try XCTUnwrap(index("lost the control connection"), story.joined(separator: "\n"))
+        let moving = try XCTUnwrap(index("] transferring", after: lost), "it never said it was receiving again:\n" + story.joined(separator: "\n"))
+        let back = try XCTUnwrap(index("the sender is back", after: lost), story.joined(separator: "\n"))
+        XCTAssertLessThan(moving, back, "it showed itself as moving while the conversation was still missing")
     }
 
     func testTheReceiverComesBackAtAnotherAddress() throws {

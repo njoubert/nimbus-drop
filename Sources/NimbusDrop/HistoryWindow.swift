@@ -34,8 +34,8 @@ struct HistoryView: View {
                 Text(model.history.isEmpty ? "" : "\(model.history.count) \(model.history.count == 1 ? "drop" : "drops")")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Show Log") { AppDelegate.shared?.showLog() }
-                    .help("The debug log: everything each drop did, with times. Useful when one fails.")
+                Button("Internals…") { AppDelegate.shared?.showInternals() }
+                    .help("What the app is doing, live, and the debug log: everything each drop did, with times.")
                 Button("Clear History") { model.clearHistory() }.disabled(model.history.isEmpty)
             }
             .controlSize(.small)
@@ -64,13 +64,13 @@ private struct HistoryRow: View {
         }
     }
 
-    /// "reconnected once, 3 connections lost; re-sent": what the drop went through, when it did.
+    /// "Recovered: reconnected once, 12 chunks retransmitted": what the drop went through, when it did.
     private var trouble: String? {
         var s = TransferStats()
         s.connectionFailures = entry.connectionsLost ?? 0
         s.damagedChunks = entry.damagedChunks ?? 0
         s.reconnects = entry.reconnects ?? 0
-        guard s.connectionFailures > 0 || s.damagedChunks > 0 || s.reconnects > 0 else { return nil }
+        s.retransmittedChunks = entry.retransmittedChunks ?? 0
         return AppModel.troubleText(s)
     }
 

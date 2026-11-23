@@ -373,7 +373,7 @@ final class DropTests: XCTestCase {
 
     func testADropLeavesItsStoryInTheLog() throws {
         let lines = Box<[String]>([])
-        DropLog.sink = { line in lines.value += [line] }
+        DropLog.sink = { _, line in lines.value += [line] }
         defer { DropLog.sink = nil }
         let src = try makeTree()
         let dst = try destination()
@@ -388,10 +388,44 @@ final class DropTests: XCTestCase {
         let log = lines.value.joined(separator: "\n")
         for expected in ["“Photos” to receiver at 127.0.0.1", "offer from sender at 127.0.0.1", "accepted, saving to", "waitingForAccept",
                          "transferring", #"failed("Stopped by the test")"#, "lost the control connection", "superseded", "already here:",
-                         "completed", "saved as"] {
+                         "completed", "saved as", "opened 4 data connections", "round 1 over:", "chunks sent", "the sender says it is done",
+                         "summary:", "retransmitted", "chunks received"] {
             XCTAssertTrue(log.contains(expected), "the log does not mention: \(expected)\n\(log)")
         }
         XCTAssertTrue(lines.value.allSatisfy { $0.hasPrefix("[") }, "every line says which drop it is about")
+    }
+
+    func testLogLevelsSayWhatHappenedNotWhatWordsWereUsed() throws {
+        let lines = Box<[(LogLevel, String)]>([])
+        DropLog.sink = { level, line in lines.value += [(level, line)] }
+        defer { DropLog.sink = nil }
+        let src = try makeTree()
+        let dst = try destination()
+        let l = try listen { $0.accept(destination: dst) }
+        defer { l.stop() }
+
+        // A drop that goes well: its summary speaks of "0 damaged" and "connections dropped",
+        // and nothing in it is a warning or an error.
+        let good = send([src], to: l)
+        wait(good)
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(good.state, .completed)
+        XCTAssertTrue(lines.value.contains { $0.1.contains("0 damaged") }, "the words are there")
+        XCTAssertEqual(lines.value.filter { $0.0 >= .warn }.map(\.1), [], "and yet nothing was wrong")
+        XCTAssertTrue(lines.value.contains { $0.0 == .debug }, "the step-by-step detail is at debug")
+        XCTAssertTrue(lines.value.contains { $0.0 == .info && $0.1.contains("completed") })
+
+        // A drop that fails: the failure is an error, on the side that failed.
+        lines.value = []
+        let bad = send([src], to: l, failAfter: 5)
+        wait(bad)
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(lines.value.contains { $0.0 == .error && $0.1.contains("send] failed") }, "\(lines.value)")
+        XCTAssertTrue(lines.value.contains { $0.0 == .warn && $0.1.contains("recv] lost the control connection") }, "the receiver is getting past it, for now")
+
+        XCTAssertEqual(LogLevel(label: "WARN "), .warn)
+        XCTAssertEqual(LogLevel.allCases.map(\.label).map(\.count), [5, 5, 5, 5], "one width in the file")
+        XCTAssertNil(LogLevel(label: "[3F9A2"), "a line from before levels existed has none")
     }
 
     // MARK: Finding each other

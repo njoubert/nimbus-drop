@@ -2,15 +2,63 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 
-/// The debug log: what the engine and the app did, in order, with times. One line per event,
-/// for working out afterwards why a drop went the way it did. Where the lines go is the app's
-/// business (`sink`); with no sink set, nothing is recorded and nothing is spent.
-public enum DropLog {
-    nonisolated(unsafe) public static var sink: (@Sendable (String) -> Void)?
+/// How much a log line matters. Set where the line is written, by what it reports; nothing
+/// downstream guesses it from the words ("0 damaged, connections lost 0" is a good drop).
+///
+/// - `debug`: detail for following the engine step by step (connections opened, what a round
+///   sent, where a partial folder is).
+/// - `info`: the story of a drop and of the network as a person would tell it (offered,
+///   accepted, moving, done; a Mac found or gone).
+/// - `warn`: trouble the drop is getting past (a connection lost, a damaged chunk, the control
+///   connection gone and being won back, a reconnect attempt that did not get through).
+/// - `error`: trouble that ended something (a drop failed, reconnecting given up, cannot listen).
+public enum LogLevel: Int, Comparable, CaseIterable, Sendable {
+    case debug, info, warn, error
 
-    public static func write(_ line: @autoclosure () -> String) {
+    public static func < (a: LogLevel, b: LogLevel) -> Bool { a.rawValue < b.rawValue }
+
+    /// As it is written in the log file: a fixed five columns.
+    public var label: String {
+        switch self {
+        case .debug: return "DEBUG"
+        case .info: return "INFO "
+        case .warn: return "WARN "
+        case .error: return "ERROR"
+        }
+    }
+
+    public init?(label: String) {
+        switch label.trimmingCharacters(in: .whitespaces) {
+        case "DEBUG": self = .debug
+        case "INFO": self = .info
+        case "WARN": self = .warn
+        case "ERROR": self = .error
+        default: return nil
+        }
+    }
+}
+
+/// The debug log: what the engine and the app did, in order, with times and levels. One line per
+/// event, for working out afterwards why a drop went the way it did. Where the lines go is the
+/// app's business (`sink`); with no sink set, nothing is recorded and nothing is spent.
+public enum DropLog {
+    nonisolated(unsafe) public static var sink: (@Sendable (LogLevel, String) -> Void)?
+
+    public static func write(_ line: @autoclosure () -> String, _ level: LogLevel = .info) {
         guard let sink else { return }
-        sink(line())
+        sink(level, line())
+    }
+}
+
+/// A value behind a lock, for the small shared tables the engine keeps.
+final class Locked<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+    init(_ value: T) { self.value = value }
+    func withLock<R>(_ body: (inout T) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
     }
 }
 

@@ -64,11 +64,30 @@ public struct TransferStats: Equatable, Sendable {
     public var damagedChunks = 0
     /// Times the whole drop lost its connection and got it back.
     public var reconnects = 0
+    /// Chunks sent (a sender) or received intact and written (a receiver), retransmissions included.
+    public var chunks = 0
+    /// Attempts to reconnect, whether or not they got through.
+    public var reconnectAttempts = 0
+    /// Chunks that had to be sent a second time (the first copy was lost with its connection or
+    /// arrived damaged). The measure of what trouble cost: everything else went once.
+    public var retransmittedChunks = 0
 
-    public init(rounds: Int = 0, connectionFailures: Int = 0, damagedChunks: Int = 0, reconnects: Int = 0) {
+    public init(rounds: Int = 0, connectionFailures: Int = 0, damagedChunks: Int = 0, reconnects: Int = 0, retransmittedChunks: Int = 0) {
         self.rounds = rounds; self.connectionFailures = connectionFailures
         self.damagedChunks = damagedChunks; self.reconnects = reconnects
+        self.retransmittedChunks = retransmittedChunks
     }
+}
+
+/// One data connection of a drop, as the Internals panel shows it.
+public struct StreamInfo: Sendable, Identifiable {
+    public var id: Int
+    /// The other end, "192.168.1.143:51234".
+    public var remote: String
+    public var chunks = 0
+    public var bytes: Int64 = 0
+    public var opened = Date()
+    public var lastActivity = Date()
 }
 
 /// One drop, in either direction. Thread-safe: the engine's threads write it, the UI polls it.
@@ -90,6 +109,8 @@ public class Transfer: @unchecked Sendable, Identifiable {
     private var _transferStartedAt: Date?
     private var sockets: [Socket] = []
     private var _stats = TransferStats()
+    private var _streams: [Int: StreamInfo] = [:]
+    private var nextStream = 0
     private var lastActivity = Date()
     var cancelRequested = false
 
@@ -113,6 +134,29 @@ public class Transfer: @unchecked Sendable, Identifiable {
     public var savedURLs: [URL] { lock.withLock { _savedURLs } }
     public var finishedAt: Date? { lock.withLock { _finishedAt } }
     public var stats: TransferStats { lock.withLock { _stats } }
+    /// The data connections open right now, oldest first.
+    public var dataConnections: [StreamInfo] { lock.withLock { _streams.values.sorted { $0.id < $1.id } } }
+
+    /// A data connection has opened; the number it is known by.
+    func streamOpened(remote: String) -> Int {
+        lock.withLock {
+            nextStream += 1
+            _streams[nextStream] = StreamInfo(id: nextStream, remote: remote)
+            return nextStream
+        }
+    }
+
+    /// A whole chunk went over (or came in on) that connection.
+    func streamCarried(_ id: Int, bytes: Int) {
+        lock.withLock {
+            _streams[id]?.chunks += 1
+            _streams[id]?.bytes += Int64(bytes)
+            _streams[id]?.lastActivity = Date()
+            _stats.chunks += 1
+        }
+    }
+
+    func streamClosed(_ id: Int) { lock.withLock { _streams[id] = nil } }
     /// When bytes started moving (after the scan and the other side's answer).
     public var transferStartedAt: Date? { lock.withLock { _transferStartedAt } }
 
@@ -128,7 +172,9 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// "[3F9A2C send]": which drop a log line is about.
     var tag: String { "[\(id.uuidString.prefix(6)) \(direction == .send ? "send" : "recv")]" }
 
-    func log(_ message: @autoclosure () -> String) { DropLog.write("\(tag) \(message())") }
+    func log(_ message: @autoclosure () -> String, _ level: LogLevel = .info) {
+        DropLog.write("\(tag) \(message())", level)
+    }
 
     func setState(_ new: TransferState) {
         lock.lock()
@@ -141,8 +187,8 @@ public class Transfer: @unchecked Sendable, Identifiable {
         lock.unlock()
         if changed {
             log("\(new)" + (new.isFinal || new == .reconnecting
-                ? "  (\(p.doneBytes) of \(p.totalBytes) bytes, \(p.doneFiles) of \(p.totalFiles) files; rounds \(s.rounds), connections lost \(s.connectionFailures), damaged chunks \(s.damagedChunks), reconnects \(s.reconnects))"
-                : ""))
+                ? "  (\(p.doneBytes) of \(p.totalBytes) bytes, \(p.doneFiles) of \(p.totalFiles) files; rounds \(s.rounds), connections lost \(s.connectionFailures), damaged chunks \(s.damagedChunks), reconnects \(s.reconnects) in \(s.reconnectAttempts) attempts, chunks \(s.chunks) of which retransmitted \(s.retransmittedChunks))"
+                : ""), { if case .failed = new { return .error }; return new == .reconnecting ? .warn : .info }())
         }
         onChange?()
     }
@@ -183,7 +229,7 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// Nothing has moved and nothing has been said for too long. The sessions take it as a lost
     /// connection and try to get it back; this is what is left when they cannot.
     func silence() {
-        log("no sign of life from \(peerName) for too long; giving up")
+        log("no sign of life from \(peerName) for too long; giving up", .error)
         fail(DropError("\(peerName) stopped responding; send the drop again to continue it"))
     }
 

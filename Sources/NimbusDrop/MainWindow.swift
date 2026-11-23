@@ -455,10 +455,36 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// On screen and the window being worked in.
     var isFront: Bool { window.isVisible && window.isKeyWindow && NSApp.isActive }
 
-    func show() {
+    /// Opens the window. `anchor` is the menu bar icon's frame on screen: a window that is not
+    /// showing yet opens right beneath it, as something belonging to that icon should, at the
+    /// size it was last given. One that is already open is brought forward where it is.
+    func show(under anchor: NSRect? = nil) {
         NSApp.setActivationPolicy(.regular)
+        if !window.isVisible { place(under: anchor) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Puts the window beneath the menu bar icon. Right after launch the icon has no place yet
+    /// (its frame is still at the origin); then, and whenever the icon cannot be found in a
+    /// menu bar, the window goes under the right end of the main screen's menu bar, which is
+    /// where the icon is about to be.
+    private func place(under anchor: NSRect?) {
+        let size = window.frame.size
+        if let anchor, anchor.width > 0,
+           let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) }), anchor.minY > screen.frame.midY {
+            let area = screen.visibleFrame
+            let x = min(max(anchor.midX - size.width / 2, area.minX + 8), area.maxX - size.width - 8)
+            window.setFrameOrigin(NSPoint(x: x, y: max(min(anchor.minY, area.maxY) - 6 - size.height, area.minY)))
+        } else if let area = NSScreen.main?.visibleFrame {
+            window.setFrameOrigin(NSPoint(x: area.maxX - size.width - 8, y: max(area.maxY - 6 - size.height, area.minY)))
+        }
+    }
+
+    /// Once the icon has its place, a window that was opened before then moves to it.
+    func settle(under anchor: NSRect?) {
+        guard window.isVisible else { return }
+        place(under: anchor)
     }
 
     func close() { window.performClose(nil) }

@@ -224,7 +224,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The switch in Settings was read before this ran; show what is true now.
         model.openAtLogin = LoginItem.isEnabled
         // Opened by hand (not at login): show the window, as any app would.
-        if showWindowAtLaunch || !launchedAtLogin { showWindow() }
+        if showWindowAtLaunch || !launchedAtLogin {
+            showWindow()
+            // The icon is given its place in the menu bar a moment after launch.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                MainActor.assumeIsolated { self?.window?.settle(under: self?.statusBar?.anchor) }
+            }
+        }
     }
 
     /// Whether launchd started this copy as a Login Item rather than a person opening it.
@@ -236,7 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showWindow() {
         if window == nil { window = MainWindowController(model: model) }
-        window?.show()
+        window?.show(under: statusBar?.anchor)
     }
 
     /// The Settings window (⌘,), made on first use and kept.

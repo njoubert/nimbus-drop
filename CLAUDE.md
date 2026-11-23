@@ -321,6 +321,11 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
 - **A render command after a failed build runs the OLD binary**, which does not know the new
   flag, ignores it, and starts the whole app from the bare binary: a stray copy on the owner's
   screen and on the network (2026-11-22). Chain renders with `&&` after a build that is checked.
+- **The window opens beneath the menu bar icon** (`MainWindowController.place`), from
+  `item.button?.window?.frame`. Right after launch that frame is still at the origin, so a window
+  shown then goes under the right end of the menu bar and is moved into place 0.4 s later. On
+  macOS 27 the icon's window is not in this process's `CGWindowList`, so its position cannot be
+  read back from outside to check; the window's own is (`x`, `y` just under the 30 pt bar).
 - **A status item with no menu** takes its click through `button.target`/`action`; a click when
   the window is already key closes it, so the icon toggles.
 - **A peer's port changes when its copy restarts** (the preferred port is taken while the old

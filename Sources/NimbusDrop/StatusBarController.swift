@@ -41,6 +41,9 @@ final class StatusBarController: NSObject {
         item.menu = nil
     }
 
+    /// Where the icon is on screen, for opening the window beneath it.
+    var anchor: NSRect? { item.button?.window?.frame }
+
     private func updateBar() {
         let fraction = model.overallFraction
         let text = fraction.map { String(format: "%.0f%%", $0 * 100) } ?? ""

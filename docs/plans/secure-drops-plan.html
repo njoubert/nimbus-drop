@@ -176,6 +176,7 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
   <p class="label">Doing it</p>
   <a href="#phases">Phases</a>
   <a href="#decisions">Decisions</a>
+  <a href="#one-code">Addendum: one code</a>
   <a href="#record">Review record</a>
   <a href="#review">For reviewers</a>
 </nav>
@@ -1008,6 +1009,121 @@ end marker   = a sealed header with file index 0xFFFFFFFF, chunk index 0 and len
   <div class="decision"><span class="id">D11</span><h3>Should a resumed drop be proved end to end?</h3>
     <p>Encryption proves chunks in transit, not bytes left in a partial folder between attempts. A per-file digest would close that, at the cost of one more pass over the data on each side.</p>
     <div class="rec"><b>Recommend:</b> not in 0.3; state the narrower guarantee, as the plan now does. Measure the cost in Phase 0 and decide with the number.</div></div>
+
+  <div class="decision"><span class="id">D12</span><h3>One code instead of two? <span class="pill warn">open, 23 Nov</span></h3>
+    <p>Typing on both Macs is the cost of D1. It can be halved, not removed: one person types the code, and the other answers one question about what the first Mac's screen says. <a href="#one-code">Addendum A</a> has the design, what it gives up, and the size of the work (protocol small, work medium, claim large).</p>
+    <div class="rec"><b>Recommend:</b> keep two codes. A pair of Macs pairs about twice in 90 days, so the saving is six keystrokes at one Mac a few times a year, and the price is the one property the first review made us earn: that no click can pair a Mac with the wrong key. If the typing is still too much in daily use, build option 2 of the addendum exactly as written, with the Mac that was asked doing the typing.</div></div>
+</section>
+
+<section id="one-code">
+  <h2>Addendum A: pairing with one code (proposed 23 Nov 2026, not built)</h2>
+  <p>Asked after the first pairing on two real Macs: could one person type the other's number, instead of both typing? This section says what that takes and what it gives up. Nothing in it is built; decision D12 is yours.</p>
+
+  <div class="facts">
+    <div class="fact"><div class="n">S</div><div class="l">the protocol: same messages, same cryptography, one code used where two were</div></div>
+    <div class="fact"><div class="n">M</div><div class="l">the work: the pairing state machine, the window, the command line, the tests</div></div>
+    <div class="fact"><div class="n">L</div><div class="l">the security model: one Mac's guarantee comes to rest on a person's answer</div></div>
+  </div>
+
+  <h3>What cannot be had</h3>
+  <p>One typed code and nothing else does not work, and no cleverness in the protocol changes that. The Mac whose person types learns from the keyboard that the two ends of its connection agree. The Mac that only shows the code learns nothing from its own person. Anything the honest typing Mac could send to say "it matched", someone in the middle can send too: the code is computed from values that attacker already holds, and it is read aloud in a room the plan assumes the attacker can hear. The specification already says so under "Why two codes".</p>
+  <p>So the Mac that shows the code needs something back from its own person. The least it can be is one answer: yes or no.</p>
+
+  <h3>The options</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Option</th><th>What each person does</th><th>What it costs</th></tr></thead>
+    <tbody>
+      <tr><td><strong>0. Two codes</strong> (built)</td><td>Both read six digits, both type six digits.</td><td><span class="pill good">nothing</span> Each Mac checks by itself. One in a million against each, however careless either person is.</td></tr>
+      <tr><td><strong>1. One code, nothing back</strong></td><td>One reads, one types.</td><td><span class="pill bad">broken</span> The Mac that showed the code stores whatever key said "it matched". Someone in the middle pairs with it every time.</td></tr>
+      <tr><td><strong>2. One code and one answer</strong></td><td>One reads six digits, the other types them. The reader is then asked whether the other Mac accepted the code, and answers Yes or No.</td><td><span class="pill warn">one click can be wrong</span> The typing Mac is as safe as today. The showing Mac is as safe as its person's answer is true.</td></tr>
+      <tr><td><strong>3. One code and a short one back</strong></td><td>One reads six digits, the other types them and reads back three, which the first types.</td><td><span class="pill info">little gained</span> Both Macs still check by themselves (one in a thousand for the second), but both people still read and type.</td></tr>
+      <tr><td><strong>4. One secret code</strong> (draft 2)</td><td>One reads, one types, the code feeds the key exchange.</td><td><span class="pill bad">broken</span> Safe only while the code is secret. The first review paired a man in the middle with both Macs by listening.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Option 2 is the only one that removes a person's typing and survives the plan's own attacker. The rest of this section specifies it.</p>
+
+  <h3>Which person types</h3>
+  <p>The Mac that was asked types; the Mac that asked shows the code and gives the answer. The choice is forced by what an attacker can start by itself.</p>
+  <ul>
+    <li><strong>If the Mac that was asked showed the code,</strong> a stranger on the network could send it a request, receive "Pair…", claim the code was typed, and then need only one more careless click from the same person. Two clicks at one Mac, with no second person involved, would pair it with a stranger.</li>
+    <li><strong>With the Mac that was asked typing,</strong> a stranger's request leads to a field that needs six digits nobody is reading out. A request from the network alone still pairs nothing, as now (P17 and "an attacker cannot make attempts by itself" keep their meaning).</li>
+    <li>The answer is then given by the person who started the pairing, who is at the keyboard and wants it to work. The attacker cannot bring that question up: it appears only when that person chose to pair with someone.</li>
+    <li>The price of that choice: the person who can be wrong is the one about to send. A false Yes while someone is in the middle sends the waiting drop to the attacker.</li>
+  </ul>
+
+  <h3>What it looks like</h3>
+  <div class="stage">
+    <div class="shot"><span class="cap">The Mac that asked: read it out</span>
+      <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with dads-imac</span></div>
+        <div class="body center">
+          <div class="sub">Read this code out to the person at dads-imac:</div>
+          <div class="code">482 913</div>
+          <div class="sub">Waiting for them to type it…</div>
+          <div class="btns" style="width:100%"><span class="btn ghost">Stop Pairing</span></div>
+        </div></div></div>
+    <div class="shot"><span class="cap">The Mac that was asked: type it</span>
+      <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with macbookpro</span></div>
+        <div class="body center">
+          <div class="sub">Type the code the person at macbookpro reads to you:</div>
+          <div class="boxes"><b>4</b><b>8</b><b>2</b><span class="gap"></span><b>9</b><b class="cur"></b><b></b></div>
+          <div class="btns" style="width:100%"><span class="btn ghost">Stop Pairing</span><span class="btn blue">Pair</span></div>
+        </div></div></div>
+    <div class="shot"><span class="cap">The Mac that asked: one answer</span>
+      <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with dads-imac</span></div>
+        <div class="body center">
+          <div class="big">Ask the person at dads-imac what their Mac says</div>
+          <div class="sub">It should say "That is the right code". If it says the code is wrong, or they typed nothing, stop: something may be between the two Macs.</div>
+          <div class="btns col" style="width:100%"><span class="btn red">It says the code is wrong</span><span class="btn">It says the code is right</span></div>
+        </div></div></div>
+  </div>
+  <ul>
+    <li>The question appears only after the other Mac has reported a right code, so in the ordinary case a typing slip never reaches it. That report is not evidence: with someone in the middle it arrives all the same, which is why the question is about the other screen and not about this one.</li>
+    <li>Neither answer responds to the Return key and neither is the default, as on the Accept panel.</li>
+    <li>The Mac that was asked gives one click (Pair…) and six digits. The Mac that asked reads six digits and gives one click.</li>
+  </ul>
+
+  <h3>The change to the specification</h3>
+<pre class="spec">
+S → R   pair-request {}  …  R → S  pair-go {}  …  commit, Nr, Ns          unchanged, in the same order, each once
+
+code    = (first 8 bytes of KDF(Ns ‖ Nr, "nimbus-drop pair codes v1" ‖ h, 16) as u64) mod 1,000,000
+          shown on S (the Mac that asked), typed on R. The last 8 bytes are no longer used.
+
+R       its person types the code; R compares it with its own computation
+        right → R → S  paired {}          wrong → counted; a third ends the pairing with pair-failed {}
+S       on paired {} from R, and not before, S's person is asked what R's screen says
+        "right" → S stores the pairing, S → R  paired {}          "wrong" → S → R  pair-failed {}, nothing stored
+R       stores the pairing when it has BOTH its own person's right code AND S's paired {}
+</pre>
+  <ul>
+    <li>No new message, no new primitive, no change to the commitment or to why hearing the code is worth nothing. The transaction rules (each message once, codes computed once, one window) stand as written.</li>
+    <li><code>paired {}</code> from S now means "my person answered", not "my person typed". S stores first; if its <code>paired {}</code> is lost, the one-sided pairing is found at the next handshake exactly as today.</li>
+    <li>It is a change to what two copies say to each other. 0.3.0 has not been released, so it stays protocol 3; the copies already built from this branch must all be rebuilt together.</li>
+    <li>Pairing by identity number (<code>verify</code>) is left as it is: both numbers can be pasted from a message, and a 30-digit number checked by a click would be the "They Match" button the first review removed.</li>
+  </ul>
+
+  <h3>The change to what is claimed</h3>
+  <div>
+    <div class="prop"><span class="k">P4</span><div><strong>Pairing soundness, restated.</strong> Against an attacker who controls the network and hears everything said: the Mac whose person typed stores a pairing with a key other than the one meant with probability at most 1 in 1,000,000 per pairing, whatever anyone clicks. The Mac whose person answered has the same bound <em>provided the answer was true</em>, meaning the other Mac's screen did say the code was right. If its person answers "right" without that being so, there is no bound: someone in the middle at that moment is paired with it.</div></div>
+  </div>
+  <ul>
+    <li><strong>What is lost</strong> is the sentence in D1: "nothing can be clicked through". One thing can. This is the same weakness as the comparison-and-confirm pairings the plan declined to copy, confined to one of the two Macs and to a question an attacker cannot raise.</li>
+    <li><strong>What is kept:</strong> everything about someone in the middle who meets two careful people (they fail, visibly, at the typing Mac); a stranger pairing with nobody present (impossible); the codes needing no secrecy; every property other than P4.</li>
+    <li><strong>What the harm is</strong> when the answer is false and someone is in the middle: the Mac that asked holds the attacker's key under the other Mac's name, and the drop that started the pairing goes to the attacker. The other Mac is unharmed and shows a failed pairing, so the two people can find out by talking. The stored key ends with its 90 days or with Forget.</li>
+  </ul>
+
+  <h3>The work</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Part</th><th>Size</th><th>What changes</th></tr></thead>
+    <tbody>
+      <tr><td>Wire and key schedule</td><td><strong>S</strong></td><td>One code from the same derivation; who sends <code>paired {}</code> and when. One vector in <code>scripts/vectors.py</code>.</td></tr>
+      <tr><td><code>PairingSession</code></td><td><strong>S to M</strong></td><td>The two roles stop being mirror images: a showing-and-answering state on one side, typing on the other. The exact-once checks follow.</td></tr>
+      <tr><td>The pairing window and the command line</td><td><strong>M</strong></td><td>Two new stages (showing, answering), one removed from each role; <code>--pair</code> and <code>--receive</code> prompts; <code>--dump-pairing</code>, the README's picture, scenario 3 above.</td></tr>
+      <tr><td>Tests and mutation checks</td><td><strong>M</strong></td><td>Most of the 17 pairing tests are rewritten for the roles. New attacks: a <code>paired {}</code> that arrives with no answer given stores nothing; someone in the middle fails at the typing Mac; a stranger's request cannot reach the question. A line in <code>scripts/mutate.py</code> for each. The smoke script and CI.</td></tr>
+      <tr><td>The claims</td><td><strong>L in meaning, S in text</strong></td><td>P4 and D1 as above; "Why two codes" becomes "Why one answer"; the summary's first paragraph.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Altogether a medium change: about the size of the pairing work in Phase 4, and no part of the encrypted channel, the data path, expiry or retirement is touched. It deserves the same treatment as the rest: the plan first, then an adversarial review of this section before it is built.</p>
 </section>
 
 <section id="record">

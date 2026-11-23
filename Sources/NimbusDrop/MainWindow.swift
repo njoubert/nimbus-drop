@@ -201,7 +201,10 @@ private struct HeightKey: PreferenceKey {
 /// One destination. A drop target, and a button for people who would rather pick files from a panel.
 private struct PeerTile: View {
     let peer: Peer
-    let model: AppModel
+    /// Observed, not just held: the badge comes from the trust store, and a view whose inputs
+    /// have not changed is not redrawn because its parent was. A tile stayed "needs pairing"
+    /// after a pairing until the pointer crossed it (found by the owner, 2026-11-23).
+    @ObservedObject var model: AppModel
     /// Files are being dragged over the window and this is the only place they could go.
     var hint = false
     @State private var targeted = false
@@ -369,7 +372,10 @@ private struct KindSheet: View {
 /// One destination as a line in the compact list: the same drop target and button as a tile.
 private struct PeerRow: View {
     let peer: Peer
-    let model: AppModel
+    /// Observed, not just held: the badge comes from the trust store, and a view whose inputs
+    /// have not changed is not redrawn because its parent was. A tile stayed "needs pairing"
+    /// after a pairing until the pointer crossed it (found by the owner, 2026-11-23).
+    @ObservedObject var model: AppModel
     var hint = false
     @State private var targeted = false
     @State private var hovered = false

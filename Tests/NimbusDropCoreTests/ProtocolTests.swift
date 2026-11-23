@@ -230,16 +230,25 @@ final class ProtocolTests: XCTestCase {
         // Draft 2 of the plan ended a drop after three records that failed to open. Anyone who
         // had seen a session id could then stop a drop. Now a failed record costs a connection.
         let (sender, receiver) = try pairedMacs()
-        let src = try file("big.bin", bytes: chunk * 400)
+        let src = try file("big.bin", bytes: chunk * 3000)
         let s = send([src], from: sender, to: receiver, streams: 2)
-        XCTAssertTrue(until { s.state == .transferring })
-        for _ in 0..<12 {
-            guard let junk = try? Socket.connect(host: "127.0.0.1", port: receiver.port) else { continue }
-            let bytes = Opening.data + Crypto.random(200)
-            try? bytes.withUnsafeBytes { try junk.writeAll($0.baseAddress!, bytes.count) }
+        // Junk for as long as the drop lasts, from before it starts moving: a test that waited
+        // to see it moving first missed the moment on a slower Mac (CI, 2026-11-23).
+        let port = receiver.port
+        let thrown = Locked(0)
+        Thread.detachNewThread {
+            while !s.state.isFinal {
+                if let junk = try? Socket.connect(host: "127.0.0.1", port: port) {
+                    let bytes = Opening.data + Crypto.random(200)
+                    try? bytes.withUnsafeBytes { try junk.writeAll($0.baseAddress!, bytes.count) }
+                    thrown.withLock { $0 += 1 }
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
         }
-        wait(s, 30)
+        wait(s, 60)
         XCTAssertEqual(s.state, .completed)
+        XCTAssertGreaterThan(thrown.withLock { $0 }, 3, "junk was thrown at it")
         XCTAssertEqual(try Data(contentsOf: dst.appendingPathComponent("big.bin")), try Data(contentsOf: src))
     }
 

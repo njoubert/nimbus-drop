@@ -503,9 +503,22 @@ Against protocol 2 on the same Mac: level or better with 8 connections, about ha
 (one thread now seals as well as reads). CryptoKit's in-place AES-GCM exists only from macOS 27;
 on 15 a seal returns a new buffer and that is what was measured. The plan's gate (within 5% of
 an unencrypted build on a real link, 9.0 Gbit/s of file bytes on 10 GbE) has NOT been run:
-there is no unencrypted build of protocol 3, and nothing was measured between two Macs.
+there is no unencrypted build of protocol 3, and gigabit cannot show the difference.
 
-**Not measured yet:** encryption between two Macs on any link, Wi-Fi, 10 GbE, a drop larger than the receiver's
+**Protocol 3 between two Macs (2026-11-23, MacBook Pro → MacBook Air M4, gigabit Ethernet,
+8 connections, the command line at both ends, found and paired by Bonjour name):** one 6.29 GB
+file in 56.2 s = 895 Mbps, 943 Mbps while moving; 832 MB in 5,100 files in 7.3 s = 913 Mbps.
+The wire is the limit, as it was for protocol 2 (927 Mbps over 9.29 GB). Checksums identical.
+Killed twice and sent again at once: "continuing: 3.79 GB already there", identical. Through
+`nimbus-chaos` (`corrupt=300M`, `kill=one` at 800 MB, `kill=data` at 1.5 GB, everything cut and
+refused from 25 s to 55 s): 19 bits flipped, 37 connections cut, one reconnect, identical in
+87.9 s. An identity that is not paired was refused and wrote nothing. `--reset-identity` on the
+Pro: the Air was told, forgot the pairing, and refused a copy of the old key by name
+("a retired identity of pro-cli was used"). That run found the unattended grant declining a
+re-send while the killed sender's drop was still held for its reconnect; `--unattended-from`
+now lets an offer through when the drop in its way is only `.reconnecting`.
+
+**Not measured yet:** encryption on a link faster than gigabit, Wi-Fi, 10 GbE, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 
@@ -517,7 +530,8 @@ beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
   damaged-identity alert. The engine under all of it is tested; nobody has clicked any of it.
   The command line was driven end to end by a script on one Mac (pair, a wrong code first, a
   drop asked about, a decline, the unattended grant, a reset).
-- Protocol 3 between two Macs at all, and Bonjour probing across a real network.
+- Protocol 3 between two Macs **in the app**. The command line has done it (see Measured):
+  Bonjour probing, pairing, drops, resume, chaos and retirement, Pro to Air.
 
 - Accepting a drop (the Accept / Decline panel, then the folder chooser) and seeing it land;
   the notification afterwards.

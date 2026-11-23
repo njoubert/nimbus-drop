@@ -223,7 +223,7 @@ enum CLI {
             listener.localOnly = !anyNetwork
             let unattended = unattendedFrom?.uppercased().replacingOccurrences(of: "-", with: "")
             let limit = maxBytes
-            let busy = Locked(false)
+            let busy = Locked<ReceiveSession?>(nil)
             let trust = trust
             let advertiser = advertise ? try? Advertiser(identity: identity, port: listener.port) : nil
             let finished = DispatchSemaphore(value: 0)
@@ -231,7 +231,13 @@ enum CLI {
                 Swift.print("\(session.peerName) [\(session.sender.key.tag)] (\(session.peerAddress)) wants to send \(session.title): \(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))")
                 if let grant = unattended {
                     // The one standing grant there is: this key, this folder, this much, one at a time.
-                    let ok = session.sender.key.tag.replacingOccurrences(of: "-", with: "") == grant && session.offeredBytes <= limit && busy.withLock { if $0 { return false }; $0 = true; return true }
+                    // A drop that is only waiting for its sender to come back is not in the way:
+                    // a sender that was killed offers the same drop afresh, and the engine ends
+                    // the one that was waiting (found between two Macs, 2026-11-23).
+                    let ok = session.sender.key.tag.replacingOccurrences(of: "-", with: "") == grant && session.offeredBytes <= limit && busy.withLock {
+                        if let b = $0, b.state != .reconnecting { return false }
+                        $0 = session; return true
+                    }
                     guard ok else { Swift.print("declined: not covered by --unattended-from"); session.decline("Not accepted unattended"); return }
                 } else {
                     guard ["y", "yes"].contains(ask("accept into \(destination.path)? [y/N]").lowercased()) else { session.decline(); return }
@@ -240,7 +246,7 @@ enum CLI {
                 Thread.detachNewThread {
                     let code = watch(session)
                     for u in session.savedURLs { Swift.print("saved \(u.path)") }
-                    busy.withLock { $0 = false }
+                    busy.withLock { if $0 === session { $0 = nil } }
                     if once { exit(code) }
                     finished.signal()
                 }

@@ -76,6 +76,8 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
                             PeerTable (pure: who is on the network, from what Bonjour reports);
                             PeerBrowser (NWBrowser + resolve to IPv4 + restart on trouble)
   Host.swift                LocalHost: the Bonjour host name, the IPv4 addresses
+  FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
+                            extension to mean); ScannedDrop.keeping(kinds:) (send only some)
   Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
 Sources/NimbusDropChaos/    testing only, never in the app
   ChaosProxy.swift          a TCP proxy that throttles, stalls, cuts connections, refuses new
@@ -142,7 +144,7 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 2.0)
+## The protocol (version 2.1)
 
 Control connection, sender → receiver. A frame is
 `[u32 length][u32 CRC of the length][u8 type][JSON][u32 CRC of type + JSON]`, big-endian.
@@ -164,9 +166,33 @@ done {streams: data connections opened so far}
                                      everything here → set times and modes, rename, complete {saved[]}
                                      something missing → plan {…} again, and the sender goes round
 error {message} from either side, at any point, ends the drop
+resume {token} on a NEW connection, after the control connection was lost (2.1):
+                                     the session waiting under that token takes the connection
+                                     as its control and answers plan {…}; a drop that finished
+                                     meanwhile answers complete {…} again
 hello {} → hello {name, id, version, minor, app}: "who is at this address?", then close
 ```
 
+- **Reconnecting (2.1).** Losing the control connection used to end the drop; the owner sent
+  to a Mac that changed Wi-Fi networks and it died with "connection reset by peer" the moment
+  the Mac came back (0.1.0, 2026-11-22). Now a connection-level failure (`DropError.connection`:
+  closed, timed out, refused, a damaged frame) on the control connection sends both sides into
+  `.reconnecting` for `Tuning.reconnectSeconds` (60): the receiver holds the session under its
+  token (`awaitSender`), the sender loops (`reconnect`): ask `relocate` where the receiver is
+  now (the app answers from Bonjour, so a new address is found), connect, `resume {token}`, take
+  the `plan`. A decision (`error` frame: cancelled, declined, disk full) still ends it at once;
+  a sender that fails for a reason of its own says so first (`SendSession.fail`), so the
+  receiver does not wait out the minute. A 2.0 receiver drops the unknown `resume` frame and the
+  sender's minute runs out: no worse than before.
+- **Silence is treated as a lost connection.** The watchdog (`Transfer.silence`) closes the
+  control connection instead of failing, which leads into the same reconnect. A link that went
+  quiet and came back is thereby recovered; a peer that really is frozen costs one more minute.
+  Three reconnects in a row that find no new bytes at the receiver end it.
+- **A finished drop remembers its answer** for five minutes (`DropListener.remember`), so a
+  sender whose connection died before it heard `complete` is told on reconnecting. This closed
+  most of the "last answer lost" gap.
+- **One session per partial folder** (`DropListener.claim`): a new offer of the same drop ends
+  an earlier session still waiting on that folder before touching it.
 - **Versions.** `protocolVersion` (major, now 2) changes when two copies can no longer exchange
   a drop; `protocolMinor` when something is added that an older copy ignores (JSON decoding skips
   unknown fields). The app version rides along for people to read and never decides anything.
@@ -192,9 +218,9 @@ hello {} → hello {name, id, version, minor, app}: "who is at this address?", t
   place. TCP's own timeouts (keepalive 10 s + 3×5 s on a read, `TCP_RXT_CONNDROPTIME` 30 s on a
   write) catch a peer that is gone; the watchdog is for one that is there and frozen, which TCP
   will wait on for ever (a zero window is answered politely).
-- **The last answer can be lost.** If the control connection dies after the receiver has
-  everything, the receiver finishes correctly and the sender reports a failure. No protocol
-  closes that gap. Sending again then delivers a second copy ("keep both").
+- **The last answer can still be lost**, if the sender cannot get back within the minute: the
+  receiver finished, the sender reports a failure, and sending again delivers a second copy
+  ("keep both"). No protocol closes that gap entirely.
 - **The drop's key** is SHA-256 over the sender's id, the chunk size and every entry's path,
   kind, size, mtime and link. Same key + same destination folder = a resume. The partial folder
   is `<first item>.<key, 12 hex>.nimbusdrop-partial/` holding `items/` (the tree being built)
@@ -227,6 +253,15 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   through a link that was meant to carry nothing.
 - A test that asserts no connection was closed for stalling must give connections room
   (`Tuning.stallSeconds = 15`): under a low cap the bucket can starve one of four for seconds.
+- **The cut-and-reattach tests** are the ones the owner asked for after the Wi-Fi failure:
+  `testTheNetworkGoesSilentThenComesBack` (blackhole, then lifted),
+  `testTheNetworkComesBackAndEveryOldConnectionIsReset` (blackhole, then everything cut as it
+  lifts: what he saw), `testEverythingDropsForAMomentAndTheDropCarriesOn`,
+  `testTheReceiverComesBackAtAnotherAddress` (a second proxy stands in for the new address),
+  `testALinkThatStaysDownEndsTheDropCleanlyAndItResumes`, and
+  `testTheAnswerThatItAllArrivedIsLostAndAskedForAgain`. On two Macs at default timings:
+  `nimbus-chaos … --at 8s kill=all refuse=on --at 38s refuse=off` between the MacBook Pro and the
+  Air, 6 GB: reconnected after the 30 s, arrived identical (2026-11-22).
 - `nimbus-chaos --to HOST:PORT --listen P [setting…] [--at WHEN setting…]…` is the same proxy
   for two real Macs; `--at` takes seconds (`5s`) or bytes carried (`400MB`).
 
@@ -252,6 +287,18 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
 - **Checking prompts on the owner's screen competes with the owner.** Counting "Incoming Drop"
   windows while they are at the keyboard gives nonsense (they click Accept). Say so before
   sending test offers to a Mac someone is using, and prefer the Air.
+- **Services ("Nimbus Drop To…")**: declared as `NSServices` in the Info.plist build.sh writes
+  (`NSSendFileTypes = public.item`, `NSMessage = dropService`, `NSPortName` = the bundle's name)
+  and answered by `AppDelegate.dropService(_:userData:error:)`, registered with
+  `NSRegisterServicesProvider` under that same name. The development bundle's item is
+  "Nimbus Drop Dev To…", so the two can be told apart. `/System/Library/CoreServices/pbs -update`
+  then `pbs -dump | grep -A12 "Nimbus Drop"` shows whether macOS has picked it up.
+- **A right-click on a status item that has no menu**: `sendAction(on: [.leftMouseUp,
+  .rightMouseUp])`, and in the action, for a right-click, set `item.menu`, `performClick`, and
+  unset it. A status item with a menu set shows it on every click.
+- **A render command after a failed build runs the OLD binary**, which does not know the new
+  flag, ignores it, and starts the whole app from the bare binary: a stray copy on the owner's
+  screen and on the network (2026-11-22). Chain renders with `&&` after a build that is checked.
 - **A status item with no menu** takes its click through `button.target`/`action`; a click when
   the window is already key closes it, so the icon toggles.
 - **A peer's port changes when its copy restarts** (the preferred port is taken while the old
@@ -297,6 +344,10 @@ beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 
 - Accepting a drop (the Accept / Decline panel, then the folder chooser) and seeing it land;
   the notification afterwards.
+- The right-click menu on the menu bar icon; Services › Nimbus Drop To… from Finder (macOS lists
+  the service; nobody has chosen it); the "which kinds of file?" sheet on a real drop; Retry.
+- A real Mac leaving Wi-Fi mid-drop and coming back, on the new build (the engine is tested
+  through the proxy and across two Macs with connections cut, not with a radio).
 - A drag from Finder onto a tile, and beside the tiles; a drop on the Dock icon followed by a
   click on a tile. The menu bar icon opening and closing the window.
 - Add by Address in the window (the engine side, `Probe.hello`, is tested; the field is not).

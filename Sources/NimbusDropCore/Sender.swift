@@ -21,6 +21,7 @@ import Foundation
 /// is there but frozen, or somebody's decision ends a drop early.
 public final class SendSession: Transfer, @unchecked Sendable {
     private let urls: [URL]
+    private let prescanned: ScannedDrop?
     /// Where the receiver is. It can move (a Mac that changes networks comes back with another
     /// address), so a reconnect asks `relocate` and may change these.
     private var host: String
@@ -66,8 +67,11 @@ public final class SendSession: Transfer, @unchecked Sendable {
     var failAfterChunks: Int?
     private var chunksSent = 0
 
+    /// `prescanned`: a drop already walked (and perhaps narrowed to some kinds of file), sent as
+    /// it is instead of walking `urls` again.
     public init(urls: [URL], host: String, port: UInt16, peerName: String, identity: Identity,
-                streams: Int = 8, chunkSize: Int = Scanner.defaultChunkSize) {
+                streams: Int = 8, chunkSize: Int = Scanner.defaultChunkSize, prescanned: ScannedDrop? = nil) {
+        self.prescanned = prescanned
         self.urls = urls
         self.host = host
         self.port = port
@@ -75,7 +79,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
         self.streams = max(1, min(32, streams))
         self.chunkSize = chunkSize
         super.init(direction: .send, state: .scanning, peerName: peerName, peerAddress: host)
-        setItems(urls.map(\.lastPathComponent))
+        setItems(prescanned?.manifest.topLevelNames ?? urls.map(\.lastPathComponent))
     }
 
     public func start() {
@@ -85,7 +89,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
     }
 
     private func run() throws {
-        scanned = try Scanner.scan(urls, chunkSize: chunkSize) { [self] in isOver }
+        scanned = try prescanned ?? Scanner.scan(urls, chunkSize: chunkSize) { [self] in isOver }
+        guard !scanned.manifest.entries.isEmpty else { throw DropError("Nothing to send") }
         let manifest = scanned.manifest
         setItems(manifest.topLevelNames)
         update { $0.totalBytes = manifest.totalBytes; $0.totalFiles = manifest.fileCount }

@@ -26,6 +26,16 @@ struct TransferRow: Identifiable, Equatable {
     var headline: String { "\(title) \(direction == .send ? "→" : "←") \(peerName)" }
 }
 
+/// "Which kinds of file do you want to send?": a drop that has been read and holds several.
+struct KindQuestion: Identifiable {
+    let id = UUID()
+    var urls: [URL]
+    var peer: Peer
+    var scanned: ScannedDrop
+    var kinds: [FileKind]
+    var title: String
+}
+
 /// Everything the app knows: who is nearby, what is moving, whether this Mac is receiving.
 /// The menu and the window both draw from it.
 @MainActor
@@ -48,6 +58,10 @@ final class AppModel: ObservableObject {
     /// "0.2.0", when the updater has that version downloaded and ready to install.
     @Published var updateReady: String?
     var installUpdate: (() -> Void)?
+    /// Files are being read before a send: "Reading “Christmas 2026”…".
+    @Published var scanning: String?
+    /// A drop with several kinds of file, waiting for the person to say which to send.
+    @Published var kindQuestion: KindQuestion?
     /// The "add by address" field is showing.
     @Published var askingForAddress = false
 
@@ -66,7 +80,8 @@ final class AppModel: ObservableObject {
     private var browser: PeerBrowser?
     private var transfers: [Transfer] = []
     /// What each send was sending and to whom, for Retry.
-    private var sends: [UUID: (urls: [URL], peer: Peer)] = [:]
+    private var sends: [UUID: (urls: [URL], peer: Peer, kinds: Set<String>?)] = [:]
+    private var scanTicket: UUID?
     private var meters: [UUID: RateMeter] = [:]
     private var announced = Set<UUID>()
     private var timer: Timer?
@@ -175,11 +190,55 @@ final class AppModel: ObservableObject {
 
     // MARK: Sending
 
-    func send(_ urls: [URL], to peer: Peer) {
-        guard live, !urls.isEmpty, let browser else { return }
+    /// Sends files and folders to a Mac. They are read first; if they hold more than one kind of
+    /// file the person is asked which kinds to send (`kindQuestion`), unless `kinds` already says or `asking` is off (a retry).
+    func send(_ urls: [URL], to peer: Peer, kinds: Set<String>? = nil, asking: Bool = true) {
+        guard live, !urls.isEmpty else { return }
         pendingURLs = []
+        let name = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items"
+        scanning = "Reading “\(name)”…"
+        let ticket = UUID()
+        scanTicket = ticket
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try Scanner.scan(urls) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard self.scanTicket == ticket else { return }
+                    self.scanning = nil
+                    switch result {
+                    case .failure(let error):
+                        let alert = NSAlert()
+                        alert.messageText = "Cannot send “\(name)”"
+                        alert.informativeText = (error as? DropError)?.message ?? error.localizedDescription
+                        NSApp.activate(ignoringOtherApps: true)
+                        alert.runModal()
+                    case .success(let scanned):
+                        let found = FileKinds.summarize(scanned.manifest)
+                        if let kinds {
+                            self.deliver(urls, scanned.keeping(kinds: kinds), kinds: kinds, to: peer)
+                        } else if asking, found.count >= 2 {
+                            AppDelegate.shared?.showWindow()
+                            self.kindQuestion = KindQuestion(urls: urls, peer: peer, scanned: scanned, kinds: found, title: name)
+                        } else {
+                            self.deliver(urls, scanned, kinds: nil, to: peer)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The answer to `kindQuestion`: these kinds (nil: everything), or nothing at all.
+    func answer(_ question: KindQuestion, kinds: Set<String>?, send: Bool) {
+        kindQuestion = nil
+        guard send else { return }
+        deliver(question.urls, kinds.map { question.scanned.keeping(kinds: $0) } ?? question.scanned, kinds: kinds, to: question.peer)
+    }
+
+    private func deliver(_ urls: [URL], _ scanned: ScannedDrop, kinds: Set<String>?, to peer: Peer) {
+        guard let browser else { return }
         if peer.isManual, let address = peer.address {
-            begin(urls, to: peer, host: address, port: peer.port ?? defaultPort)
+            begin(urls, scanned, kinds: kinds, to: peer, host: address, port: peer.port ?? defaultPort)
             return
         }
         // The other copy's port changes when it restarts, so look it up again each time.
@@ -194,14 +253,14 @@ final class AppModel: ObservableObject {
                     alert.runModal()
                     return
                 }
-                self.begin(urls, to: peer, host: address, port: port)
+                self.begin(urls, scanned, kinds: kinds, to: peer, host: address, port: port)
             }
         }
     }
 
-    private func begin(_ urls: [URL], to peer: Peer, host: String, port: UInt16) {
+    private func begin(_ urls: [URL], _ scanned: ScannedDrop, kinds: Set<String>?, to peer: Peer, host: String, port: UInt16) {
         let session = SendSession(urls: urls, host: host, port: port, peerName: peer.name,
-                                  identity: identity, streams: Settings.streams)
+                                  identity: identity, streams: Settings.streams, prescanned: scanned)
         if !peer.isManual {
             // If the drop loses its connection, the engine asks where the Mac is now: one that
             // changed networks comes back under another address, and Bonjour knows it.
@@ -222,7 +281,7 @@ final class AppModel: ObservableObject {
                 return found.value
             }
         }
-        sends[session.id] = (urls, peer)
+        sends[session.id] = (urls, peer, kinds)
         add(session)
         session.start()
     }
@@ -236,7 +295,8 @@ final class AppModel: ObservableObject {
         sends[id] = nil
         // The Mac as it is known now (its address may have changed), or as it was.
         let peer = destinations.first { $0.id == again.peer.id } ?? again.peer
-        send(again.urls, to: peer)
+        // The same kinds of file as before; the files are read again, in case they changed.
+        send(again.urls, to: peer, kinds: again.kinds, asking: false)
         refresh()
     }
 

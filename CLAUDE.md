@@ -283,7 +283,8 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   Forget does not, and tells nobody: the forgotten Mac learns at its next drop, when the key
   it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
   withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
-  2026-11-23 it stayed "Paired" and every drop failed). Scheduled expiry is different on purpose: a running drop may finish, within
+  2026-11-23 it stayed "Paired" and every drop failed). The app then asks at once
+  (`AppModel.offerToPairAgain`): pair again and send, or not now. Scheduled expiry is different on purpose: a running drop may finish, within
   a day or one key lifetime, whichever is shorter.
 - **Admission** (`DropListener.admit`, `serve`): a slot before a thread. Not yet a key: 64 at
   once, 500 a second, 1 KB, 10 s. A key nobody paired: 8 at once, 16 KB, pair/verify only.

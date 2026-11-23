@@ -465,6 +465,29 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A drop stopped at the handshake because the other Mac no longer has this one paired
+    /// (it chose Forget, or its half of a pairing never arrived). Rather than leave a failed
+    /// row whose Retry leads to the same place, ask now: pair again, then send what was being
+    /// sent. Asked only when the Mac can be paired with; a key that was given up or has run
+    /// out cannot, and its row says why.
+    private func offerToPairAgain(_ id: UUID) {
+        guard live, let again = sends[id] else { return }
+        let peer = destinations.first { $0.id == again.peer.id } ?? again.peer
+        guard standing(peer).canPair else { return }
+        let alert = NSAlert()
+        alert.messageText = "\(displayName(peer)) no longer has this Mac paired"
+        alert.informativeText = "Nothing was sent. Someone there chose to forget this Mac, or the last pairing did not finish. Pair again now, with the person there, and the drop is sent as soon as you have."
+        alert.addButton(withTitle: "Pair Again and Send…")
+        alert.addButton(withTitle: "Not Now")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        transfers.removeAll { $0.id == id }
+        meters[id] = nil
+        sends[id] = nil
+        refresh()
+        pair(with: peer, then: again.urls)
+    }
+
     /// Another Mac asks to pair, and its request has reached the front of the queue.
     private func pairRequested(_ session: PairingSession) {
         NSSound(named: "Glass")?.play()
@@ -833,6 +856,10 @@ final class AppModel: ObservableObject {
         for t in transfers where t.state.isFinal && announced.insert(t.id).inserted {
             announce(t)
             record(t)
+            if t.needsPairing, sends[t.id] != nil {
+                let id = t.id
+                DispatchQueue.main.async { [weak self] in self?.offerToPairAgain(id) }
+            }
         }
         // A drop that ended a minute ago has been seen; it leaves the window. History has it.
         let stale = transfers.filter { t in t.finishedAt.map { now.timeIntervalSince($0) > Self.lingerSeconds } ?? false }

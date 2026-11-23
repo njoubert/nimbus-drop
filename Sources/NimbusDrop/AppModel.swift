@@ -41,6 +41,9 @@ struct KindQuestion: Identifiable {
 @MainActor
 final class AppModel: ObservableObject {
     let identity: Identity
+    /// This Mac's key and what it knows of others'. Always there; when the stored identity could
+    /// not be opened it is a stand-in held in memory, and `trustProblem` says so.
+    let trust: Trust
     @Published var peers: [Peer] = []
     @Published var rows: [TransferRow] = []
     @Published var receiving: Bool
@@ -100,6 +103,7 @@ final class AppModel: ObservableObject {
 
     init() {
         identity = Settings.identity
+        (trust, trustProblem) = AppModel.openTrust()
         receiving = Settings.receiving
         addresses = LocalHost.addresses
         live = true
@@ -108,6 +112,7 @@ final class AppModel: ObservableObject {
     /// Made-up contents for `--dump-window`; touches no network.
     init(demoPeers: [Peer], manual: [Peer], rows: [TransferRow], receiving: Bool = true, askingForAddress: Bool = false, listLayout: Bool = false) {
         identity = Identity(name: "macbookpro", id: "demo")
+        trust = Trust.inMemory()
         self.receiving = receiving
         addresses = [LocalHost.Address(interface: "en0", address: "192.168.1.129")]
         peers = demoPeers
@@ -116,6 +121,28 @@ final class AppModel: ObservableObject {
         self.askingForAddress = askingForAddress
         live = false
         self.listLayout = listLayout
+    }
+
+    /// Why this Mac's stored identity could not be used, when it could not.
+    @Published var trustProblem: String?
+
+    /// Opens the stored identity. If it cannot be opened the app still runs, on an identity held
+    /// in memory that nothing is paired with, and says why; nothing stored is replaced.
+    private static func openTrust() -> (Trust, String?) {
+        let storage = EnclaveStorage.standard(bundleID: Settings.bundleID)
+        do { return (try Trust(storage: storage), nil) } catch TrustFault.damaged {
+            return (Trust.inMemory(), "damaged")
+        } catch TrustFault.unavailable(let why) {
+            return (Trust.inMemory(), "This Mac's identity cannot be opened right now (\(why)). Nothing can be sent or received until it can; quit and open Nimbus Drop again.")
+        } catch {
+            return (Trust.inMemory(), "This Mac's identity cannot be opened: \(error)")
+        }
+    }
+
+    /// What a Mac is called here: the name the person gave it once paired, what it announces otherwise.
+    func displayName(_ peer: Peer) -> String {
+        if let key = peer.key, case .paired(let mac) = trust.standing(of: key) { return mac.name }
+        return peer.name
     }
 
     // MARK: Lifecycle
@@ -199,7 +226,7 @@ final class AppModel: ObservableObject {
         if !receiving { DropLog.write("receiving is off") }
         if receiving {
             do {
-                let l = try DropListener(identity: identity)
+                let l = try DropListener(identity: identity, trust: trust)
                 l.localOnly = localOnly
                 l.onOffer = { [weak self] session in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.offered(session) } }
@@ -296,8 +323,8 @@ final class AppModel: ObservableObject {
     }
 
     private func begin(_ urls: [URL], _ scanned: ScannedDrop, kinds: Set<String>?, to peer: Peer, host: String, port: UInt16) {
-        let session = SendSession(urls: urls, host: host, port: port, peerName: peer.name,
-                                  identity: identity, streams: Settings.streams, prescanned: scanned)
+        let session = SendSession(urls: urls, host: host, port: port, peerName: displayName(peer),
+                                  identity: identity, trust: trust, expect: peer.key, streams: Settings.streams, prescanned: scanned)
         DropLog.write("sending \(urls.map(\.path).joined(separator: ", ")) to \(peer.name)\(peer.isManual ? " (added by address)" : "")"
             + (kinds.map { "; only \($0.sorted().joined(separator: ", "))" } ?? ""))
         if !peer.isManual {
@@ -400,13 +427,14 @@ final class AppModel: ObservableObject {
     private func probeManual() {
         guard live else { return }
         let entries = Settings.manualDestinations
-        let own = identity.id
+        let identity = identity, trust = trust
         DispatchQueue.global(qos: .utility).async {
             let answers = entries.map { entry -> Peer in
                 let (host, port) = Self.parse(entry)
-                guard var peer = try? Probe.hello(host: host, port: port, timeout: 2) else { return Self.placeholder(entry) }
+                guard var peer = try? Probe.hello(host: host, port: port, identity: identity, trust: trust, timeout: 2) else { return Self.placeholder(entry) }
+                peer.id = "manual:" + entry
                 peer.isManual = true
-                if peer.id == own { peer.name += " (this Mac)" }
+                if peer.key == trust.publicKey { peer.name += " (this Mac)" }
                 return peer
             }
             DispatchQueue.main.async {

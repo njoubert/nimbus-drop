@@ -16,6 +16,8 @@ final class ChaosTests: XCTestCase {
     var proxy: ChaosProxy!
     var received = Box<[ReceiveSession]>([])
     let sender = Identity(name: "sender", id: "sender-id")
+    var senderTrust: Trust!
+    var receiverTrust: Trust!
     /// Small chunks, so a few megabytes are hundreds of chunks across the connections.
     let chunk = 64 << 10
 
@@ -30,7 +32,8 @@ final class ChaosTests: XCTestCase {
         Tuning.reconnectSeconds = 3
         let dst = self.dst
         let received = self.received
-        listener = try DropListener(identity: Identity(name: "receiver", id: "receiver-id"), preferredPort: 0)
+        (senderTrust, receiverTrust) = Trust.paired()
+        listener = try DropListener(identity: Identity(name: "receiver", id: "receiver-id"), trust: receiverTrust, preferredPort: 0)
         listener.onOffer = { session in
             received.value += [session]
             session.accept(destination: dst)
@@ -83,7 +86,7 @@ final class ChaosTests: XCTestCase {
 
     /// Sends through the proxy.
     func send(_ url: URL, streams: Int = 4) -> SendSession {
-        let s = SendSession(urls: [url], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender,
+        let s = SendSession(urls: [url], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender, trust: senderTrust,
                             streams: streams, chunkSize: chunk)
         s.start()
         return s
@@ -349,7 +352,7 @@ final class ChaosTests: XCTestCase {
             p.set { $0.refuseNew = true }
             p.kill(.all)
         }
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender,
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender, trust: senderTrust,
                             streams: 4, chunkSize: chunk)
         let asked = Box(0)
         let newPort = elsewhere.port

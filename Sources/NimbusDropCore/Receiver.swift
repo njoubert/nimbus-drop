@@ -3,20 +3,58 @@
 import Darwin
 import Foundation
 
-/// Accepts connections from senders. Each new drop is handed to `onOffer` as a `ReceiveSession`
-/// that waits for `accept(destination:)` or `decline()`; nothing is written before that.
+/// Closes a socket unless told in time that it has earned its keep.
+private final class Deadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private var generation = 0
+    private weak var socket: Socket?
+
+    init(_ socket: Socket, seconds: Double) {
+        self.socket = socket
+        arm(seconds)
+    }
+
+    /// Starts the clock again, from now.
+    func arm(_ seconds: Double) {
+        let mine = lock.withLock { () -> Int in self.generation += 1; return self.generation }
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.lock.withLock({ self.generation == mine }) else { return }
+            socket?.shutdown()
+        }
+    }
+
+    func cancel() { lock.withLock { self.generation += 1 } }
+}
+
+/// Accepts connections from other Macs. Each new drop from a paired Mac is handed to `onOffer`
+/// as a `ReceiveSession` that waits for `accept(destination:)` or `decline()`; nothing is written
+/// before that. A request to pair is handed to `onPairRequest`.
+///
+/// Every connection is held to the budget of what it has proved so far (the plan's Admission
+/// table): a slot is taken before any work is done for it and kept until its class changes.
+/// Completing a handshake proves possession of some key, not a place among the Known Macs, and
+/// raises no limit by itself.
 public final class DropListener: @unchecked Sendable {
     public let port: UInt16
     public let identity: Identity
+    public let trust: Trust
     /// Called on a background thread for every incoming offer.
     public var onOffer: (@Sendable (ReceiveSession) -> Void)?
+    /// Called on a background thread when another Mac asks to pair and its request has reached
+    /// the front of the queue. One at a time.
+    public var onPairRequest: (@Sendable (PairingSession) -> Void)?
+    /// A retired or run-out identity was used, and the person should be told (rationed).
+    public var onRefusedIdentity: (@Sendable (_ name: String, _ address: String) -> Void)?
 
     private let fd: Int32
     private let lock = NSLock()
     private var stopped = false
-    private var sessions: [String: ReceiveSession] = [:]
+    private var sessions: [Data: ReceiveSession] = [:]
     private var holders: [String: ReceiveSession] = [:]
     private var strangers = 0
+    private var unpaired = 0
+    private var unattached = 0
+    private var arrivals: [Date] = []
     private var turnedAway = Set<String>()
     private var _localOnly = true
     /// Take connections only from the local network (the default). Off: from anything that can reach the port.
@@ -26,17 +64,25 @@ public final class DropListener: @unchecked Sendable {
     }
     /// Tests only: decides which addresses are let in, in place of the subnet rule.
     var allows: ((String) -> Bool)?
-    private var waiting: [(session: ReceiveSession?, address: String)] = []
-    private var completed: [String: (answer: Complete, at: Date)] = [:]
+    private var waiting: [(session: ReceiveSession?, key: PublicKey)] = []
+    private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Date)] = [:]
+    private var showing: PairingSession?
+    private var queued = 0
+    private var reassembling = 0
+    private let budget = NSCondition()
+    private var counted: [String: (count: Int, since: Date)] = [:]
 
     /// Listens on `preferredPort`, or on any free port when that one is taken (0 asks for any).
-    public init(identity: Identity, preferredPort: UInt16 = defaultPort) throws {
+    public init(identity: Identity, trust: Trust, preferredPort: UInt16 = defaultPort) throws {
         self.identity = identity
+        self.trust = trust
         if let got = try? Socket.listen(port: preferredPort) {
             (fd, port) = got
         } else {
             (fd, port) = try Socket.listen(port: 0)
         }
+        // A key whose trust is withdrawn loses what it had waiting here too.
+        trust.onWithdrawn { [weak self] key in self?.withdraw(key) }
     }
 
     deinit { close(fd) }
@@ -49,6 +95,8 @@ public final class DropListener: @unchecked Sendable {
                 let client = accept(fd, nil, nil)
                 guard client >= 0 else { continue }
                 let socket = Socket(fd: client)
+                // Admission before a thread: the address, the rate, and a stranger's slot.
+                guard admit(socket) else { socket.shutdown(); continue }
                 Thread.detachNewThread { [self] in serve(socket) }
             }
         }
@@ -57,94 +105,305 @@ public final class DropListener: @unchecked Sendable {
     /// Stops taking new drops. Drops already under way carry on.
     public func stop() { lock.withLock { stopped = true } }
 
-    /// Whether a connection from this address is taken at all. By default only the local
-    /// network: this Mac itself and addresses on the same subnet as one of its interfaces.
-    /// Anything else is closed before a byte of it is read.
-    private func admits(_ address: String) -> Bool {
-        if let allows { return allows(address) }
-        return !localOnly || LocalNetwork.isLocal(address, among: LocalNetwork.current())
+    /// One line per kind per minute, with a count: what strangers cause is counted, not listed.
+    private func logCounted(_ kind: String, _ message: @autoclosure () -> String, _ level: LogLevel = .warn) {
+        let now = Date()
+        let say: Int? = lock.withLock {
+            if let c = counted[kind], now.timeIntervalSince(c.since) < 60 {
+                counted[kind] = (c.count + 1, c.since)
+                return nil
+            }
+            let before = counted[kind]?.count ?? 0
+            counted[kind] = (0, now)
+            return before
+        }
+        guard let say else { return }
+        DropLog.write(message() + (say > 0 ? " (and \(say) more like it in the last minute)" : ""), level)
+    }
+
+    /// Whether a connection is taken at all: from the local network (unless Settings says
+    /// otherwise), within the rate at which new connections are taken, and with a stranger's
+    /// slot free. The slot is held from here.
+    private func admit(_ socket: Socket) -> Bool {
+        let from = socket.peerAddress
+        let local = allows.map { $0(from) } ?? (!localOnly || LocalNetwork.isLocal(from, among: LocalNetwork.current()))
+        guard local else {
+            // Said once per address: a scanner knocking every second should not fill the log.
+            if lock.withLock({ turnedAway.count < 1000 && turnedAway.insert(from).inserted }) {
+                DropLog.write("turned away a connection from \(from): not on the local network (Settings › Receiving)", .warn)
+            }
+            return false
+        }
+        let taken = lock.withLock { () -> Bool in
+            let now = Date()
+            arrivals.removeAll { now.timeIntervalSince($0) > 1 }
+            guard arrivals.count < Tuning.arrivalsPerSecond, strangers < Tuning.strangers else { return false }
+            arrivals.append(now)
+            strangers += 1
+            return true
+        }
+        if !taken { logCounted("full", "turned away a connection from \(from): too many at once") }
+        return taken
     }
 
     private func serve(_ socket: Socket) {
         let from = socket.peerAddress
-        guard admits(from) else {
-            // Said once per address: a scanner knocking every second should not fill the log.
-            if lock.withLock({ turnedAway.insert(from).inserted }) {
-                DropLog.write("turned away a connection from \(from): not on the local network (Settings › Receiving)", .warn)
+        var stranger = true
+        func noLongerAStranger() { if stranger { stranger = false; lock.withLock { strangers -= 1 } } }
+        defer { noLongerAStranger() }
+        // Ten seconds in all (not ten per byte) to get as far as proving a key.
+        let deadline = Deadline(socket, seconds: Tuning.strangerSeconds)
+        defer { deadline.cancel() }
+        socket.setReadTimeout(Int(Tuning.strangerSeconds.rounded(.up)))
+        guard let kind = try? Opening.readKind(socket) else { socket.shutdown(); return }
+
+        if kind == Opening.data {
+            // A data connection: nothing until it proves it belongs to a drop in progress.
+            let room = lock.withLock { () -> Bool in
+                guard unattached < Tuning.unattachedPerDrop * sessions.count else { return false }
+                unattached += 1
+                return true
             }
+            noLongerAStranger()
+            guard room else { socket.shutdown(); return }
+            var released = false
+            func release() { if !released { released = true; lock.withLock { unattached -= 1 } } }
+            defer { release() }
+            deadline.arm(Tuning.attachSeconds)
+            let challenge = Crypto.random(16)
+            var message = Data(count: 40)
+            guard (try? challenge.withUnsafeBytes({ try socket.writeAll($0.baseAddress!, 16) })) != nil,
+                  (try? message.withUnsafeMutableBytes({ try socket.readExactly($0.baseAddress!, 40) })) != nil else { socket.shutdown(); return }
+            let id = message.prefix(16), tag = message.suffix(16)
+            let conn = message.dropFirst(16).prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            guard let session = lock.withLock({ sessions[Data(id)] }), session.claim(conn: conn, tag: Data(tag), challenge: challenge) else {
+                logCounted("attach", "refused a data connection from \(from): it did not prove it belongs to a drop here")
+                socket.shutdown()
+                return
+            }
+            deadline.cancel()
+            release()
+            socket.setReadTimeout(0)
+            session.runStream(socket, conn: conn)
+            return
+        }
+
+        guard kind == Opening.control, let channel = try? Channel.respond(socket, keys: trust.keyPair) else {
+            // Includes every probe: a connection that learns who is here and hangs up.
             socket.shutdown()
             return
         }
-        // Bonjour resolution opens a connection and closes it again; anything that does not
-        // speak within ten seconds is not a sender.
-        // Until it has said what it is, a connection is a stranger: a bounded number of them, a
-        // small first frame, and ten seconds in all to send it (not ten per byte).
-        guard lock.withLock({ () -> Bool in
-            guard strangers < Tuning.strangers else { return false }
-            strangers += 1
-            return true
-        }) else { return }
-        let arrived = Locked(false)
-        DispatchQueue.global().asyncAfter(deadline: .now() + Tuning.strangerSeconds) { if !arrived.withLock({ $0 }) { socket.shutdown() } }
-        socket.setReadTimeout(10)
-        let first = try? socket.readFrame(limit: firstFrameBytes)
-        arrived.withLock { $0 = true }
-        lock.withLock { strangers -= 1 }
-        // Closed here and now: the deadline above still holds the socket for its ten seconds.
-        guard let first else { socket.shutdown(); return }
-        socket.setReadTimeout(0)
-        switch first.type {
-        case .offer:
-            guard let offer = try? decode(Offer.self, from: first.body) else { return }
+        // A key has been proved. What it is to this Mac decides everything from here.
+        let key = channel.remote
+        let standing = trust.standing(of: key)
+        noLongerAStranger()
+        switch standing {
+        case .mine: socket.shutdown(); return
+        case .retired(let t):
+            logCounted("retired", "refused \(from): it proved an identity (\(key.tag)) that \(t.name) gave up or that was replaced", .error)
+            if trust.noteRefused(key) { onRefusedIdentity?(t.name, from) }
+            socket.shutdown()
+            return
+        default: break
+        }
+        var holdsUnpaired = false
+        if !standing.isPaired {
+            guard lock.withLock({ () -> Bool in
+                guard unpaired < Tuning.unpaired else { return false }
+                unpaired += 1
+                return true
+            }) else {
+                logCounted("unpaired", "turned away \(from) (\(key.tag)): too many connections from Macs that are not paired")
+                socket.shutdown()
+                return
+            }
+            holdsUnpaired = true
+            // Sixteen kilobytes in all, which the one-fragment limit already holds it under per message.
+            channel.limit = 16 << 10
+        }
+        defer { if holdsUnpaired { lock.withLock { unpaired -= 1 } } }
+
+        guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body),
+              (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
+                                                     paired: standing.isPaired, purpose: nil))) != nil else { socket.shutdown(); return }
+        let name = Sanitize.label(hello.name, limit: 64)
+
+        switch hello.purpose {
+        case .drop:
+            // Both sides must hold the pairing. One that does not has just been told so.
+            guard case .paired(let mac) = standing, hello.paired else { socket.shutdown(); return }
+            trust.seen(key, name: hello.name, major: protocolVersion)
+            guard let frame = try? channel.read(), frame.type == .offer, let offer = try? decode(Offer.self, from: frame.body) else { socket.shutdown(); return }
+            deadline.cancel()
+            socket.setReadTimeout(0)
             socket.setNoDelay()
-            let session = ReceiveSession(control: socket, offer: offer, listener: self)
+            let session = ReceiveSession(channel: channel, offer: offer, hello: hello, mac: mac, listener: self)
             // No more questions on screen than a person can read, and no more than two from
-            // one address: the rest are declined without being shown.
+            // one Mac: the rest are declined without being shown.
             let room = lock.withLock { () -> Bool in
                 waiting = waiting.filter { $0.session?.state == .waitingForAccept }
                 guard waiting.count < Tuning.pendingOffers,
-                      waiting.filter({ $0.address == from }).count < Tuning.pendingOffersPerAddress else { return false }
-                waiting.append((session, from))
+                      waiting.filter({ $0.key == key }).count < Tuning.pendingOffersPerAddress else { return false }
+                waiting.append((session, key))
                 return true
             }
             guard room else {
-                DropLog.write("declined an offer from \(from) unseen: too many are waiting for an answer already", .warn)
-                try? socket.send(.decline, Reason(message: "\(identity.name) has too many drops waiting for an answer"))
+                DropLog.write("declined an offer from \(mac.name) unseen: too many are waiting for an answer already", .warn)
+                try? channel.send(.decline, Reason(message: "\(identity.name) has too many drops waiting for an answer"))
                 return
             }
             session.run()
-        case .hello:
-            try? socket.send(.hello, Hello(name: identity.name, id: identity.id, version: protocolVersion, minor: protocolMinor, app: identity.appVersion))
+
         case .resume:
-            guard let resume = try? decode(Attach.self, from: first.body) else { return }
+            // A drop in progress may be picked up by the key that began it even after that key's
+            // end date, within the time a running drop is allowed (see `Trust.track`).
+            switch standing {
+            case .paired, .expired: break
+            default: socket.shutdown(); return
+            }
+            guard let frame = try? channel.read(), frame.type == .resume, let resume = try? decode(Resume.self, from: frame.body) else { socket.shutdown(); return }
             // A drop that finished while its sender was out of reach: say so again.
-            if let done = lock.withLock({ completed[resume.token]?.answer }) {
-                try? socket.send(.complete, done)
+            if let done = lock.withLock({ completed[resume.session] }), done.key == key,
+               Crypto.same(resume.proof, DropKeys.resumeProof(done.resumeKey, "resume", h: channel.h)) {
+                try? channel.send(.resumed, Resumed(proof: DropKeys.resumeProof(done.resumeKey, "resumed", h: channel.h)))
+                try? channel.send(.complete, done.answer)
                 return
             }
-            guard let session = lock.withLock({ sessions[resume.token] }) else { return }
+            guard let session = lock.withLock({ sessions[resume.session] }), session.peerKey == key, session.resume(on: channel, proof: resume.proof) else {
+                logCounted("resume", "refused \(from): it asked to pick up a drop it could not prove it holds")
+                socket.shutdown()
+                return
+            }
+            deadline.cancel()
+            socket.setReadTimeout(0)
             socket.setNoDelay()
-            session.resume(on: socket)
-        case .attach:
-            guard let attach = try? decode(Attach.self, from: first.body),
-                  let session = lock.withLock({ sessions[attach.token] }) else { return }
-            session.runStream(socket)
-        default:
-            return
+
+        case .pair, .verify:
+            guard standing.mayPair else {
+                if trust.noteRefused(key) { onRefusedIdentity?(name, from) }
+                socket.shutdown()
+                return
+            }
+            guard let frame = try? channel.read(), frame.type == .pairRequest else { socket.shutdown(); return }
+            deadline.cancel()
+            request(PairingSession(channel: channel, hello: hello, identity: identity, trust: trust), from: from)
+
+        case .retire:
+            // Only a key on record can be retired, only by proving it, and only itself.
+            switch standing {
+            case .paired, .expired, .renew: break
+            default: socket.shutdown(); return
+            }
+            guard let frame = try? channel.read(), frame.type == .retire else { socket.shutdown(); return }
+            DropLog.write("\(name) at \(from) says its identity \(key.tag) is retired", .warn)
+            // Written, everything it had here ended, and only then acknowledged.
+            trust.retire(key)
+            guard (try? trust.commit()) != nil else { socket.shutdown(); return }
+            try? channel.send(.retired, Empty())
+            Thread.sleep(forTimeInterval: 0.2)
+            socket.shutdown()
+
+        case nil:
+            socket.shutdown()
         }
     }
 
+    // MARK: Requests to pair
+
+    /// One request on screen at a time, a few waiting behind it, none for a while after one is
+    /// refused, fails or is abandoned.
+    private func request(_ pairing: PairingSession, from: String) {
+        let channel = { (reason: String) in pairing.cancel(reason) }
+        func busy(_ message: String, log: String) {
+            logCounted("pairbusy", "a request to pair from \(pairing.peerName) at \(from) was not shown: \(log)")
+            pairing.turnAway(message)
+            _ = channel
+        }
+        if trust.requestsOff { return busy("\(identity.name) is not taking requests to pair; start the pairing from that Mac", log: "requests are off in Settings") }
+        // Both asked at the same moment: the request from the lower key goes ahead.
+        if let mine = trust.gate.active, mine.initiator, mine.peerKey == pairing.peerKey, mine.state == .asking || mine.state == .connecting,
+           let theirs = pairing.peerKey {
+            if trust.publicKey.raw.lexicographicallyPrecedes(theirs.raw) { return busy("Both Macs asked at once; carry on with the request from \(identity.name)", log: "this Mac asked first") }
+            mine.cancel("Both Macs asked at once; answer the request on this Mac")
+        }
+        let quiet = trust.gate.quietSecondsLeft
+        if quiet > 0 { return busy("\(identity.name) is not taking requests to pair for another \(Int(quiet.rounded(.up))) s", log: "requests are paused after the last one") }
+        let turn = lock.withLock { () -> Bool? in
+            if showing == nil || showing!.state.isFinal { showing = pairing; return true }
+            guard queued < Tuning.pairRequestsWaiting else { return nil }
+            queued += 1
+            return false
+        }
+        guard let turn else { return busy("\(identity.name) has too many requests to pair waiting", log: "too many are waiting") }
+        if !turn {
+            // Wait for the one on screen, no longer than a request may wait.
+            let until = Date().addingTimeInterval(Tuning.pairSeconds)
+            var mine = false
+            while !mine, Date() < until, !pairing.state.isFinal {
+                Thread.sleep(forTimeInterval: 0.2)
+                if pairing.channelClosed { break }
+                mine = lock.withLock {
+                    guard showing == nil || showing!.state.isFinal else { return false }
+                    showing = pairing
+                    return true
+                }
+            }
+            lock.withLock { queued -= 1 }
+            guard mine, trust.gate.quietSecondsLeft == 0 else { return busy("\(identity.name) did not get to this request in time", log: "it waited too long") }
+        }
+        DropLog.write("\(pairing.peerName) at \(from) (\(pairing.peerKey?.tag ?? "?")) asks to pair" + (pairing.clash.map { "; its name is that of \($0.name), which this Mac knows under another key" } ?? ""))
+        if let clash = pairing.clash, clash.paired, !clash.expected { trust.noteImpostor(of: clash.key, at: from) }
+        pairing.onEnd = { [weak self] well in
+            self?.trust.gate.requestEnded(well: well)
+            self?.lock.withLock { if self?.showing === pairing { self?.showing = nil } }
+        }
+        guard let ask = onPairRequest else { return busy("\(identity.name) is not taking requests to pair", log: "nothing is listening for them") }
+        ask(pairing)
+        pairing.respond()
+    }
+
+    // MARK: Sessions
+
     /// Keeps a finished drop's answer for a few minutes, for a sender whose connection was lost
-    /// before it heard.
-    func remember(completed token: String, _ answer: Complete) {
+    /// before it heard. With it, the one key of the drop that is still needed: the proof that
+    /// whoever asks is that sender.
+    func remember(completed session: Data, _ answer: Complete, resumeKey: Data, key: PublicKey) {
         lock.withLock {
             let now = Date()
             completed = completed.filter { now.timeIntervalSince($0.value.at) < 300 }
-            completed[token] = (answer, now)
+            completed[session] = (answer, resumeKey, key, now)
         }
     }
 
-    func register(_ session: ReceiveSession, token: String) { lock.withLock { sessions[token] = session } }
+    func register(_ session: ReceiveSession, id: Data) { lock.withLock { sessions[id] = session } }
+    func unregister(id: Data) { lock.withLock { sessions[id] = nil } }
+
+    /// Trust in `key` was withdrawn. Its sessions have been ended by `Trust`; what is left here
+    /// is what it had waiting on a person and what a finished drop of its left behind.
+    private func withdraw(_ key: PublicKey) {
+        let pairing = lock.withLock { () -> PairingSession? in
+            completed = completed.filter { $0.value.key != key }
+            sessions = sessions.filter { $0.value.peerKey != key }
+            return showing?.peerKey == key ? showing : nil
+        }
+        pairing?.cancel("That Mac's identity is no longer trusted")
+    }
+
+    /// Room to reassemble a control message of `bytes`, out of what all drops share. Waits when
+    /// there is none.
+    func reserve(_ bytes: Int) {
+        budget.lock()
+        while reassembling > 0, reassembling + bytes > Tuning.controlBudget { budget.wait(until: Date().addingTimeInterval(1)) }
+        reassembling += bytes
+        budget.unlock()
+    }
+
+    func unreserve(_ bytes: Int) {
+        budget.lock()
+        reassembling -= bytes
+        budget.broadcast()
+        budget.unlock()
+    }
 
     /// One drop per partial folder. A sender that gave up and offered the same drop afresh must
     /// not find an earlier session still holding the folder (waiting for a reconnect, say): the
@@ -164,7 +423,6 @@ public final class DropListener: @unchecked Sendable {
     func release(_ partial: String, by session: ReceiveSession) {
         lock.withLock { if holders[partial] === session { holders[partial] = nil } }
     }
-    func unregister(token: String) { lock.withLock { sessions[token] = nil } }
 }
 
 /// One incoming drop: first a question for the person at this Mac, then the transfer.
@@ -173,11 +431,14 @@ public final class DropListener: @unchecked Sendable {
 /// damaged chunk is closed and what it did not deliver is asked for again, on the same accepted
 /// drop, without asking the person twice.
 public final class ReceiveSession: Transfer, @unchecked Sendable {
+    /// The sender's key, as text: what a re-sent drop is recognised by.
     public let senderID: String
+    /// The Known Mac the sender proved to be.
+    public let sender: KnownMac
     /// What the sender says it is sending, for the prompt.
     public let offeredFiles: Int
     public let offeredBytes: Int64
-    /// The sender's app version and protocol version ("0.3.1", "2.0"), as it stated them.
+    /// The sender's app version and protocol version ("0.3.1", "3.0"), as it stated them.
     public let senderAppVersion: String
     public let senderProtocol: String
 
@@ -185,11 +446,15 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     public var onWithdrawn: (@Sendable () -> Void)?
 
     /// The connection the conversation is on. Replaced when the sender reconnects.
-    private var control: Socket
+    private var control: Channel
     /// A connection the sender has opened to pick the drop up again, waiting to be taken.
-    private var incoming: Socket?
+    private var incoming: Channel?
     private weak var listener: DropListener?
-    private let version: Int
+    /// The drop's keys; gone when the drop ends or trust in the sender is withdrawn.
+    private var keys: DropKeys?
+    /// Data connection numbers that have been presented. Each is taken once.
+    private var claimed = Set<UInt64>()
+    private var reserved = 0
     /// What the person was shown and agreed to; the manifest must be that and nothing else.
     private let offered: Offer
     private var tree: SafeTree!
@@ -213,24 +478,51 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// The control connection is gone and the session is waiting for the sender to bring another.
     private var awaitingControl = false
 
-    init(control: Socket, offer: Offer, listener: DropListener) {
-        self.control = control
+    init(channel: Channel, offer: Offer, hello: SecureHello, mac: KnownMac, listener: DropListener) {
+        control = channel
         self.listener = listener
-        senderID = offer.senderID
+        sender = mac
+        senderID = channel.remote.raw.map { String(format: "%02x", $0) }.joined()
         offeredFiles = offer.fileCount
         offeredBytes = offer.totalBytes
-        version = offer.version
-        senderAppVersion = Sanitize.label(offer.app ?? "an older version", limit: 24)
-        senderProtocol = "\(offer.version)" + (offer.minor.map { ".\($0)" } ?? "")
+        senderAppVersion = Sanitize.label(hello.app, limit: 24)
+        senderProtocol = "\(protocolVersion).\(hello.minor)"
         offered = offer
-        // The name is whatever the sender says it is; only the address is known. Both are shown.
-        super.init(direction: .receive, state: .waitingForAccept, peerName: Sanitize.label(offer.senderName, limit: 64),
-                   peerAddress: control.peerAddress)
+        keys = DropKeys(master: channel.master)
+        // The name shown is the one the person here gave that Mac, not what it calls itself today.
+        super.init(direction: .receive, state: .waitingForAccept, peerName: mac.name, peerAddress: channel.socket.peerAddress)
+        setPeerKey(channel.remote)
         setItems(offer.items.prefix(1000).map { Sanitize.label($0, limit: 255) })
-        log("offer from \(peerName) at \(control.peerAddress) (Nimbus Drop \(senderAppVersion), protocol \(senderProtocol)): “\(items.prefix(20).joined(separator: "”, “"))”, \(offer.fileCount) files, \(offer.totalBytes) bytes")
+        log("offer from \(peerName) (\(channel.remote.tag)) at \(channel.socket.peerAddress) (Nimbus Drop \(senderAppVersion), protocol \(senderProtocol)): “\(items.prefix(20).joined(separator: "”, “"))”, \(offer.fileCount) files, \(offer.totalBytes) bytes")
         update { $0.totalBytes = offer.totalBytes; $0.totalFiles = offer.fileCount }
-        track(control)
+        track(channel.socket)
+        farewell = { [weak self] message in try? self?.control.send(.error, Reason(message: message)) }
+        // From here on, withdrawing trust in the sender ends this drop, asked about or not.
+        listener.trust.track(self, key: channel.remote)
     }
+
+    /// Trust in the sender was withdrawn. The keys go first, so that nothing can attach or
+    /// resume; what was being written stays in its partial folder and is not put in place.
+    override func withdrawn(_ error: DropError) {
+        lock.withLock { keys = nil }
+        super.withdrawn(error)
+        streams.lock()
+        incoming?.socket.shutdown()
+        streams.broadcast()
+        streams.unlock()
+    }
+
+    /// A data connection presents `conn` and a tag over the challenge this Mac just made for
+    /// it. True, once, for the first connection that proves it holds the drop's keys now.
+    func claim(conn: UInt64, tag: Data, challenge: Data) -> Bool {
+        lock.withLock {
+            guard let keys, !_isFinalOrCancelled, Crypto.same(tag, keys.attachTag(conn: conn, challenge: challenge)),
+                  claimed.count < 1 << 20, claimed.insert(conn).inserted else { return false }
+            return true
+        }
+    }
+
+    private var _isFinalOrCancelled: Bool { cancelRequested }
 
     /// Take the drop into `destination` (a folder). Each top-level item lands there under its
     /// own name, or a "keep both" name when that is taken.
@@ -255,7 +547,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     override func silence() {
         guard ledger != nil, state == .transferring else { return super.silence() }
         log("no sign of life from \(peerName); treating the connection as lost", .warn)
-        control.shutdown()
+        control.socket.shutdown()
     }
 
     /// Returns once this session's own thread has finished with the drop.
@@ -270,27 +562,32 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// thread; the session's own thread takes the connection from here. If that thread is still
     /// listening on the old connection (the sender noticed the loss first), closing the old one
     /// is what tells it.
-    func resume(on socket: Socket) {
+    func resume(on channel: Channel, proof: Data) -> Bool {
+        guard let keys = lock.withLock({ keys }), !isOver,
+              Crypto.same(proof, DropKeys.resumeProof(keys.resumeKey, "resume", h: channel.h)),
+              (try? channel.send(.resumed, Resumed(proof: DropKeys.resumeProof(keys.resumeKey, "resumed", h: channel.h)))) != nil else { return false }
+        channel.limit = control.limit
         streams.lock()
-        incoming?.shutdown()
-        incoming = socket
+        incoming?.socket.shutdown()
+        incoming = channel
         let old = control
         streams.broadcast()
         streams.unlock()
-        old.shutdown()
+        old.socket.shutdown()
+        return true
     }
 
     /// The control connection is gone. Holds the drop open for `Tuning.reconnectSeconds`, with
     /// everything written so far kept, until the sender reconnects; then answers with what is
     /// here. Throws when nobody comes.
-    private func awaitSender(token: String, after lost: Error) throws {
+    private func awaitSender(after lost: Error) throws {
         while true {
             if isOver { throw lost }
             log("lost the control connection: \((lost as? DropError)?.message ?? "\(lost)"); holding the drop for \(Int(Tuning.reconnectSeconds)) s", .warn)
             setState(.reconnecting)
             // Whatever is wrong with the old connection (gone, or it delivered a damaged
             // message), it is finished: closing it is how the sender learns to reconnect.
-            control.shutdown()
+            control.socket.shutdown()
             streams.lock()
             for s in active { s.shutdown() }
             awaitingControl = true
@@ -314,10 +611,10 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             guard let fresh else {
                 throw DropError("Lost the connection to \(peerName) and it did not come back; send the drop again to continue it")
             }
-            replaceControl(control, with: fresh)
+            replaceControl(control.socket, with: fresh.socket)
             control = fresh
-            setPeerAddress(fresh.peerAddress)
-            log("the sender is back, from \(fresh.peerAddress)")
+            setPeerAddress(fresh.socket.peerAddress)
+            log("the sender is back, from \(fresh.socket.peerAddress), and proved it is the same Mac and the same drop")
             // The old data connections are closing; let them finish before saying what is here.
             streams.lock()
             let settled = Date().addingTimeInterval(5)
@@ -328,7 +625,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             update { $0.doneBytes = have }
             note { $0.reconnects += 1 }
             do {
-                try control.send(.plan, ledger.plan(token: token))
+                try control.send(.plan, ledger.plan())
                 setState(.transferring)
                 return
             } catch { continue }   // lost again already: wait again
@@ -336,14 +633,6 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     }
 
     private func conduct() throws {
-        // The major decides; a different minor is by definition something both sides can ignore.
-        guard version == protocolVersion else {
-            let mine = listener?.identity
-            try control.send(.decline, Reason(message: "\(mine?.name ?? "The other Mac") runs Nimbus Drop \(mine?.appVersion ?? "?") (protocol \(protocolVersionText)) "
-                + "and cannot take a drop from protocol \(senderProtocol). Update Nimbus Drop on both Macs."))
-            finish(.declined("\(peerName) runs Nimbus Drop \(senderAppVersion) (protocol \(senderProtocol)); this Mac speaks protocol \(protocolVersionText). Update Nimbus Drop on both Macs."))
-            return
-        }
         guard let listener, let offer = listener.onOffer else {
             try control.send(.decline, Reason(message: "Not receiving"))
             finish(.declined("Not receiving"))
@@ -355,8 +644,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         var chosen: Decision?
         while chosen == nil {
             if isOver { onWithdrawn?(); return }
-            if control.waitReadable(milliseconds: 200) {
-                let message = (try? control.readFrame(limit: firstFrameBytes)).flatMap { $0.type == .error ? (try? decode(Reason.self, from: $0.body).message).map { Sanitize.label($0, limit: 300) } : nil }
+            if control.socket.waitReadable(milliseconds: 200) {
+                let message = (try? control.read()).flatMap { $0.type == .error ? (try? decode(Reason.self, from: $0.body).message).map { Sanitize.label($0, limit: 300) } : nil }
                 finish(.failed(message ?? "The sender went away"))
                 onWithdrawn?()
                 return
@@ -370,8 +659,15 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         }
 
         log("accepted, saving to \(destination.path)")
+        // Accepting authorises metadata in proportion to what was accepted, out of a budget all
+        // drops share: a manifest of 64 KB plus 2 KB for each file the offer announced.
+        let room = min(maxFrameBytes, (64 << 10) + 2048 * max(0, min(offered.fileCount, 1 << 22)))
+        listener.reserve(room)
+        reserved = room
+        defer { listener.unreserve(room) }
+        control.limit = room
         try control.send(.accept, Empty())
-        let frame = try control.readFrame()
+        let frame = try control.read()
         guard frame.type == .manifest else { throw DropError("Unexpected message from the sender") }
         manifest = try decode(Manifest.self, from: frame.body)
         try manifest.validate()
@@ -410,10 +706,12 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             throw DropError("Not enough space on \(listener.identity.name): \(Format.bytes(needed)) needed, \(Format.bytes(free)) free")
         }
 
-        let token = UUID().uuidString
-        listener.register(self, token: token)
-        defer { listener.unregister(token: token) }
-        try control.send(.plan, ledger.plan(token: token))
+        guard let keys = lock.withLock({ keys }) else { throw DropError("\(peerName) is no longer trusted") }
+        // Nothing larger than a `done` is expected from here on.
+        control.limit = Channel.fragment
+        listener.register(self, id: keys.sessionID)
+        defer { listener.unregister(id: keys.sessionID) }
+        try control.send(.plan, ledger.plan())
         setState(.transferring)
         startWatchdog()
 
@@ -424,10 +722,10 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         var idle = 0
         while true {
             let next: (type: FrameType, body: Data)
-            do { next = try control.readFrame() } catch {
+            do { next = try control.read() } catch {
                 // The conversation's connection is gone. The drop was accepted and is partly
                 // here: wait for the sender to come back rather than ending it.
-                try awaitSender(token: token, after: error)
+                try awaitSender(after: error)
                 continue
             }
             touch()
@@ -448,11 +746,13 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             log("the sender is done but \(manifest.totalBytes - have) bytes are missing; asking for them (round \(stats.rounds + 1))", .warn)
             lock.withLock { roundStartBytes = have }
             update { $0.doneBytes = have }
-            do { try control.send(.plan, ledger.plan(token: token)) } catch {
-                try awaitSender(token: token, after: error)
+            do { try control.send(.plan, ledger.plan()) } catch {
+                try awaitSender(after: error)
             }
         }
 
+        // Trust withdrawn while the last chunks arrived: nothing is put in place.
+        if isOver { return }
         setState(.finishing)
         let saved = try finalize(partial: partial, destination: destination)
         setSaved(saved)
@@ -466,7 +766,9 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         let complete = Complete(saved: saved.map(\.lastPathComponent))
         try? control.send(.complete, complete)
         // A sender that lost the connection meanwhile will come back asking; it is told then.
-        listener.remember(completed: token, complete)
+        // The drop's keys are done with, but for the one a late "did it arrive?" is proved with.
+        listener.remember(completed: keys.sessionID, complete, resumeKey: keys.resumeKey, key: control.remote)
+        lock.withLock { self.keys = nil }
         if let fresh = streams.withLock({ incoming }) { try? fresh.send(.complete, complete) }
         finish(.completed)
     }
@@ -522,7 +824,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// Trouble with the connection (it closed, it stalled, what it carried is damaged) ends this
     /// connection only; the chunks it did not deliver are asked for again. Trouble with the disk
     /// ends the drop.
-    func runStream(_ socket: Socket) {
+    func runStream(_ socket: Socket, conn: UInt64) {
         let from = socket.peerAddress
         track(socket)
         streams.lock()
@@ -547,8 +849,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             log("data is arriving again from \(from), ahead of the control connection")
             setState(.transferring)
         }
-        do { try receive(socket) } catch let fault as StreamFault {
-            log(fault == .damaged ? "a chunk arrived damaged from \(from); closing that connection" : "a data connection from \(from) was lost", .warn)
+        do { try receive(socket, conn: conn) } catch let fault as StreamFault {
+            log(fault == .damaged ? "a record from \(from) did not open (damaged, or not from the sender); closing that connection" : "a data connection from \(from) was lost", .warn)
             note {
                 $0.connectionFailures += 1
                 if fault == .damaged { $0.damagedChunks += 1 }
@@ -572,46 +874,57 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
 
     private enum StreamFault: Error { case lost, damaged }
 
-    private func receive(_ socket: Socket) throws {
-        let buffer = UnsafeMutableRawPointer.allocate(byteCount: manifest.chunkSize, alignment: 16384)
+    /// Records, until the end marker. Each is a sealed header, opened before anything else is
+    /// read, then the chunk it describes, sealed with that header as associated data. A chunk is
+    /// opened whole into a buffer nothing else can see, and only what opened is written.
+    private func receive(_ socket: Socket, conn: UInt64) throws {
+        guard var cipher = lock.withLock({ keys })?.stream(conn) else { throw StreamFault.lost }
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: manifest.chunkSize + 16, alignment: 16384)
         defer { buffer.deallocate() }
-        var headerBytes = [UInt8](repeating: 0, count: ChunkHeader.size)
+        var sealedHeader = Data(count: RecordHeader.sealedSize)
         var openFile = -1
         var fd: Int32 = -1
         defer { if fd >= 0 { close(fd) } }
 
         while true {
-            do { try headerBytes.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, ChunkHeader.size) } }
+            do { try sealedHeader.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, RecordHeader.sealedSize) } }
             catch { throw StreamFault.lost }
-            let header = headerBytes.withUnsafeBytes { ChunkHeader(from: $0.baseAddress!) }
-            if header.file == ChunkHeader.endMarker {
-                guard header.length == 0, headerBytes.withUnsafeBytes({ header.verifies(head: $0.baseAddress!, payload: $0.baseAddress!) }) else {
-                    throw StreamFault.damaged
-                }
+            guard let headerBytes = try? cipher.open(sealedHeader), let header = RecordHeader(headerBytes) else { throw StreamFault.damaged }
+            if header.file == RecordHeader.endMarker {
+                // Exactly this, and nothing after it.
+                guard header.chunk == 0, header.length == 0 else { throw StreamFault.damaged }
                 return
             }
-            // A header that makes no sense is taken for damage: its length cannot be trusted,
-            // so neither can anything after it on this connection.
+            // A header that opened but describes something the manifest does not have came from
+            // the sender's own keys and is still refused: an ordinary file of this drop, a chunk
+            // that file has, and exactly the length that chunk must be.
             let file = Int(header.file), chunk = Int(header.chunk), length = Int(header.length)
-            guard file < manifest.entries.count, chunk < manifest.chunkCount(file),
+            guard file < manifest.entries.count, manifest.entries[file].kind == .file, chunk < manifest.chunkCount(file),
                   length == manifest.chunkLength(file: file, chunk: chunk) else { throw StreamFault.damaged }
-            do { try socket.readExactly(buffer, length) { [self] n in update { $0.doneBytes += Int64(n) } } }
-            catch { throw StreamFault.lost }
-            guard headerBytes.withUnsafeBytes({ header.verifies(head: $0.baseAddress!, payload: buffer) }) else {
-                throw StreamFault.damaged
-            }
+            var counted = 0
+            do {
+                try socket.readExactly(buffer, length + 16) { [self] n in
+                    let add = min(n, length - counted)
+                    counted += add
+                    if add > 0 { update { $0.doneBytes += Int64(add) } }
+                }
+            } catch { throw StreamFault.lost }
+            guard let plain = try? cipher.open(bytes: buffer, count: length, ad: headerBytes), plain.count == length else { throw StreamFault.damaged }
+            if isOver { throw StreamFault.lost }
             if openFile != file {
                 if fd >= 0 { close(fd) }
                 fd = -1
                 fd = try treeLock.withLock { try tree.openFile(manifest.entries[file].path) }
                 openFile = file
             }
-            var wrote = 0
             let offset = Int64(chunk) * Int64(manifest.chunkSize)
-            while wrote < length {
-                let n = pwrite(fd, buffer + wrote, length - wrote, offset + Int64(wrote))
-                if n > 0 { wrote += n }
-                else if errno != EINTR { throw errnoError("Cannot write \(manifest.entries[file].path)") }
+            try plain.withUnsafeBytes { p in
+                var wrote = 0
+                while wrote < length {
+                    let n = pwrite(fd, p.baseAddress! + wrote, length - wrote, offset + Int64(wrote))
+                    if n > 0 { wrote += n }
+                    else if errno != EINTR { throw errnoError("Cannot write \(manifest.entries[file].path)") }
+                }
             }
             if let info = streamInfo.withLock({ $0[ObjectIdentifier(socket)] }) { streamCarried(info, bytes: length) }
             if try ledger.record(file: file, chunk: chunk) { update { $0.doneFiles += 1 } }
@@ -638,6 +951,8 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
                 fm.fileExists(atPath: destination.appendingPathComponent($0).path)
             }
             let target = destination.appendingPathComponent(name)
+            // Trust withdrawn while this was being put in place: stop putting.
+            if isOver { throw DropError("\(peerName) is no longer trusted") }
             guard rename(itemsRoot.appendingPathComponent(e.path).path, target.path) == 0 else {
                 throw errnoError("Cannot move \(e.path) into \(destination.path)")
             }

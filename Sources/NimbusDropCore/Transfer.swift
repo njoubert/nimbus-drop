@@ -117,6 +117,13 @@ public class Transfer: @unchecked Sendable, Identifiable {
     private var nextStream = 0
     private var lastActivity = Date()
     var cancelRequested = false
+    /// Says a last word on the control channel as it stands now (set by the sessions).
+    var farewell: ((String) -> Void)?
+    /// Who the other Mac proved to be, once it has.
+    private var _peerKey: PublicKey?
+    public var peerKey: PublicKey? { lock.withLock { _peerKey } }
+    func setPeerKey(_ key: PublicKey) { lock.withLock { _peerKey = key } }
+    func setPeerName(_ name: String) { lock.withLock { _peerName = name } }
 
     /// Called on an engine thread whenever the state changes.
     public var onChange: (@Sendable () -> Void)?
@@ -270,23 +277,36 @@ public class Transfer: @unchecked Sendable, Identifiable {
         if state != .completed { for s in all { s.shutdown() } }
     }
 
+    private var _needsPairing = false
+    private var _wrongIdentity = false
+    /// It failed because the two Macs are not paired (any more): pair, then send again.
+    public var needsPairing: Bool { lock.withLock { _needsPairing } }
+    /// It failed because the Mac that answered was not the one meant.
+    public var wrongIdentity: Bool { lock.withLock { _wrongIdentity } }
+
     func fail(_ error: Error) {
+        if let e = error as? DropError { lock.withLock { _needsPairing = e.needsPairing; _wrongIdentity = e.identity } }
         let cancelled = lock.withLock { cancelRequested }
         finish(cancelled ? .cancelled : .failed((error as? DropError)?.message ?? error.localizedDescription))
     }
 
     var isOver: Bool { lock.withLock { _state.isFinal || cancelRequested } }
 
+    /// The key that authenticated this drop is no longer trusted (retired, replaced, forgotten,
+    /// this Mac reset, or run out past its grace). Ends the drop now; the sessions also wipe
+    /// their keys, so that nothing authenticated earlier can attach, resume or deliver.
+    func withdrawn(_ error: DropError) { fail(error) }
+
     /// Stops the transfer. What has arrived stays in the receiver's partial folder, so sending
     /// the same drop again continues it.
     public func cancel() {
         lock.lock()
         cancelRequested = true
-        let control = sockets.first
+        let say = farewell
         lock.unlock()
         // Best effort, so the other side can say who stopped it rather than "connection lost".
-        if let control, !state.isFinal {
-            DispatchQueue.global().async { try? control.send(.error, Reason(message: "Cancelled on the other Mac")) }
+        if let say, !state.isFinal {
+            DispatchQueue.global().async { say("Cancelled on the other Mac") }
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { self.finish(.cancelled) }
         } else {
             finish(.cancelled)

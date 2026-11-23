@@ -9,6 +9,10 @@ public struct DropError: Error, CustomStringConvertible, LocalizedError, Equatab
     /// The link's fault rather than anybody's decision: the connection closed, timed out, could
     /// not be made, or carried a damaged message. These are what a drop tries to reconnect after.
     var connection = false
+    /// The two Macs are not paired (or no longer are): pair, then send again.
+    public var needsPairing = false
+    /// The Mac that answered is not the one that was meant.
+    public var identity = false
     public init(_ message: String) { self.message = message }
     init(_ message: String, connection: Bool) { self.message = message; self.connection = connection }
     public static func == (a: DropError, b: DropError) -> Bool { a.message == b.message }
@@ -22,21 +26,19 @@ func errnoError(_ what: String) -> DropError {
 
 /// The protocol's version, in two parts.
 ///
-/// **Major** changes when two copies can no longer exchange a drop: a frame's layout, a message's
-/// meaning, the chunk header. A receiver declines an offer whose major is not its own, and says
-/// which versions are involved. **Minor** changes when something is added that an older copy can
-/// ignore (a new optional field, which JSON decoding skips): copies whose majors match work
-/// together whatever their minors.
+/// **Major** changes when two copies can no longer exchange a drop. Every connection opens by
+/// listing the majors each side speaks, and those openings are bound into the handshake, so the
+/// choice cannot be altered on the way. **Minor** changes when something is added that an older
+/// copy can ignore (a new optional field, which JSON decoding skips); it travels inside the
+/// encrypted hello.
 ///
-/// The app's version changes far more often than either and is carried beside them, for people
-/// to read: it never decides compatibility.
-///
-/// What may never change, because it is how any two versions find out that they differ: the
-/// control frame layout (`Socket.send`), and the `version` field of `Offer` and `Hello`.
-public let protocolVersion = 2
-public let protocolMinor = 2
+/// Protocol 3 is encrypted and authenticated end to end and has nothing in common with 2 on the
+/// wire. It does not read, answer or recognise protocol 2 (decided 2026-11-22: it ran on four
+/// Macs, all the owner's).
+public let protocolVersion = 3
+public let protocolMinor = 0
 
-/// "2.0".
+/// "3.0".
 public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
 
 /// The port the listener asks for first, so a peer can also be reached by address alone. A
@@ -65,6 +67,24 @@ enum Tuning {
     /// declined, so that nobody can bury the screen in panels.
     nonisolated(unsafe) static var pendingOffers = 6
     nonisolated(unsafe) static var pendingOffersPerAddress = 2
+    /// Connections that have completed a handshake with a key nobody here has paired, at once.
+    nonisolated(unsafe) static var unpaired = 8
+    /// New connections taken per second, whoever they are from.
+    nonisolated(unsafe) static var arrivalsPerSecond = 50
+    /// Requests to pair that may wait behind the one on screen.
+    nonisolated(unsafe) static var pairRequestsWaiting = 4
+    /// How long a pairing's codes live, and how long a request waits for the person.
+    nonisolated(unsafe) static var pairSeconds: Double = 120
+    /// After a request to pair is refused, fails or is abandoned, none is shown for this long;
+    /// doubled each time up to `pairQuietLongest`, and back to nothing after a success.
+    nonisolated(unsafe) static var pairQuietSeconds: Double = 10
+    nonisolated(unsafe) static var pairQuietLongest: Double = 600
+    /// Data connections that have not yet proved they belong to a drop: this many per drop in
+    /// progress, and this long to prove it.
+    nonisolated(unsafe) static var unattachedPerDrop = 16
+    nonisolated(unsafe) static var attachSeconds: Double = 5
+    /// Bytes of control messages being reassembled at once, across every drop.
+    nonisolated(unsafe) static var controlBudget = 1 << 30
     /// Data connections one drop may have open.
     nonisolated(unsafe) static var streamsPerDrop = 64
     /// How long a receiver waits for connections the sender says it opened but that never arrived.
@@ -234,49 +254,39 @@ final class Socket: @unchecked Sendable {
         return (fd, UInt16(bigEndian: got.sin6_port))
     }
 
-    // MARK: Control frames
-
-    /// `[u32 length][u32 CRC of the length][u8 type][JSON][u32 CRC of type + JSON]`, big-endian;
-    /// the length counts the type byte and the JSON. Both checksums exist because TCP's own is
-    /// weak: a flipped bit in a manifest is a wrong file name or size, and a flipped bit in a
-    /// length would leave the reader waiting for bytes that are never coming.
-    func send<T: Encodable>(_ type: FrameType, _ value: T) throws {
-        let json = try JSONEncoder().encode(value)
-        var frame = Data(capacity: json.count + 13)
-        var length = UInt32(json.count + 1).bigEndian
-        var lengthCRC = withUnsafeBytes(of: &length) { checksum($0.baseAddress!, 4) }.bigEndian
-        withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
-        withUnsafeBytes(of: &lengthCRC) { frame.append(contentsOf: $0) }
-        frame.append(type.rawValue)
-        frame.append(json)
-        var bodyCRC = frame.withUnsafeBytes { checksum($0.baseAddress! + 8, json.count + 1) }.bigEndian
-        withUnsafeBytes(of: &bodyCRC) { frame.append(contentsOf: $0) }
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        try frame.withUnsafeBytes { try writeAll($0.baseAddress!, frame.count) }
-    }
-
-    /// `limit`: the largest frame to accept. The default is for a manifest, which only a sender
-    /// whose drop was accepted may send; before that a stranger's frame is held to
-    /// `firstFrameBytes`, so that nobody can make this Mac set half a gigabyte aside by asking.
-    func readFrame(limit: Int = maxFrameBytes) throws -> (type: FrameType, body: Data) {
-        var head = [UInt8](repeating: 0, count: 8)
-        try head.withUnsafeMutableBytes { try readExactly($0.baseAddress!, 8) }
-        let (length, lengthCRC) = head.withUnsafeBytes {
-            (UInt32(bigEndian: $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)),
-             UInt32(bigEndian: $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)))
+    /// Writes three buffers as one stream of bytes with `writev`, at most `slice` bytes per
+    /// call so that `progress` moves on a slow link. For a sealed header, a sealed chunk and its
+    /// tag: no copy to join them and no small packet between them.
+    func writeAll(_ a: Data, _ b: Data, _ c: Data, slice: Int = .max, progress: ((Int) -> Void)? = nil) throws {
+        try a.withUnsafeBytes { pa in
+            try b.withUnsafeBytes { pb in
+                try c.withUnsafeBytes { pc in
+                    var parts = [pa, pb, pc].filter { $0.count > 0 }.map { (base: $0.baseAddress!, left: $0.count) }
+                    while !parts.isEmpty {
+                        var room = slice
+                        var iov: [iovec] = []
+                        for p in parts where room > 0 {
+                            let n = min(p.left, room)
+                            iov.append(iovec(iov_base: UnsafeMutableRawPointer(mutating: p.base), iov_len: n))
+                            room -= n
+                        }
+                        let n = writev(fd, iov, Int32(iov.count))
+                        if n < 0 {
+                            if errno == EINTR { continue }
+                            throw DropError("Connection lost: \(String(cString: strerror(errno)))", connection: true)
+                        }
+                        progress?(n)
+                        var done = n
+                        while done > 0, let first = parts.first {
+                            if done >= first.left { done -= first.left; parts.removeFirst() } else {
+                                parts[0] = (first.base + done, first.left - done)
+                                done = 0
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let count = Int(length)
-        guard head.withUnsafeBytes({ checksum($0.baseAddress!, 4) }) == lengthCRC, count >= 1, count <= limit else {
-            throw DropError.damagedMessage
-        }
-        var data = Data(count: count + 4)
-        try data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in try readExactly(raw.baseAddress!, count + 4) }
-        let ok = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            checksum(raw.baseAddress!, count) == UInt32(bigEndian: raw.loadUnaligned(fromByteOffset: count, as: UInt32.self))
-        }
-        guard ok, let type = FrameType(rawValue: data[0]) else { throw DropError.damagedMessage }
-        return (type, data.subdata(in: 1..<count))
     }
 }
 
@@ -285,14 +295,13 @@ extension DropError {
     static let damagedMessage = DropError("A message from the other Mac arrived damaged", connection: true)
 }
 
-/// The largest control frame accepted: a manifest of about two million files.
+/// The largest control message ever reassembled: a manifest of about two million files.
 let maxFrameBytes = 512 << 20
-/// The largest frame accepted from a connection that has not been let in yet (an offer, with
-/// the names of what is offered; a hello; an attach or a resume).
-let firstFrameBytes = 1 << 20
 
 enum FrameType: UInt8 {
-    case offer = 1, accept, decline, manifest, plan, done, complete, error, attach, hello, resume
+    case offer = 1, accept, decline, manifest, plan, done, complete, error, hello, resume, resumed
+    case pairRequest = 32, pairGo, commit, nonce, reveal, paired, pairFailed, busy
+    case retire = 48, retired
 }
 
 func decode<T: Decodable>(_ type: T.Type, from body: Data) throws -> T {
@@ -301,14 +310,9 @@ func decode<T: Decodable>(_ type: T.Type, from body: Data) throws -> T {
 
 // MARK: Messages
 
-/// What the sender proposes; enough for the receiving person to decide.
+/// What the sender proposes; enough for the receiving person to decide. Who the sender is came
+/// with the handshake and the hello, not from here.
 struct Offer: Codable {
-    /// The sender's protocol major, minor, and app version (the last two absent before 2.0).
-    var version: Int
-    var minor: Int?
-    var app: String?
-    var senderName: String
-    var senderID: String
     /// The top-level names being sent.
     var items: [String]
     var fileCount: Int
@@ -317,16 +321,11 @@ struct Offer: Codable {
 
 struct Empty: Codable {}
 
-/// "Who is there?" and its answer: how a Mac added by address gets its name.
-struct Hello: Codable { var name: String; var id: String; var version: Int; var minor: Int?; var app: String? }
-
 struct Reason: Codable { var message: String }
 
-/// The receiver's answer to a manifest: what it already holds from an earlier attempt, and the
-/// token every data stream must present.
+/// The receiver's answer to a manifest: what it already holds from an earlier attempt.
 struct Plan: Codable {
     struct Partial: Codable { var file: Int; var chunks: [Int] }
-    var token: String
     var completeFiles: [Int]
     var partialFiles: [Partial]
 }
@@ -335,52 +334,16 @@ struct Plan: Codable {
 /// sender has opened in all, so the receiver knows how many to wait for.
 struct Done: Codable {
     var streams: Int
-    /// Chunks the sender has sent more than once so far (2.2; absent from older senders).
+    /// Chunks the sender has sent more than once so far.
     var resent: Int?
 }
 
 struct Complete: Codable { var saved: [String] }
 
-struct Attach: Codable { var token: String }
+/// "This is the drop with that session id, and here is proof that I hold its keys": an HMAC
+/// under the drop's resume key over the new connection's handshake hash.
+struct Resume: Codable { var session: Data; var proof: Data }
+struct Resumed: Codable { var proof: Data }
 
-/// The 16 bytes before every chunk on a data stream, big-endian. `file == endMarker` ends the
-/// stream. The CRC covers the first twelve bytes and then the chunk, so a flipped bit in an index
-/// cannot put good bytes in the wrong place.
-struct ChunkHeader {
-    static let size = 16
-    static let endMarker = UInt32.max
-    var file: UInt32
-    var chunk: UInt32
-    var length: UInt32
-    var crc: UInt32
-
-    func write(to p: UnsafeMutableRawPointer) {
-        p.storeBytes(of: file.bigEndian, toByteOffset: 0, as: UInt32.self)
-        p.storeBytes(of: chunk.bigEndian, toByteOffset: 4, as: UInt32.self)
-        p.storeBytes(of: length.bigEndian, toByteOffset: 8, as: UInt32.self)
-        p.storeBytes(of: crc.bigEndian, toByteOffset: 12, as: UInt32.self)
-    }
-
-    init(file: UInt32, chunk: UInt32, length: UInt32, crc: UInt32 = 0) {
-        self.file = file; self.chunk = chunk; self.length = length; self.crc = crc
-    }
-
-    /// Writes the header at `p`, followed by `length` bytes already in place, and seals both.
-    static func seal(_ p: UnsafeMutableRawPointer, file: UInt32, chunk: UInt32, length: Int) {
-        ChunkHeader(file: file, chunk: chunk, length: UInt32(length)).write(to: p)
-        let crc = checksum(p + size, length, seed: checksum(p, 12))
-        p.storeBytes(of: crc.bigEndian, toByteOffset: 12, as: UInt32.self)
-    }
-
-    /// Whether the header at `head` and the `length` bytes at `payload` are what was sealed.
-    func verifies(head: UnsafeRawPointer, payload: UnsafeRawPointer) -> Bool {
-        checksum(payload, Int(length), seed: checksum(head, 12)) == crc
-    }
-
-    init(from p: UnsafeRawPointer) {
-        file = UInt32(bigEndian: p.loadUnaligned(fromByteOffset: 0, as: UInt32.self))
-        chunk = UInt32(bigEndian: p.loadUnaligned(fromByteOffset: 4, as: UInt32.self))
-        length = UInt32(bigEndian: p.loadUnaligned(fromByteOffset: 8, as: UInt32.self))
-        crc = UInt32(bigEndian: p.loadUnaligned(fromByteOffset: 12, as: UInt32.self))
-    }
-}
+/// A value in the pairing exchange: the commitment, or one of the two random values.
+struct PairValue: Codable { var value: Data }

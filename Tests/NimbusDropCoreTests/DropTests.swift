@@ -9,6 +9,9 @@ final class DropTests: XCTestCase {
     var root: URL!
     let sender = Identity(name: "sender", id: "sender-id")
     let receiver = Identity(name: "receiver", id: "receiver-id")
+    /// Two Macs that two people have paired.
+    var senderTrust: Trust!
+    var receiverTrust: Trust!
     /// Small, so a few hundred kilobytes make a many-chunk file.
     let chunk = 16 * 1024
 
@@ -17,6 +20,7 @@ final class DropTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         // A receiver holds a drop open for a minute after losing its sender; not in these tests.
         Tuning.reconnectSeconds = 2
+        (senderTrust, receiverTrust) = Trust.paired()
     }
 
     override func tearDownWithError() throws {
@@ -64,7 +68,7 @@ final class DropTests: XCTestCase {
 
     /// A listener that answers every offer with `answer`.
     func listen(_ answer: @escaping @Sendable (ReceiveSession) -> Void) throws -> DropListener {
-        let l = try DropListener(identity: receiver, preferredPort: 0)
+        let l = try DropListener(identity: receiver, trust: receiverTrust, preferredPort: 0)
         l.onOffer = answer
         l.start()
         return l
@@ -77,7 +81,7 @@ final class DropTests: XCTestCase {
     }
 
     func send(_ urls: [URL], to l: DropListener, streams: Int = 4, failAfter: Int? = nil) -> SendSession {
-        let s = SendSession(urls: urls, host: "127.0.0.1", port: l.port, peerName: "receiver", identity: sender,
+        let s = SendSession(urls: urls, host: "127.0.0.1", port: l.port, peerName: "receiver", identity: sender, trust: senderTrust,
                             streams: streams, chunkSize: chunk)
         s.failAfterChunks = failAfter
         s.start()
@@ -252,7 +256,7 @@ final class DropTests: XCTestCase {
 
     func testNothingListeningIsAnErrorNotAHang() throws {
         let src = try makeTree()
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: 1, peerName: "nobody", identity: sender)
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: 1, peerName: "nobody", identity: sender, trust: senderTrust)
         s.start()
         wait(s)
         guard case .failed(let why) = s.state else { return XCTFail("\(s.state)") }
@@ -305,7 +309,7 @@ final class DropTests: XCTestCase {
         let raw = FileKinds.summarize(all.manifest).first { $0.extensions == ["cr3"] }!.id
         let chosen = all.keeping(kinds: [raw, "public.plain-text"])
         XCTAssertNoThrow(try chosen.manifest.validate())
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "receiver", identity: sender,
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "receiver", identity: sender, trust: senderTrust,
                             chunkSize: chunk, prescanned: chosen)
         s.start()
         wait(s)
@@ -320,7 +324,7 @@ final class DropTests: XCTestCase {
     func testChoosingNothingThatIsThereSendsNothing() throws {
         let scanned = try Scanner.scan([try makeShoot()], chunkSize: chunk)
         XCTAssertTrue(scanned.keeping(kinds: ["public.png"]).manifest.entries.isEmpty)
-        let s = SendSession(urls: [], host: "127.0.0.1", port: 1, peerName: "nobody", identity: sender, prescanned: scanned.keeping(kinds: []))
+        let s = SendSession(urls: [], host: "127.0.0.1", port: 1, peerName: "nobody", identity: sender, trust: senderTrust, prescanned: scanned.keeping(kinds: []))
         s.start()
         wait(s)
         XCTAssertEqual(s.state, .failed("Nothing to send"))
@@ -386,7 +390,7 @@ final class DropTests: XCTestCase {
         wait(second)
         Thread.sleep(forTimeInterval: 0.2)
         let log = lines.value.joined(separator: "\n")
-        for expected in ["“Photos” to receiver at 127.0.0.1", "offer from sender at 127.0.0.1", "accepted, saving to", "waitingForAccept",
+        for expected in ["“Photos” to receiver at 127.0.0.1", "offer from sender (", ") at 127.0.0.1", "proved receiver (", "accepted, saving to", "waitingForAccept",
                          "transferring", #"failed("Stopped by the test")"#, "lost the control connection", "superseded", "already here:",
                          "completed", "saved as", "opened 4 data connections", "round 1 over:", "chunks sent", "the sender says it is done",
                          "summary:", "retransmitted", "chunks received"] {
@@ -433,29 +437,39 @@ final class DropTests: XCTestCase {
     func testAMacAddedByAddressSaysWhoItIs() throws {
         let l = try listen { _ in }
         defer { l.stop() }
-        let peer = try Probe.hello(host: "127.0.0.1", port: l.port)
+        let peer = try Probe.hello(host: "127.0.0.1", port: l.port, identity: sender, trust: senderTrust)
         XCTAssertEqual(peer.name, "receiver")
-        XCTAssertEqual(peer.id, "receiver-id")
+        XCTAssertEqual(peer.key, receiverTrust.publicKey, "and proved it")
         XCTAssertTrue(peer.isCompatible)
-        XCTAssertThrowsError(try Probe.hello(host: "127.0.0.1", port: 1, timeout: 1))
+        XCTAssertThrowsError(try Probe.hello(host: "127.0.0.1", port: 1, identity: sender, trust: senderTrust, timeout: 1))
+    }
+
+    func testAProbeLearnsWhoIsThereAndSaysNothingOfItself() throws {
+        let asked = Box(0)
+        let l = try listen { _ in asked.value += 1 }
+        l.onPairRequest = { _ in asked.value += 1 }
+        defer { l.stop() }
+        XCTAssertEqual(try Probe.identify(host: "127.0.0.1", port: l.port), receiverTrust.publicKey)
+        XCTAssertEqual(asked.value, 0, "nobody was asked anything")
+        XCTAssertThrowsError(try Probe.identify(host: "127.0.0.1", port: 1, timeout: 1))
     }
 
     func testAResultThatLosesItsTXTRecordIsStillTheSameMac() {
         // What macOS reports when Wi-Fi is switched off with Ethernet still up (2026-11-22):
         // every result again, with no TXT record. The Macs must stay in the list.
         var table = PeerTable()
-        let air = ["id": "air-id", "name": "macbookairm4", "v": "2"], me = ["id": "me", "name": "macbookpro", "v": "2"]
+        let air = ["i": "air-launch", "name": "macbookairm4", "v": "3"], me = ["i": "me", "name": "macbookpro", "v": "3"]
         var out = table.apply([.init(key: "air._nimbusdrop", txt: air), .init(key: "me._nimbusdrop", txt: me)], selfID: "me")
-        XCTAssertEqual(out.resolve, ["air-id"])
+        XCTAssertEqual(out.resolve, ["air._nimbusdrop"])
         XCTAssertFalse(out.missingTXT)
-        XCTAssertEqual(table.peers.keys.sorted(), ["air-id"], "this Mac is not in its own list")
-        table.setAddress("air-id", address: "192.168.1.143", port: 47823)
+        XCTAssertEqual(table.peers.keys.sorted(), ["air._nimbusdrop"], "this Mac is not in its own list")
+        table.setAddress("air._nimbusdrop", address: "192.168.1.143", port: 47823)
 
         out = table.apply([.init(key: "air._nimbusdrop", txt: nil), .init(key: "me._nimbusdrop", txt: nil)], selfID: "me")
         XCTAssertTrue(out.missingTXT, "which asks for a fresh browse")
         XCTAssertEqual(out.resolve, [])
-        XCTAssertEqual(table.peers["air-id"]?.address, "192.168.1.143")
-        XCTAssertEqual(table.peers.keys.sorted(), ["air-id"], "and this Mac has not crept into its own list")
+        XCTAssertEqual(table.peers["air._nimbusdrop"]?.address, "192.168.1.143")
+        XCTAssertEqual(table.peers.keys.sorted(), ["air._nimbusdrop"], "and this Mac has not crept into its own list")
 
         // A result never seen with a record is nobody yet; one that goes away is gone.
         out = table.apply([.init(key: "stranger._nimbusdrop", txt: nil)], selfID: "me")
@@ -463,41 +477,54 @@ final class DropTests: XCTestCase {
         XCTAssertTrue(out.missingTXT)
     }
 
+    func testARecordCannotTakeAnotherMacsPlace() throws {
+        // Whatever a record claims, it is its own tile: copying another Mac's name or launch
+        // value neither moves that Mac's tile nor inherits what its address proved.
+        var table = PeerTable()
+        let key = KeyPair().publicKey
+        _ = table.apply([.init(key: "air", txt: ["i": "air-launch", "name": "macbookairm4", "v": "3"])], selfID: "me")
+        table.setAddress("air", address: "192.168.1.143", port: 47823)
+        table.setKey("air", key: key)
+        _ = table.apply([.init(key: "air", txt: ["i": "air-launch", "name": "macbookairm4", "v": "3"]),
+                         .init(key: "air (2)", txt: ["i": "air-launch", "name": "macbookairm4", "v": "3"])], selfID: "me")
+        XCTAssertEqual(table.peers.count, 2, "two records, two tiles")
+        XCTAssertEqual(table.peers["air"]?.address, "192.168.1.143")
+        XCTAssertEqual(table.peers["air"]?.key, key, "the real one keeps what it proved")
+        XCTAssertNil(table.peers["air (2)"]?.key, "the copy has proved nothing")
+        // And a Mac that turns up at another address has to prove itself again.
+        table.setAddress("air", address: "192.168.1.166", port: 47823)
+        XCTAssertNil(table.peers["air"]?.key)
+    }
+
     func testAPeerAnnouncingAnotherProtocolVersionIsMarked() {
         var table = PeerTable()
-        _ = table.apply([.init(key: "old", txt: ["id": "old-id", "name": "old", "v": "1"]),
-                         .init(key: "newer", txt: ["id": "newer-id", "name": "newer", "v": "\(protocolVersion).7", "app": "9.1.0"])], selfID: "me")
-        XCTAssertEqual(table.peers["old-id"]?.isCompatible, false, "another major cannot exchange drops")
-        XCTAssertEqual(table.peers["old-id"]?.protocolText, "1")
-        XCTAssertEqual(table.peers["newer-id"]?.isCompatible, true, "another minor can")
-        XCTAssertEqual(table.peers["newer-id"]?.protocolText, "\(protocolVersion).7")
-        XCTAssertEqual(table.peers["newer-id"]?.appVersion, "9.1.0")
+        _ = table.apply([.init(key: "old", txt: ["id": "old-id", "name": "old", "v": "2.2"]),
+                         .init(key: "newer", txt: ["i": "x", "name": "newer", "v": "\(protocolVersion)"])], selfID: "me")
+        XCTAssertEqual(table.peers["old"]?.isCompatible, false, "another major cannot exchange drops")
+        XCTAssertEqual(table.peers["old"]?.protocolText, "2.2")
+        XCTAssertEqual(table.peers["newer"]?.isCompatible, true)
     }
 
-    func testAnOfferFromAnotherProtocolMajorIsDeclinedWithBothVersionsNamed() throws {
-        let src = try makeTree()
-        let dst = try destination()
-        let asked = Box(false)
-        let l = try DropListener(identity: Identity(name: "receiver", id: "receiver-id", appVersion: "0.4.0"), preferredPort: 0)
-        l.onOffer = { asked.value = true; $0.accept(destination: dst) }
-        l.start()
+    func testProtocolTwoIsNotSpokenAtAll() throws {
+        // A 0.2 Mac's first frame (a length, its CRC, a type and JSON) is a stranger sending
+        // something unreadable: closed, unanswered, and nobody is asked anything.
+        let asked = Box(0)
+        let l = try listen { _ in asked.value += 1 }
         defer { l.stop() }
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "receiver",
-                            identity: Identity(name: "sender", id: "sender-id", appVersion: "0.9.0"), chunkSize: chunk)
-        s.offerVersion = protocolVersion + 1
-        s.start()
-        wait(s)
-        guard case .declined(let why) = s.state else { return XCTFail("\(s.state)") }
-        XCTAssertTrue(why.contains("0.4.0") && why.contains("protocol \(protocolVersionText)") && why.contains("protocol \(protocolVersion + 1).\(protocolMinor)"), why)
-        XCTAssertFalse(asked.value, "the person is not asked about a drop that cannot be taken")
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dst.path), [])
+        let s = try Socket.connect(host: "127.0.0.1", port: l.port)
+        let old = Data([0, 0, 0, 3, 0x12, 0x34, 0x56, 0x78, 10, 0x7b, 0x7d, 0, 0, 0, 0])
+        try old.withUnsafeBytes { try s.writeAll($0.baseAddress!, old.count) }
+        s.setReadTimeout(3)
+        var b: UInt8 = 0
+        XCTAssertThrowsError(try s.readExactly(&b, 1), "closed without a word")
+        XCTAssertEqual(asked.value, 0)
     }
 
-    func testTheHelloCarriesBothVersions() throws {
-        let l = try DropListener(identity: Identity(name: "receiver", id: "receiver-id", appVersion: "0.4.0"), preferredPort: 0)
+    func testTheHelloCarriesTheVersions() throws {
+        let l = try DropListener(identity: Identity(name: "receiver", id: "receiver-id", appVersion: "0.4.0"), trust: receiverTrust, preferredPort: 0)
         l.start()
         defer { l.stop() }
-        let peer = try Probe.hello(host: "127.0.0.1", port: l.port)
+        let peer = try Probe.hello(host: "127.0.0.1", port: l.port, identity: sender, trust: senderTrust)
         XCTAssertEqual(peer.appVersion, "0.4.0")
         XCTAssertEqual(peer.protocolText, protocolVersionText)
     }

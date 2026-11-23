@@ -8,19 +8,19 @@ enum Settings {
     static let didChange = Notification.Name("com.njoubert.nimbusdrop.settingsChanged")
     private static var d: UserDefaults { .standard }
 
-    /// Made once per Mac (per defaults domain). It is how a Mac leaves itself out of its own
-    /// list, and part of what identifies a drop when it is re-sent to be continued.
-    static var deviceID: String {
-        if let id = d.string(forKey: "deviceID") { return id }
-        let id = UUID().uuidString
-        d.set(id, forKey: "deviceID")
-        return id
-    }
+    /// A random value made at each launch: how this Mac leaves its own Bonjour record out of
+    /// its list. It identifies nothing and lasts no longer than the process; who a Mac is, is
+    /// its key (`trust`).
+    static let launchID = UUID().uuidString
 
     static var identity: Identity {
-        Identity(name: LocalHost.name, id: deviceID,
+        Identity(name: LocalHost.name, id: launchID,
                  appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")
     }
+
+    /// Where this copy keeps its identity: a folder per bundle id, so the development copy and
+    /// the installed one are different Macs to each other.
+    static var bundleID: String { Bundle.main.bundleIdentifier ?? "com.njoubert.nimbusdrop.cli" }
 
     /// On unless the person turned it off; remembered across launches.
     static var receiving: Bool {

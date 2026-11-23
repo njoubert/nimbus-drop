@@ -92,7 +92,7 @@ final class Ledger: @unchecked Sendable {
     }
 
     /// What the sender may skip.
-    func plan(token: String) -> Plan {
+    func plan() -> Plan {
         lock.lock()
         defer { lock.unlock() }
         var complete: [Int] = []
@@ -102,7 +102,7 @@ final class Ledger: @unchecked Sendable {
             if remaining[file] != 0 { partial[file, default: []].append(Int(key & 0xFFFF_FFFF)) }
         }
         for (file, left) in remaining.enumerated() where left == 0 && manifest.chunkCount(file) > 0 { complete.append(file) }
-        return Plan(token: token, completeFiles: complete,
+        return Plan(completeFiles: complete,
                     partialFiles: partial.keys.sorted().map { Plan.Partial(file: $0, chunks: partial[$0]!.sorted()) })
     }
 }

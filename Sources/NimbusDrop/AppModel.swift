@@ -686,8 +686,7 @@ final class AppModel: ObservableObject {
             let rate = meters[t.id]?.rate(bytes: p.doneBytes, now: now) ?? 0
             status = "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) · \(Format.bitRate(rate)) · \(Format.connections(p.connections))"
             if rate > 0 { status += " · \(Format.duration(Double(p.totalBytes - p.doneBytes) / rate)) left" }
-            let trouble = t.stats
-            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 || trouble.reconnects > 0 { status += "\n" + Self.troubleText(trouble) }
+            if let trouble = Self.troubleText(t.stats) { status += "\n" + trouble }
         case .reconnecting:
             status = t.direction == .send ? "Lost the connection to \(t.peerName); trying to get it back…"
                                           : "Lost the connection to \(t.peerName); waiting for it to come back…"
@@ -699,8 +698,7 @@ final class AppModel: ObservableObject {
             let moved = p.totalBytes - p.resumedBytes
             status = "\(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes)) in \(Format.duration(seconds)) · \(Format.bitRate(Double(moved) / seconds))"
             if p.resumedBytes > 0 { status += " · continued from \(Format.bytes(p.resumedBytes))" }
-            let trouble = t.stats
-            if trouble.connectionFailures > 0 || trouble.damagedChunks > 0 || trouble.reconnects > 0 { status += "\n" + Self.troubleText(trouble) }
+            if let trouble = Self.troubleText(t.stats) { status += "\n" + trouble }
         case .declined(let why): status = why; failed = true
         case .failed(let why): status = why; failed = true
         case .cancelled: status = "Cancelled"; failed = true
@@ -712,16 +710,16 @@ final class AppModel: ObservableObject {
                            canRetry: failed && sends[t.id] != nil)
     }
 
-    /// What the drop got past, with what it cost: the number of chunks that went a second time.
-    /// (It used to end "re-sent", which read as starting over; the owner asked for the count.)
-    static func troubleText(_ s: TransferStats) -> String {
+    /// What the drop got past, as what it cost: the chunks that went a second time. How many
+    /// connections were dropped along the way is in Internals and the log, not here (the owner:
+    /// "I don't think there's much value in showing the number of connections that were
+    /// dropped"). Nil when there is nothing to say.
+    static func troubleText(_ s: TransferStats) -> String? {
         var parts: [String] = []
-        let lost = s.connectionFailures - s.damagedChunks
         if s.reconnects > 0 { parts.append("reconnected \(s.reconnects == 1 ? "once" : "\(s.reconnects) times")") }
-        if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") dropped") }
         if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
         if s.retransmittedChunks > 0 { parts.append("\(s.retransmittedChunks) \(s.retransmittedChunks == 1 ? "chunk" : "chunks") retransmitted") }
-        return "Recovered: " + parts.joined(separator: ", ")
+        return parts.isEmpty ? nil : "Recovered: " + parts.joined(separator: ", ")
     }
 
     // MARK: Notifications

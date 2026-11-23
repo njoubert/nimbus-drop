@@ -64,14 +64,13 @@ private struct HistoryRow: View {
         }
     }
 
-    /// "reconnected once, 3 connections lost; re-sent": what the drop went through, when it did.
+    /// "Recovered: reconnected once, 12 chunks retransmitted": what the drop went through, when it did.
     private var trouble: String? {
         var s = TransferStats()
         s.connectionFailures = entry.connectionsLost ?? 0
         s.damagedChunks = entry.damagedChunks ?? 0
         s.reconnects = entry.reconnects ?? 0
         s.retransmittedChunks = entry.retransmittedChunks ?? 0
-        guard s.connectionFailures > 0 || s.damagedChunks > 0 || s.reconnects > 0 else { return nil }
         return AppModel.troubleText(s)
     }
 

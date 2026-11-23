@@ -1,0 +1,1089 @@
+<title>Secure Drops Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column with a sticky section list beside it on wide screens; tables,
+   diagrams and mock screens may run wider than the text and scroll on their own. Palette is
+   Nimbus Drop's own: graphite ground, the icon's upload blue as accent, its download green for
+   "good". The mock screens keep the app's dark look in both page themes, on purpose: they are
+   pictures of the app. */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --ink: #161b24; --muted: #5b6474; --line: #dfe3ea;
+  --accent: #1783e0; --accent-soft: #e6f2fd; --good: #0f9460; --good-soft: #e3f6ee;
+  --warn: #a86a00; --warn-soft: #fdf2dc; --bad: #c9392e; --bad-soft: #fdecea;
+  --app-bg: #2b2a29; --app-panel: #353433; --app-ink: #f0efed; --app-muted: #a8a6a2; --app-line: #474543;
+  --app-blue: #3aa8ff; --app-green: #3de89c; --app-red: #ff6f61; --app-amber: #fab219; --app-btn: #504e4b;
+  --display: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  --text: "Inter", -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10141b; --surface: #171d27; --ink: #e8ecf2; --muted: #98a2b3; --line: #2a3342;
+    --accent: #3aa8ff; --accent-soft: #14283c; --good: #3de89c; --good-soft: #12302a;
+    --warn: #fab219; --warn-soft: #33290f; --bad: #ff6f61; --bad-soft: #3a1a18; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10141b; --surface: #171d27; --ink: #e8ecf2; --muted: #98a2b3; --line: #2a3342;
+  --accent: #3aa8ff; --accent-soft: #14283c; --good: #3de89c; --good-soft: #12302a;
+  --warn: #fab219; --warn-soft: #33290f; --bad: #ff6f61; --bad-soft: #3a1a18; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.62 var(--text); margin: 0; }
+.wrap { max-width: 1160px; margin: 0 auto; padding-block: 40px 96px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 40px; }
+@media (min-width: 1000px) { .wrap { grid-template-columns: 210px minmax(0, 1fr); } }
+nav { display: none; }
+@media (min-width: 1000px) {
+  nav { display: block; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 28px); align-self: start; font-size: 13.5px; }
+  nav a { display: block; padding: 4px 0 4px 12px; color: var(--muted); text-decoration: none; border-left: 2px solid var(--line); }
+  nav a:hover, nav a:focus-visible { color: var(--ink); border-left-color: var(--accent); outline: none; }
+  nav .label { font: 600 11px/1 var(--text); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px 0; }
+  nav .label:first-child { margin-top: 0; }
+}
+main { min-width: 0; display: flex; flex-direction: column; gap: 56px; }
+section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+h1, h2, h3, h4 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 600; letter-spacing: -.01em; }
+h2 { font-size: 25px; font-weight: 600; padding-top: 8px; }
+h3 { font-size: 18px; font-weight: 600; margin-top: 10px; }
+h4 { font-size: 15px; font-weight: 600; }
+p, ul, ol { margin: 0; max-width: 72ch; }
+ul, ol { padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
+.lede { font-size: 18.5px; color: var(--muted); max-width: 66ch; }
+.eyebrow { font: 600 12px/1 var(--text); letter-spacing: .09em; text-transform: uppercase; color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: .88em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+strong { font-weight: 600; }
+.scroll { overflow-x: auto; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 560px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px/1.3 var(--text); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pill { display: inline-block; font: 600 12px/1 var(--text); padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.bad { background: var(--bad-soft); color: var(--bad); } .pill.good { background: var(--good-soft); color: var(--good); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); } .pill.info { background: var(--accent-soft); color: var(--accent); }
+.note { border-left: 3px solid var(--accent); background: var(--surface); padding: 14px 18px; border-radius: 0 8px 8px 0; max-width: 76ch; }
+.note.warn { border-left-color: var(--warn); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+.fact { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.fact .n { font: 600 28px/1.1 var(--display); font-variant-numeric: tabular-nums; }
+.fact .l { color: var(--muted); font-size: 13.5px; margin-top: 6px; }
+.bars { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 26px 0 6px; max-width: 760px; }
+.bars::before { content: "10 GbE"; position: absolute; left: calc(180px + (100% - 250px) * 0.125); top: 0; bottom: 0;
+  border-left: 2px dashed var(--bad); padding-left: 6px; font: 600 11px/1 var(--text); color: var(--bad); letter-spacing: .04em; }
+.bar { display: grid; grid-template-columns: 180px minmax(0, 1fr) 70px; align-items: center; font-size: 13.5px; }
+.bar .name { color: var(--muted); padding-right: 12px; }
+.bar .track { height: 16px; }
+.bar .fill { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; min-width: 2px; }
+.bar .fill.slow { background: var(--warn); } .bar .fill.now { background: var(--muted); }
+.bar .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+@media (max-width: 620px) { .bar { grid-template-columns: 110px minmax(0, 1fr) 54px; } .bars::before { left: calc(110px + (100% - 164px) * 0.125); } }
+.decision { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.decision h3 { margin: 0; }
+.decision .id { font: 600 12px/1 var(--mono); color: var(--accent); }
+.decision .rec { font-size: 14.5px; background: var(--good-soft); border-radius: 8px; padding: 10px 12px; }
+.decision .rec b { color: var(--good); }
+.phase { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 4px 18px; padding: 18px 0; border-top: 1px solid var(--line); }
+.phase .k { font: 600 13px/1.6 var(--mono); color: var(--accent); }
+.phase h3 { margin: 0; } .phase p { font-size: 15px; }
+.phase .exit { color: var(--muted); font-size: 14px; }
+pre.mermaid { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 0; overflow-x: auto; }
+pre.spec { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 0; overflow-x: auto;
+  font: 13px/1.6 var(--mono); color: var(--ink); max-width: 100%; }
+.prop { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 2px 14px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.prop .k { font: 600 13px/1.7 var(--mono); color: var(--accent); }
+footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--line); padding-top: 20px; }
+
+/* ---- Scenario blocks and mock screens ---- */
+.scenario { display: flex; flex-direction: column; gap: 14px; padding-top: 22px; border-top: 1px solid var(--line); }
+.scenario > p { font-size: 15.5px; }
+.stage { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+.shot { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 1 320px; max-width: 460px; }
+.shot.wide { max-width: 640px; flex-basis: 520px; }
+.shot .cap { font: 600 11.5px/1.3 var(--text); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.win { background: var(--app-bg); color: var(--app-ink); border-radius: 12px; border: 1px solid var(--app-line); overflow: hidden;
+  font: 13.5px/1.45 var(--text); box-shadow: 0 10px 30px rgba(0,0,0,.22); }
+.win .bar { display: flex; grid-template-columns: none; align-items: center; gap: 6px; padding: 9px 12px; background: var(--app-panel); border-bottom: 1px solid var(--app-line);
+  font: 600 12.5px/1 var(--text); color: var(--app-muted); }
+.win .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--app-btn); display: inline-block; }
+.win .bar span { flex: 1; text-align: center; padding-right: 42px; }
+.win .body { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.win .center { align-items: center; text-align: center; }
+.win .big { font: 600 15.5px/1.3 var(--text); }
+.win .sub { color: var(--app-muted); font-size: 12.5px; }
+.win .orb { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font: 600 22px/1 var(--text); color: #1c1b1a; }
+.orb.green { background: var(--app-green); } .orb.blue { background: var(--app-blue); } .orb.red { background: var(--app-red); } .orb.amber { background: var(--app-amber); }
+.win .code { font: 600 30px/1 var(--mono); letter-spacing: .14em; color: var(--app-ink); padding: 6px 0; }
+.win .boxes { display: flex; gap: 6px; justify-content: center; }
+.win .boxes b { width: 34px; height: 42px; border-radius: 7px; background: var(--app-panel); border: 1px solid var(--app-line); display: grid; place-items: center; font: 600 20px/1 var(--mono); }
+.win .boxes b.cur { border-color: var(--app-blue); }
+.win .boxes .gap { width: 8px; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btns.col { flex-direction: column; }
+.btn { flex: 1 1 auto; text-align: center; padding: 8px 12px; border-radius: 8px; background: var(--app-btn); color: var(--app-ink); font: 500 13.5px/1.2 var(--text); white-space: nowrap; }
+.btn.blue { background: var(--app-blue); color: #fff; } .btn.red { background: var(--app-red); color: #fff; } .btn.ghost { background: transparent; border: 1px solid var(--app-line); color: var(--app-muted); }
+.badge { display: inline-flex; align-items: center; gap: 4px; font: 600 11px/1 var(--text); padding: 3px 7px; border-radius: 999px; white-space: nowrap; }
+.badge.v { background: rgba(61,232,156,.16); color: var(--app-green); } .badge.n { background: rgba(58,168,255,.16); color: var(--app-blue); }
+.badge.c { background: rgba(255,111,97,.18); color: var(--app-red); } .badge.o { background: rgba(250,178,25,.16); color: var(--app-amber); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px; }
+.tile { background: var(--app-panel); border-radius: 10px; padding: 12px 8px; display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; min-width: 0; }
+.tile.dim { opacity: .62; }
+.tile .glyph { font-size: 22px; line-height: 1; }
+.tile .nm { font: 600 13px/1.2 var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile .ip { font: 400 11px/1 var(--mono); color: var(--app-muted); }
+.h { font: 600 14px/1 var(--text); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.row { background: var(--app-panel); border-radius: 9px; padding: 10px 12px; display: flex; gap: 10px; align-items: flex-start; }
+.row .dot { width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center; font: 600 12px/1 var(--text); color: #1c1b1a; margin-top: 1px; }
+.row .t { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.row .t .l1 { font-weight: 500; overflow-wrap: anywhere; }
+.row .t .l2 { color: var(--app-muted); font-size: 12px; font-family: var(--mono); overflow-wrap: anywhere; }
+.prog { height: 5px; border-radius: 3px; background: var(--app-btn); overflow: hidden; }
+.prog i { display: block; height: 100%; width: 42%; background: var(--app-blue); }
+.digits { font: 400 13.5px/1.9 var(--mono); letter-spacing: .05em; background: var(--app-panel); border-radius: 8px; padding: 10px 12px; text-align: center; }
+.warnbox { background: rgba(255,111,97,.12); border: 1px solid rgba(255,111,97,.35); border-radius: 9px; padding: 10px 12px; font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: 12.5px; }
+.kv span:nth-child(odd) { color: var(--app-muted); } .kv span:nth-child(even) { font-family: var(--mono); overflow-wrap: anywhere; }
+</style>
+
+<div class="wrap">
+<nav aria-label="Sections">
+  <p class="label">The plan</p>
+  <a href="#summary">Summary</a>
+  <a href="#today">Where we are</a>
+  <a href="#threats">Who we defend against</a>
+  <a href="#signal">What we take from Signal</a>
+  <a href="#model">The trust model</a>
+  <p class="label">What it looks like</p>
+  <a href="#s-setup">First launch</a>
+  <a href="#s-window">The window</a>
+  <a href="#s-new">A new Mac</a>
+  <a href="#s-drop">A normal drop</a>
+  <a href="#s-change">A familiar name</a>
+  <a href="#s-reinstall">A Mac is reinstalled</a>
+  <a href="#s-impostor">An impostor</a>
+  <a href="#s-offline">Identity numbers</a>
+  <a href="#s-manage">Known Macs and reset</a>
+  <a href="#s-renew">Renewing</a>
+  <p class="label">How it works</p>
+  <a href="#spec">Specification</a>
+  <a href="#properties">Security properties</a>
+  <a href="#speed">Speed</a>
+  <a href="#antifragile">Anti-fragile</a>
+  <p class="label">Doing it</p>
+  <a href="#phases">Phases</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#record">Review record</a>
+  <a href="#review">For reviewers</a>
+</nav>
+
+<main>
+<section id="summary">
+  <span class="eyebrow">Nimbus Drop · protocol 3 · draft 6, revised after two independent reviews · 22 Nov 2026</span>
+  <h1>Secure drops: identity, encryption, and still filling a 10 GbE link</h1>
+  <p class="lede">Every Mac gets its own identity key, which lasts 90 days and is then replaced. Every drop is encrypted and authenticated end to end. A Mac you have never met is paired with two 6-digit codes: each person reads theirs aloud and types the one they hear. After that it is remembered until either Mac's key runs out, and no other key can take its place, whatever name it uses.</p>
+  <div class="facts">
+    <div class="fact"><div class="n">1.25 GB/s</div><div class="l">what 10 GbE carries: the design brief</div></div>
+    <div class="fact"><div class="n">6.9 to 9.8 GB/s</div><div class="l">AES-256-GCM on one core, measured on both Macs</div></div>
+    <div class="fact"><div class="n">~15%</div><div class="l">of one core to encrypt at 10 GbE, per side</div></div>
+    <div class="fact"><div class="n">90 days</div><div class="l">how long a key lives, or as little as an hour if you choose</div></div>
+  </div>
+  <p>This app is for Macs on the same network, so the people using it are usually in the same room or on a call. That is an asset most secure systems do not have: a second channel, a human voice, that a network attacker cannot forge. The attacker may well be in the room and hear every word; the design assumes so and loses nothing by it.</p>
+  <p>Draft 2 of this plan was reviewed adversarially and found unsafe to build from. Draft 5 was reviewed again by a different model, which found no break in the handshake or the pairing but withheld approval over expiry, resource limits, revocation and storage. This draft answers every finding of both; the <a href="#record">review record</a> lists them.</p>
+</section>
+
+<section id="today">
+  <h2>Where we are today (0.2.2)</h2>
+  <p>After the security release, a Mac is safe from a hostile drop: writes are confined, consent means what was shown, received files are quarantined. What 0.2.2 does not have is any notion of <em>who</em> the other Mac is, or any privacy on the wire.</p>
+  <ul>
+    <li><strong>A name is a claim.</strong> Any Mac can announce itself as "macbookairm4". Only the IP address is real, and on a LAN that can be spoofed too.</li>
+    <li><strong>Everything is readable.</strong> File names, sizes and contents cross the network in the clear.</li>
+    <li><strong>A drop in progress can be interfered with</strong> by someone who can see the traffic: the token that lets a data connection attach is sent unprotected.</li>
+    <li><strong>The checksum is not a signature.</strong> CRC-32 catches accidents. Anyone can compute a matching CRC for altered data.</li>
+  </ul>
+</section>
+
+<section id="threats">
+  <h2>Who we defend against</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Attacker</th><th>Today</th><th>After this plan</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Someone listening</strong> on the same Wi-Fi or switch</td><td><span class="pill bad">reads everything</span></td><td><span class="pill good">sees ciphertext</span> plus that two Macs are talking, and roughly how much</td></tr>
+      <tr><td><strong>Someone in the middle</strong> (ARP spoofing, a rogue access point)</td><td><span class="pill bad">can read and alter</span></td><td><span class="pill good">stopped at pairing</span>: one chance in a million per pairing, and a pairing cannot happen without a person at each Mac. Impossible afterwards without a private key.</td></tr>
+      <tr><td><strong>Someone in the room</strong> who hears the codes read out</td><td><span class="pill info">no such thing</span></td><td><span class="pill good">gains nothing</span>: the codes describe a connection, they are not a password</td></tr>
+      <tr><td><strong>An impostor</strong> announcing a familiar name</td><td><span class="pill bad">indistinguishable</span></td><td><span class="pill good">shown as a new Mac, marked</span>, beside the one you know and never instead of it. Nothing is sent to it, not even file names.</td></tr>
+      <tr><td><strong>A paired Mac that is later replaced or reinstalled</strong></td><td><span class="pill warn">no way to tell</span></td><td><span class="pill good">a new Mac</span> until two people pair it, as a replacement or as another Mac</td></tr>
+      <tr><td><strong>Someone who records traffic now and steals a key later</strong></td><td><span class="pill bad">already has the files</span></td><td><span class="pill good">cannot decrypt past drops</span> (forward secrecy)</td></tr>
+      <tr><td><strong>Someone who steals your identity key</strong></td><td><span class="pill info">no such thing</span></td><td><span class="pill warn">can pose as your Mac</span> to Macs paired with it, until you reset your identity. A reset tells every paired Mac it can reach to stop trusting the old key at once and lists the ones it could not reach (<a href="#s-manage">screen 9</a>). If you never notice the theft, the key still dies on its end date, 90 days at most after it was made, and the copy with it. Cannot pose as others to you, and cannot read past or future drops they are not part of.</td></tr>
+      <tr><td><strong>A paired Mac that is itself compromised</strong></td><td><span class="pill warn">0.2.2 hardening applies</span></td><td><span class="pill warn">same</span>: confined writes, quarantine and consent all stay. Paired is not the same as trusted to run code.</td></tr>
+      <tr><td><strong>Malware already running as you</strong> on your own Mac</td><td colspan="2"><span class="pill info">out of scope</span> It can read your files directly. A copy of the stored identity file is useless on other hardware, and that is all we claim: while the app runs, the key is in its memory, where such software could read it.</td></tr>
+      <tr><td><strong>Someone with the Mac's disk</strong></td><td colspan="2"><span class="pill info">out of scope</span> Received files are ordinary files. FileVault is the layer for that.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="signal">
+  <h2>What we take from Signal, and what we leave</h2>
+  <p>Signal solves a harder problem than ours: messages to people who are offline, through servers it does not trust. Both Macs in a drop are online and talking directly, so the trust model carries over almost unchanged while the machinery gets much smaller.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Signal idea</th><th>Here</th></tr></thead>
+    <tbody>
+      <tr><td>A long-lived <strong>identity key</strong> per device</td><td><span class="pill good">adopt, shorter</span> One per Mac, stored so that the file is useless on any other hardware, and replaced every 90 days so that no key is for ever.</td></tr>
+      <tr><td>The key, not the name or number, <strong>is</strong> the contact</td><td><span class="pill good">adopt</span> A paired Mac is recognised by its key. Its name can change freely.</td></tr>
+      <tr><td><strong>Safety numbers</strong> to compare out of band</td><td><span class="pill good">adopt, changed</span> 30 digits per Mac (half of Signal's 60), entered into the other Mac and compared by the app, so that nobody can say "they match" without looking.</td></tr>
+      <tr><td><strong>"Safety number changed"</strong></td><td><span class="pill good">adopt, stricter</span> Signal warns and lets you carry on. Here an unknown key can do nothing until two people have paired it, and the known key keeps working meanwhile.</td></tr>
+      <tr><td><strong>Forward secrecy</strong></td><td><span class="pill good">adopt</span> Fresh one-time keys for every drop, discarded afterwards.</td></tr>
+      <tr><td>Trust on first use, unverified by default</td><td><span class="pill warn">do better</span> We can, because the people are within earshot: first contact is verified, with the 6-digit codes, and verified again whenever a key is replaced.</td></tr>
+      <tr><td>X3DH prekeys, the Double Ratchet</td><td><span class="pill info">not needed</span> They exist for offline recipients and conversations that last years. A drop is one live session with fresh keys.</td></tr>
+      <tr><td>Servers, phone numbers, sealed sender</td><td><span class="pill info">not applicable</span> There is no server and no account.</td></tr>
+      <tr><td>Post-quantum key agreement (PQXDH)</td><td><span class="pill warn">later</span> See decision D7.</td></tr>
+    </tbody>
+  </table></div>
+  <p>For the channel itself the plan uses the <strong>Noise framework</strong> (pattern XX), which WhatsApp and WireGuard build on, and for the codes a <strong>short authentication string with a commitment</strong>, the method behind ZRTP voice calls and Bluetooth's numeric pairing. Both methods are published and analysed. What is ours is the way they are put together: the two-code derivation, the extra key taken from the handshake, the record format and the resume proof. Those are specified byte for byte below and are what the reviews and the test vectors are for.</p>
+</section>
+
+<section id="model">
+  <h2>The trust model in one page</h2>
+  <ul>
+    <li><strong>Identity is a key.</strong> Each Mac has one. Names and addresses are labels shown for convenience, and nothing is ever decided by them.</li>
+    <li><strong>Trust is made by people.</strong> Two Macs become paired when each person reads a 6-digit code aloud and types the one they hear. Nothing else creates trust: not a name, not having been seen before, not being on the same network.</li>
+    <li><strong>The codes may be overheard.</strong> They describe a connection that already exists; they are not a password. Someone listening in the room learns nothing useful.</li>
+    <li><strong>A pairing cannot start by itself.</strong> No code exists until a person at each Mac has asked for one.</li>
+    <li><strong>Trust is remembered per key.</strong> A paired Mac that comes back with the same key needs nothing, under any name or address.</li>
+    <li><strong>No key is for ever.</strong> Every key has an end date, 90 days after it was made unless its owner chose less, down to an hour. On that date the Mac makes a new one and the old one is refused everywhere. A pairing lasts until either Mac's key ends; then two people renew it with fresh codes. A key copied without anyone noticing stops being accepted on schedule.</li>
+    <li><strong>A key you know is never displaced by a name.</strong> Another Mac using a familiar name is a new Mac with a warning on it. It cannot block, replace or borrow the standing of the one you paired with.</li>
+    <li><strong>There is no "send anyway".</strong> Nothing is sent to, or shown from, a key that is not paired.</li>
+    <li><strong>Encryption is unconditional.</strong> There is no plain mode and no setting for one. There is no compatibility with 0.2 at all: this is a new protocol that happens to share a name.</li>
+    <li><strong>It works with no internet.</strong> An air-gapped LAN is a supported place to use this. There is no server, no account, no online check of a key and no dependence on a time server.</li>
+    <li><strong>Pairing is not permission.</strong> A paired Mac's drop still has to be accepted, is still confined to its folder, and is still quarantined.</li>
+  </ul>
+  <div class="scroll"><table>
+    <thead><tr><th>State</th><th>Means</th><th>Drops</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill info">New</span></td><td>A key this Mac has never paired with</td><td>Pair first</td></tr>
+      <tr><td><span class="pill warn">New, name already known</span></td><td>An unknown key announcing the name of a Mac you paired with</td><td>Pair first, after a full-stop warning</td></tr>
+      <tr><td><span class="pill good">Paired</span></td><td>This key was paired, has not reached its end date, and the Mac at this address has just proved it holds it</td><td>Work as today</td></tr>
+      <tr><td><span class="pill info">Renew</span></td><td>A key ran out on its date: yours, so every Mac you know needs renewing, or theirs, so a new key under that name was expected</td><td>On hold until renewed with codes</td></tr>
+      <tr><td><span class="pill warn">Reset</span></td><td>The Mac told this one that it gave up its identity</td><td>On hold until paired again</td></tr>
+      <tr><td><span class="pill bad">Retired identity</span></td><td>A key that was given up or replaced is being used</td><td>Refused and reported; cannot be paired</td></tr>
+      <tr><td><span class="pill warn">Needs an update</span></td><td>Its Bonjour record says version 2. Drawn from that record alone; nothing is said to it</td><td>Impossible</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="scenarios">
+  <h2>What it looks like</h2>
+  <p>Mock screens for each situation. They follow the app as it is today; wording and layout are for discussion. Screens are shown in the app's dark appearance.</p>
+
+  <div class="scenario" id="s-setup">
+    <h3>1. First launch after the update</h3>
+    <p>The identity key is made silently. One small notice explains what changed, once. There is nothing to configure and no decision to make.</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">This Mac, once</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body center">
+            <div class="orb green">✓</div>
+            <div class="big">Drops are now encrypted</div>
+            <div class="sub">This Mac has its own identity. The first time you exchange a drop with another Mac, each of you will read out a 6-digit code and type the other's. Keys are replaced every 90 days, and you pair again then.</div>
+            <div class="btns" style="width:100%"><span class="btn blue">OK</span></div>
+          </div></div></div>
+    </div>
+  </div>
+
+  <div class="scenario" id="s-window">
+    <h3>2. The window</h3>
+    <p>Each destination shows its state. A tile says Paired only after the Mac at that address has proved, in the background, that it holds the paired key. What a Mac announces about itself never earns the mark.</p>
+    <div class="stage">
+      <div class="shot wide"><span class="cap">Destinations</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body">
+            <div class="h">Destinations</div>
+            <div class="tiles">
+              <div class="tile"><div class="glyph">💻</div><div class="nm">My MacBook Air</div><div class="ip">192.168.1.143</div><span class="badge v">✓ Paired</span></div>
+              <div class="tile"><div class="glyph">🖥</div><div class="nm">dads-imac</div><div class="ip">192.168.1.77</div><span class="badge n">New · pair to send</span></div>
+              <div class="tile"><div class="glyph">💻</div><div class="nm">macstudio</div><div class="ip">192.168.1.20</div><span class="badge v">✓ Paired</span></div>
+              <div class="tile"><div class="glyph">💻</div><div class="nm">macstudio</div><div class="ip">192.168.1.166</div><span class="badge c">New · name in use</span></div>
+              <div class="tile"><div class="glyph">💻</div><div class="nm">Niels's Mac mini</div><div class="ip">192.168.1.31</div><span class="badge n">Renew pairing</span></div>
+              <div class="tile dim"><div class="glyph">💻</div><div class="nm">PHJ-MacBook</div><div class="ip">192.168.1.148</div><span class="badge o">Needs an update</span></div>
+            </div>
+          </div></div></div>
+    </div>
+    <p>The two "macstudio" tiles are the point of the design: the one you paired with keeps its mark and keeps working, and the newcomer using its name stands beside it, marked.</p>
+  </div>
+
+  <div class="scenario" id="s-new">
+    <h3>3. A new Mac: pairing with two codes</h3>
+    <p>You drag a folder onto a Mac you have never paired with. Its person is asked whether to pair. When they agree, each Mac shows a code of its own and a field for the other's. Each of you reads yours out and types what you hear. Then the drop proceeds to the usual accept panel.</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">Receiver: asked first</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with a New Mac?</span></div>
+          <div class="body center">
+            <div class="orb blue">⇄</div>
+            <div class="big">macbookpro (192.168.1.107)</div>
+            <div class="sub">wants to pair with this Mac. Go on only if someone you can hear is asking you to.</div>
+            <div class="btns" style="width:100%"><span class="btn red">Not expecting this</span><span class="btn">Pair…</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Each Mac: read yours, type theirs</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with dads-imac</span></div>
+          <div class="body center">
+            <div class="sub">Read this code out to the person at dads-imac:</div>
+            <div class="code">482 913</div>
+            <div class="sub">Type the code they read to you:</div>
+            <div class="boxes"><b>7</b><b>0</b><b>5</b><span class="gap"></span><b>3</b><b class="cur"></b><b></b></div>
+            <div class="btns" style="width:100%"><span class="btn ghost">Cancel</span><span class="btn blue">Pair</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Either Mac: the codes disagree</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with dads-imac</span></div>
+          <div class="body center">
+            <div class="orb red">!</div>
+            <div class="big">That is not the code this Mac expected</div>
+            <div class="sub">Check it with the person at dads-imac and type it once more. If it is what they read out, stop: something may be between the two Macs.</div>
+            <div class="boxes"><b class="cur"></b><b></b><b></b><span class="gap"></span><b></b><b></b><b></b></div>
+            <div class="btns" style="width:100%"><span class="btn ghost">Stop Pairing</span><span class="btn blue">Pair</span></div>
+          </div></div></div>
+    </div>
+    <ul>
+      <li>The codes last two minutes and belong to this one connection. A third wrong entry ends the attempt on both Macs, and both say so.</li>
+      <li>One pairing at a time per Mac. A second request waits its turn; it does not get a panel of its own.</li>
+      <li>"Not expecting this" is the red button because it is the safe answer for someone who does not know what the panel is. Neither button answers to the Return key.</li>
+      <li>A Mac is paired only when its own person has typed the right code <em>and</em> the other Mac has said that its person did too.</li>
+    </ul>
+  </div>
+
+  <div class="scenario" id="s-drop">
+    <h3>4. A normal drop between paired Macs</h3>
+    <p>Today's flow. A paired Mac is shown under the name you gave it, so it cannot rename itself into something misleading. The accept panel says who it is without a green tick: paired means "this is that Mac", not "this drop is safe".</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">Receiver: accept</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Incoming Drop</span></div>
+          <div class="body center">
+            <div class="orb green">↓</div>
+            <div class="big">macbookpro</div>
+            <div class="sub">192.168.1.107 · paired with this Mac on 22 Nov · wants to send you</div>
+            <div class="big">"Christmas 2026"</div>
+            <div class="sub">1,204 files, 31.2 GB</div>
+            <div class="btns col" style="width:100%"><span class="btn blue">Save to Downloads</span><div class="btns"><span class="btn red">Decline</span><span class="btn">Save to…</span></div></div>
+          </div></div></div>
+      <div class="shot wide"><span class="cap">Sender: in progress</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body">
+            <div class="h">Drops</div>
+            <div class="row"><div class="dot" style="background:var(--app-blue)">↑</div>
+              <div class="t"><div class="l1">Christmas 2026 to Dad's iMac</div>
+                <div class="prog"><i></i></div>
+                <div class="l2">13.1 GB of 31.2 GB · 9.6 Gbps · 8 connections · encrypted · 0:15 left</div></div></div>
+          </div></div></div>
+    </div>
+  </div>
+
+  <div class="scenario" id="s-change">
+    <h3>5. A familiar name with an unknown key</h3>
+    <p>A Mac turns up announcing the name of one you paired with, but with a key you have never seen. That happens when a Mac is erased or replaced, when two Macs share a default name, and when someone is pretending. The app cannot tell which, so it does three things: it leaves the Mac you know untouched, it marks the newcomer, and it stops you with a question only when you try to use the newcomer.</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">Sender: on dropping files on the marked tile</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Not the Mac You Know</span></div>
+          <div class="body">
+            <div class="center" style="display:flex;flex-direction:column;gap:8px"><div class="orb red" style="margin:0 auto">!</div>
+            <div class="big">This is not the macstudio you paired with</div></div>
+            <div class="sub">The Mac at 192.168.1.166 calls itself macstudio but has a different identity from the one you paired with on 3 Dec 2026. Nothing was sent.</div>
+            <div class="warnbox">It may be a Mac that was erased or replaced, another Mac with the same name, or someone pretending. Ask the person there before going on.</div>
+            <div class="btns col"><span class="btn blue">Cancel</span><div class="btns"><span class="btn">It Replaces macstudio…</span><span class="btn">It Is Another Mac…</span></div></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Receiver: its request to pair</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with a New Mac?</span></div>
+          <div class="body center">
+            <div class="orb red">!</div>
+            <div class="big">A Mac calling itself macbookairm4 (192.168.1.166)</div>
+            <div class="sub">wants to pair. It is <strong>not</strong> the macbookairm4 you paired with on 22 Nov. Go on only if someone you can hear tells you why.</div>
+            <div class="btns" style="width:100%"><span class="btn red">Not expecting this</span><span class="btn">Pair…</span></div>
+          </div></div></div>
+    </div>
+    <ul>
+      <li>Both choices lead to the two codes. "Replaces" retires the old identity once pairing succeeds; "another Mac" keeps both and asks you to name the new one differently.</li>
+      <li>Names are compared the way a person reads them: case, accents, look-alike characters, and the "-2" or "(2)" macOS adds on a name clash are all folded first.</li>
+      <li>Requests like the one on the right are held to one on screen at a time, with a growing pause after each refusal, so they cannot be used to wear someone down.</li>
+    </ul>
+  </div>
+
+  <div class="scenario" id="s-reinstall">
+    <h3>6. The same Mac, reinstalled</h3>
+    <p>What survives and what does not, so the warning is rare and means something:</p>
+    <div class="scroll"><table>
+      <thead><tr><th>What happened to the Mac</th><th>Identity</th><th>What others see</th></tr></thead>
+      <tbody>
+        <tr><td>Nimbus Drop updated</td><td><span class="pill good">kept</span></td><td>Nothing</td></tr>
+        <tr><td>Nimbus Drop deleted and installed again</td><td><span class="pill good">kept</span> (it lives in Application Support, not the app)</td><td>Nothing</td></tr>
+        <tr><td>Renamed in System Settings</td><td><span class="pill good">kept</span></td><td>Still paired, under the name you gave it</td></tr>
+        <tr><td>New IP address or network</td><td><span class="pill good">kept</span></td><td>Nothing</td></tr>
+        <tr><td>macOS erased and reinstalled</td><td><span class="pill bad">new</span></td><td>A new Mac with the old one's name: screen 5</td></tr>
+        <tr><td>Moved to a new Mac with Migration Assistant, or restored from a backup onto other hardware</td><td><span class="pill bad">new</span> (the stored key can only be opened by the chip it was made on)</td><td>A new Mac with the old one's name: screen 5</td></tr>
+        <tr><td>"Reset Identity" chosen in Settings</td><td><span class="pill bad">new</span></td><td>"Reset its identity": pair again. The old key is refused from then on.</td></tr>
+      </tbody>
+    </table></div>
+    <p>The reinstalled Mac itself has forgotten everyone, so from its side every Mac is simply New. The person at the other Mac sees screen 5, hears "yes, I erased it yesterday", chooses "It Replaces macstudio" and pairs with the codes. The old identity goes on the retired list (it is refused if it ever appears again), and the event is recorded.</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">After pairing as a replacement</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body center">
+            <div class="orb green">✓</div>
+            <div class="big">Paired with macstudio</div>
+            <div class="sub">Its earlier identity, paired on 3 Dec 2026, has been retired and will be refused. This is recorded in Known Macs.</div>
+            <div class="btns" style="width:100%"><span class="btn blue">Send the Drop</span></div>
+          </div></div></div>
+    </div>
+  </div>
+
+  <div class="scenario" id="s-impostor">
+    <h3>7. An impostor</h3>
+    <p>Three different things can happen, and none sends anything.</p>
+    <ul>
+      <li><strong>It uses the name with its own key.</strong> It is the marked tile of screens 2 and 5, next to the real one. Using it needs codes read out by a person you can hear, and there is nobody to read them.</li>
+      <li><strong>It takes over the real Mac's address.</strong> Your Mac asks whoever is there to prove the paired key before anything about the drop is said. It cannot, and the tile loses its mark.</li>
+      <li><strong>It holds a stolen copy of an identity that has since been reset or replaced.</strong> It can prove that key, and that is exactly what gives it away: your Mac keeps every retired identity and refuses it, as a likely copy, never as a new Mac to pair with (screen 9).</li>
+    </ul>
+    <div class="stage">
+      <div class="shot"><span class="cap">Sender: proof failed</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body center">
+            <div class="orb red">!</div>
+            <div class="big">That is not My MacBook Air</div>
+            <div class="sub">The Mac now at 192.168.1.143 could not prove it is the one you paired with. Nothing was sent, including the names of your files.</div>
+            <div class="btns" style="width:100%"><span class="btn">Show in Internals</span><span class="btn blue">OK</span></div>
+          </div></div></div>
+    </div>
+  </div>
+
+  <div class="scenario" id="s-offline">
+    <h3>8. Checking an identity through another channel</h3>
+    <p>Each Mac has an identity number: 30 digits that stand for its key. It is not secret. To verify a Mac you <em>enter</em> its number, read to you over the phone or pasted from a message, and the app compares it with the key that Mac has just proved. There is no "they match" button to press without looking. Each side enters the other's; done on both, it pairs them exactly as the codes do.</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">This Mac's number, to give out</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>This Mac's Identity</span></div>
+          <div class="body">
+            <div class="big">macbookpro</div>
+            <div class="sub">Give this number to someone who wants to check this Mac. It is safe to send in a message.</div>
+            <div class="digits">30517 84926 11370<br>65208 49913 07754</div>
+            <div class="btns"><span class="btn">Copy</span><span class="btn blue">Done</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Checking another Mac</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Verify dads-imac</span></div>
+          <div class="body">
+            <div class="sub">Type or paste the identity number of dads-imac, as its owner gave it to you:</div>
+            <div class="digits">92841 36605 71129<br>58430 206<span style="opacity:.4">__ _____</span></div>
+            <div class="sub">This shows whether the Mac at 192.168.1.77 holds the key that number stands for. It says nothing about what the Mac will send you.</div>
+            <div class="btns"><span class="btn ghost">Cancel</span><span class="btn blue">Check</span></div>
+          </div></div></div>
+    </div>
+  </div>
+
+  <div class="scenario" id="s-manage">
+    <h3>9. Known Macs, and this Mac's own identity</h3>
+    <p>In Settings. Every pairing is listed with how and when it was made and the date it is good until (the earlier of the two keys' end dates). How long this Mac's keys last is set here: 90 days, 30 days, a week, a day or an hour. A Mac can be renamed for yourself (names must differ), verified again, or forgotten. Resetting this Mac's identity is here too, with a plain statement of what it costs.</p>
+    <p>A reset is for when you fear the key was copied, so it has to end the old key's life everywhere, not only here. Four things make that so:</p>
+    <ul>
+      <li><strong>The other Macs are told.</strong> Before the old key is destroyed, this Mac uses it one last time to tell every paired Mac it can reach: "this identity is retired". Those Macs stop trusting it at that moment.</li>
+      <li><strong>Nobody is forgotten.</strong> The Macs you were paired with stay listed under "Pair again", each marked as told or not reached, until it is paired again or you remove it.</li>
+      <li><strong>A retired identity is never trusted again.</strong> Every Mac remembers the identities it has retired. If one turns up later, it is refused and reported as a likely copy.</li>
+      <li><strong>Time finishes the job.</strong> A Mac that was not reached stops trusting the old key on the end date it recorded for it, 90 days at most after the key was made.</li>
+    </ul>
+    <div class="stage">
+      <div class="shot wide"><span class="cap">Settings › Known Macs</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop Settings</span></div>
+          <div class="body">
+            <div class="h">Known Macs</div>
+            <div class="row"><div class="dot" style="background:var(--app-green)">✓</div><div class="t"><div class="l1">My MacBook Air <span class="sub">announces itself as macbookairm4</span></div><div class="l2">paired 22 Nov with codes · good until 20 Feb · seen today · 7F3K-92QD-M4TX-81WC</div></div><span class="btn ghost" style="flex:none">Forget</span></div>
+            <div class="row"><div class="dot" style="background:var(--app-green)">✓</div><div class="t"><div class="l1">Dad's iMac <span class="sub">announces itself as dads-imac</span></div><div class="l2">paired 24 Dec by identity number · good until 20 Feb · seen 3 days ago · B81M-44TX-0QRE-5N2H</div></div><span class="btn ghost" style="flex:none">Forget</span></div>
+            <div class="row"><div class="dot" style="background:var(--app-amber)">!</div><div class="t"><div class="l1">macstudio</div><div class="l2">paired 3 Dec with codes · good until 11 Jan · another Mac used this name today, twice, from 192.168.1.166</div></div><span class="btn ghost" style="flex:none">Forget</span></div>
+            <div class="h" style="margin-top:6px">This Mac</div>
+            <div class="kv"><span>Name</span><span>macbookpro</span><span>Key</span><span>C2H9-6WLA-P03D-YK7M</span><span>Made</span><span>22 Nov 2026</span><span>Ends</span><span>20 Feb 2027</span><span>Keys last</span><span>90 days ▾</span></div>
+            <div class="btns"><span class="btn ghost">Show Identity Number…</span><span class="btn ghost">Reset Identity…</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Reset Identity</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Reset This Mac's Identity?</span></div>
+          <div class="body">
+            <div class="sub">Do this if you think this Mac's identity was copied. The 3 Macs you are paired with will be told to stop trusting the old identity, and you will need to pair with each of them again. This cannot be undone.</div>
+            <div class="btns"><span class="btn">Cancel</span><span class="btn red">Reset and Unpair Everything</span></div>
+          </div></div></div>
+      <div class="shot wide"><span class="cap">This Mac, after the reset</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop Settings</span></div>
+          <div class="body">
+            <div class="h">Pair again <span class="sub">1 of 3 done</span></div>
+            <div class="row"><div class="dot" style="background:var(--app-green)">✓</div><div class="t"><div class="l1">My MacBook Air</div><div class="l2">told of the reset · paired again today with codes · same Mac as before</div></div></div>
+            <div class="row"><div class="dot" style="background:var(--app-amber)">…</div><div class="t"><div class="l1">macstudio</div><div class="l2">told of the reset · it no longer trusts the old identity · not paired again yet</div></div><span class="btn ghost" style="flex:none">Pair…</span></div>
+            <div class="row"><div class="dot" style="background:var(--app-red)">!</div><div class="t"><div class="l1">Dad's iMac</div><div class="l2">not reached · <strong>it still trusts the old identity</strong> until you pair again, or until 20 Feb when that identity ends</div></div><span class="btn ghost" style="flex:none">Pair…</span></div>
+            <div class="warnbox">Until then, anyone holding a copy of the old identity can pose as this Mac to Dad's iMac.</div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Another Mac: told of the reset</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body center">
+            <div class="orb amber">!</div>
+            <div class="big">macbookpro reset its identity</div>
+            <div class="sub">It told this Mac to stop trusting the identity you paired with on 22 Nov 2026. Drops to and from it are on hold until you pair again.</div>
+            <div class="btns" style="width:100%"><span class="btn blue">OK</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Another Mac: the old identity turns up later</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop</span></div>
+          <div class="body center">
+            <div class="orb red">!</div>
+            <div class="big">A retired identity of macbookpro was used</div>
+            <div class="sub">The Mac at 192.168.1.166 proved an identity that macbookpro gave up on 14 Jan 2027. Someone may hold a copy of it. Nothing was sent or received.</div>
+            <div class="btns" style="width:100%"><span class="btn">Show in Internals</span><span class="btn blue">OK</span></div>
+          </div></div></div>
+    </div>
+  </div>
+
+  <div class="scenario" id="s-renew">
+    <h3>10. A key runs out</h3>
+    <p>On its end date a Mac makes a new key by itself and destroys the old one. It keeps the list of Macs it knew, marked "Renew", and they know the date too, because each Mac states its key's end date when it pairs. So a scheduled change reads differently from the surprise of screen 5: a new key under a familiar name <em>after</em> the old key's date is expected; one <em>before</em> that date gets the full warning. Either way nothing moves until two people have exchanged codes.</p>
+    <div class="stage">
+      <div class="shot"><span class="cap">The Mac whose key ran out, on dropping files</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Renew Pairing</span></div>
+          <div class="body center">
+            <div class="orb blue">⇄</div>
+            <div class="big">Renew with My MacBook Air</div>
+            <div class="sub">This Mac's key reached its end date on 20 Feb and was replaced. My MacBook Air is the same Mac you paired with before. Renewing takes two codes.</div>
+            <div class="btns" style="width:100%"><span class="btn ghost">Cancel</span><span class="btn blue">Renew…</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">The other Mac</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Renew Pairing?</span></div>
+          <div class="body center">
+            <div class="orb blue">⇄</div>
+            <div class="big">macbookpro (192.168.1.107)</div>
+            <div class="sub">wants to pair with a new key. The key you paired with ran out on 20 Feb, so a new one was expected. The codes will show whether this is that Mac. Go on only if someone you can hear is asking you to.</div>
+            <div class="btns" style="width:100%"><span class="btn red">Not expecting this</span><span class="btn">Renew…</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Settings, for the very careful</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Nimbus Drop Settings</span></div>
+          <div class="body">
+            <div class="h">This Mac's keys last</div>
+            <div class="row"><div class="t"><div class="l1">90 days ✓</div></div></div>
+            <div class="row"><div class="t"><div class="l1">30 days</div></div></div>
+            <div class="row"><div class="t"><div class="l1">1 week</div></div></div>
+            <div class="row"><div class="t"><div class="l1">1 day</div></div></div>
+            <div class="row"><div class="t"><div class="l1">1 hour</div><div class="l2">every Mac will need pairing again each hour</div></div></div>
+          </div></div></div>
+    </div>
+    <ul>
+      <li>A drop in progress when a key ends finishes on the keys it started with; the next one needs the renewal.</li>
+      <li>A shorter setting takes effect at once if the current key is already older than it.</li>
+      <li>There is no "never".</li>
+      <li><strong>Nobody is asked to renew anything.</strong> When a key ends, its pairings simply stop. There is no checklist and no prompt. A pair of Macs is renewed the next time one of them wants to send to the other, and a pair that is never used again is never renewed. (The checklist of screen 9 belongs to Reset Identity only, where you need to know which Macs still trust a key you believe was copied.)</li>
+    </ul>
+  </div>
+</section>
+
+<section id="spec">
+  <h2>Specification</h2>
+  <p>Written to be checked. Names in <code>code</code> are exact. All integers are big-endian. A label in quotes is its ASCII bytes with no terminator. <code>KDF(key, info, n)</code> is HKDF-SHA-256 with an empty salt, <code>key</code> as the input keying material, <code>info</code> as given, and <code>n</code> bytes out. <code>‖</code> joins bytes.</p>
+
+  <h3>Primitives</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Purpose</th><th>Choice</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Key agreement</td><td>X25519</td><td>CryptoKit</td></tr>
+      <tr><td>Authenticated encryption</td><td>AES-256-GCM, 96-bit nonce, 128-bit tag</td><td>CryptoKit (hardware AES)</td></tr>
+      <tr><td>Hash, key derivation, MAC</td><td>SHA-256, HKDF-SHA-256, HMAC-SHA-256; SHA-512 for identity numbers</td><td>CryptoKit</td></tr>
+      <tr><td>Handshake</td><td><code>Noise_XX_25519_AESGCM_SHA256</code>, revision 34 of the Noise specification</td><td>Implemented here from CryptoKit primitives; checked against published test vectors</td></tr>
+      <tr><td>Pairing</td><td>A short authentication string with a SHA-256 commitment (the method of ZRTP and of Bluetooth numeric comparison)</td><td>CryptoKit</td></tr>
+      <tr><td>Keeping the identity on this Mac</td><td>P-256 key agreement with a key held in the Secure Enclave</td><td>CryptoKit</td></tr>
+      <tr><td>Randomness</td><td>The system generator, through CryptoKit</td><td>macOS</td></tr>
+    </tbody>
+  </table></div>
+  <p>One set of algorithms per protocol major. Nothing is negotiated within a major. No third-party cryptographic code: the app's only dependency remains its updater.</p>
+
+  <h3>Identity</h3>
+  <ul>
+    <li>Each installation has one static X25519 key pair at a time, <code>s</code>, with the time it was made and the time it ends (see Key expiry).</li>
+    <li><strong>What counts as the same key.</strong> An identity is the 32 bytes of the public key in canonical form: the top bit of the last byte clear and the value below 2<sup>255</sup> − 19. Any other encoding is refused when it is read, before any lookup, tag or number is computed, and a key agreement whose result is all zeros ends the handshake. X25519 still has a handful of distinct canonical encodings that behave alike in a key agreement. To this protocol each is a different key: one of them presented by the holder of a retired key is an unknown key, which is New and needs two people to pair it, exactly like any fresh key that holder could have made. Retirement and expiry are claimed for the key as recorded, not for every equivalent.</li>
+    <li><strong>Where it is kept.</strong> One file, <code>~/Library/Application Support/&lt;bundle id&gt;/trust</code>, mode 0600, excluded from backups, holding both the identity and the Known Macs store so that they can never disagree after a crash. Beside it, <code>device</code>: a Secure Enclave P-256 key (the opaque form only that Mac's chip can use) and a P-256 public key <code>w</code>, both made once per installation. <code>device</code> is never rewritten: it survives key expiry and Reset Identity, which replace only <code>s</code>. The trust file is sealed with AES-256-GCM under <code>KDF(ECDH(enclave key, w), "nimbus-drop trust v1", 32)</code>, with a fresh random nonce for every write and <code>"nimbus-drop trust v1" ‖ schema version</code> as associated data. Opening it takes one Secure Enclave operation per launch.</li>
+    <li><strong>Every change is one atomic replacement:</strong> write the whole new file beside the old, <code>fsync</code> it, rename it over the old, <code>fsync</code> the folder. A change is not acted on, acknowledged to another Mac or shown as done until that has returned. A lock file (<code>flock</code>) keeps two processes of the same identity from writing at once.</li>
+    <li><strong>Why not the Keychain</strong> (draft 2 said Keychain). The properties draft 2 claimed, "this device only" and "readable only by our code", belong to the data protection keychain, which needs an entitlement backed by a provisioning profile. Tested on both Macs on 22 Nov 2026 with a bare binary: the data protection keychain answers <code>errSecMissingEntitlement</code> (-34018), in a terminal and over ssh. The login keychain works in a terminal but refuses over ssh ("User interaction is not allowed", -25308), which is how the second Mac is driven in every LAN test; and it travels with Migration Assistant, which would put one identity on two Macs. The Secure Enclave wrap needs no entitlement and worked in both settings: made, reloaded and unwrapped in 4.6 ms on the MacBook Pro and 4.7 ms on the Air over ssh.</li>
+    <li><strong>What that gives, exactly.</strong> A copy of the file on any other hardware cannot be opened (tested: the MacBook Pro's enclave key, copied to the Air, loads and then fails with "unable to compute shared secret"), so backups, migration and a stolen disk image do not carry the identity. Software running as you on this Mac can ask the Secure Enclave the same question the app does; that attacker was already out of scope.</li>
+    <li><strong>When the trust file cannot be opened, the reason decides what happens.</strong> It is never silently replaced by an empty one, because that would also forget every retired and expired key.
+      <ul>
+        <li><em>Neither file exists:</em> a first installation. Make both.</li>
+        <li><em>The enclave reports that <code>device</code> is not its own:</em> the files came from other hardware (migration, a restored backup). Set them aside under a dated name, start fresh, say so once.</li>
+        <li><em>The enclave cannot be reached, or fails for another reason:</em> temporary. Nothing is regenerated. Receiving is off and nothing that changes trust is possible until it works; the window says why.</li>
+        <li><em>The file is there and will not open</em> (damage, an interrupted disk): set it aside, untouched, and ask. The person may start fresh, and is told in so many words that the record of retired and expired identities is lost with it.</li>
+      </ul></li>
+    <li>The development copy and each command-line <code>--name</code> have their own bundle id or folder, and so their own identities.</li>
+    <li>A Mac's <strong>key tag</strong>, for logs and lists, is the first 80 bits of <code>SHA-256("nimbus-drop key tag v1" ‖ s.public)</code> in Crockford base 32, shown as <code>7F3K-92QD-M4TX-81WC</code>. It is never sent in a Bonjour record and never the basis for trust.</li>
+    <li>A Mac's <strong>identity number</strong> is 30 decimal digits: <code>H<sub>0</sub> = "nimbus-drop identity number v1" ‖ s.public</code>; <code>H<sub>i</sub> = SHA-512(H<sub>i−1</sub> ‖ s.public)</code> for i from 1 to 5,200; the first 30 bytes of <code>H<sub>5200</sub></code> are read as six 5-byte integers, each reduced modulo 100,000 and written as five digits with leading zeros. This is how Signal derives each half of a safety number. About 100 bits. It is verified by being entered into the other Mac and compared by the app, never by eye.</li>
+    <li>The <strong>Known Macs store</strong> holds, per paired public key: the name you gave it (unique among your Known Macs), names it has announced, when and how it was paired, the end date of its key, when last seen, the highest protocol major it has proved, and events. It also holds the retired list and the pair-again list. It lives in the trust file described above, so it cannot be edited, or read on other hardware.</li>
+    <li><strong>Stated limit:</strong> putting back an older copy of the store, on the same Mac, is not detected. It could bring back a Mac you had forgotten. It can also bring back the standing of a key retired since that copy was made, until that key's end date; no key returns past its end date. P14 is claimed subject to this. It and it needs the access to your account that is out of scope.</li>
+  </ul>
+
+  <h3>Opening a connection, and versions</h3>
+<pre class="spec">
+initiator →  "NDROP" ‖ count (u8) ‖ majors (u8 each, ascending)        e.g. 4E 44 52 4F 50 01 03
+responder →  the same, with its own list                                 then the Noise handshake
+data connection:  initiator → "NDATA" ‖ attach (below)
+</pre>
+  <ul>
+    <li><strong>Protocol 2 is not spoken, answered or recognised</strong> (decided 22 Nov: it runs on four Macs, all the owner's, which will be updated together). A 0.2 Mac that connects is a stranger sending something unreadable and is closed. The only trace of the old protocol is that a Bonjour record saying <code>v=2</code> is drawn as a dimmed "Needs an update" tile, from the record alone. The note in the project's own documentation that protocol 2's frame layout is "frozen for good" is withdrawn with this major.</li>
+    <li>These openings carry versions and nothing else. Before the handshake completes, nothing longer than 1 KB is read.</li>
+    <li><code>prologue = "nimbus-drop/3" ‖ initiator's opening ‖ responder's opening</code>, byte for byte as sent. Both sides mix it into the handshake hash, so an opening altered in transit makes the handshake fail. The minor version is not in the prologue: 3.0 and 3.1 interoperate.</li>
+    <li>Both sides use the highest major in both lists. When a protocol 4 exists, removing it from a list in transit breaks the handshake. In addition the store remembers the highest major each paired key has proved, and refuses a lower one from that key afterwards.</li>
+    <li>The minor version, the app version and the name travel inside the encrypted hello that follows the handshake.</li>
+  </ul>
+
+  <h3>Discovery</h3>
+  <ul>
+    <li>The Bonjour record carries <code>v=3</code> and the name. No key, no tag, no id. <strong>Bonjour says where; only a handshake says who.</strong></li>
+    <li>Each address found is <strong>probed</strong>: the openings, then Noise messages 1 and 2, then close. After message 2 the responder has proved its static key and the prober has revealed nothing about itself. The tile's state comes from that key and from nothing else.</li>
+    <li>Probes run when Bonjour reports a result or a change, and the full handshake at the start of a drop proves the key again.</li>
+    <li>Results are kept per address, not merged by claimed identity. Two addresses that prove the same key are one Mac with two addresses; an address that announces a name and proves another key is its own tile. A record cannot move, capture or unmark a Paired tile.</li>
+    <li>When a drop reconnects, <code>relocate</code> offers every address that last proved the key, most recent first, and the reconnect handshake proves it again.</li>
+    <li>A probe is a stranger's connection and costs the responder a key generation and two key agreements.</li>
+    <li><strong>Probing is rationed too,</strong> since forged Bonjour records could otherwise drive it: at most 4 probes at once, an address at most once in 30 seconds, results kept for at most 256 addresses.</li>
+  </ul>
+
+  <h3>The handshake</h3>
+<pre class="mermaid">
+sequenceDiagram
+    participant S as Sender (initiator)
+    participant R as Receiver (responder)
+    S->>R: "NDROP", majors  (clear)
+    R->>S: "NDROP", majors  (clear)
+    Note over S,R: prologue = "nimbus-drop/3" ‖ both openings
+    S->>R: e
+    R->>S: e, ee, s, es
+    Note over S: Receiver's key is proved here. Not the key expected for this tile: stop, having revealed nothing.
+    S->>R: s, se
+    Note over S,R: Both hold h. Split gives two control keys and the master.
+    S->>R: hello {minor, app, name, key ends, paired: yes or no, purpose}  (encrypted)
+    R->>S: hello {minor, app, name, key ends, paired: yes or no}  (encrypted)
+    alt either side answered "paired: no"
+        Note over S,R: Pairing (below). Failure ends the connection.
+    end
+    S->>R: offer {items, file count, bytes}  (encrypted)
+    R->>S: accept, or decline
+</pre>
+  <ul>
+    <li>Noise XX gives mutual authentication, forward secrecy and resistance to key-compromise impersonation, and hides the initiator's static key from everyone but the proved responder. The responder's static key is shown to anyone who initiates; that is accepted, and is what makes probing possible.</li>
+    <li><strong>The initiator checks before it speaks.</strong> A sender aiming at a Paired tile compares the key proved in message 2 with the one it expects and closes on a difference, before sending its own static key or anything else.</li>
+    <li><strong>Split, and one extension to it.</strong> Standard Noise ends with <code>HKDF(ck, zerolen, 2)</code>, in Noise's own convention (<code>ck</code> as the HMAC key, an empty input, outputs chained with counter bytes 1, 2, 3), giving the two transport keys. This protocol calls it with 3 and keeps the third output, <code>HMAC(temp_key, output2 ‖ 0x03)</code>, as <code>master</code>. The first two outputs are unchanged, so published Noise vectors test the handshake; they do not test <code>master</code>, which is ours and has its own vectors. The chaining key is then destroyed. Noise's HKDF is not the <code>KDF</code> helper defined at the top of this section; every later derivation uses the helper.</li>
+    <li><strong>Handshake messages</strong> are framed like control frames (below) and carry empty payloads. Anything else in a handshake payload ends the connection.</li>
+    <li><code>purpose</code> is <code>drop</code>, <code>pair</code>, <code>verify</code>, <code>resume</code> or <code>retire</code>. The responder refuses any purpose but <code>pair</code> and <code>verify</code> from a key that is not paired and within its dates.</li>
+    <li>Both sides must say <code>paired: yes</code> for a drop to proceed. If one side no longer has the pairing, the other is told ("it no longer has this Mac paired") and pairing runs; nothing is offered first.</li>
+    <li>A key on the retired list, or past the end date recorded for it, ends the connection as soon as it is proved. Completing the handshake proves possession of some key, not a place in Known Macs, and earns nothing by itself: see Admission.</li>
+  </ul>
+
+  <h3>Admission: what each kind of connection may cost</h3>
+  <p>A slot is taken before any thread or buffer is given to a connection and is held until the connection's class changes or it closes. Limits are counted across all addresses and all keys, since both are free to vary.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Class</th><th>At once</th><th>May send</th><th>Deadline, absolute</th></tr></thead>
+    <tbody>
+      <tr><td>Handshake not complete (includes every probe)</td><td>64, and 50 new per second</td><td>1 KB in all</td><td>10 s</td></tr>
+      <tr><td>Handshake complete, key not paired</td><td>8</td><td>16 KB in all; purposes <code>pair</code> and <code>verify</code> only</td><td>10 s, unless it is the one pairing in progress (120 s from the codes) or one of at most 4 requests waiting for the person (120 s)</td></tr>
+      <tr><td>Data connection before its attach is accepted</td><td>16 per drop in progress, none otherwise</td><td>the attach</td><td>5 s</td></tr>
+      <tr><td>Paired key, no accepted drop</td><td>6 offers waiting, 2 per key</td><td>one fragment per message</td><td>until answered or withdrawn; the sender's key ending withdraws it</td></tr>
+      <tr><td>Accepted drop</td><td>as today</td><td>manifest and plan, bounded by what was accepted (below)</td><td>the session's maximum lifetime (Key expiry)</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li>Over a limit, a connection is closed at once (<code>busy</code> where a message can be sent), without work being done for it.</li>
+    <li><strong>Accepting a drop authorises metadata in proportion to it.</strong> The manifest may be at most 64 KB plus 2 KB per file the offer announced, and the plan at most 64 KB plus 8 bytes per chunk; either is refused beyond that before reassembly. All control messages being reassembled, across all drops, share a budget of 1 GB; a drop that would exceed it waits.</li>
+    <li>Log lines and Known Macs events caused by strangers are counted, not listed one by one: one line per kind per minute with a count, and at most 100 events kept per entry.</li>
+  </ul>
+
+  <h3>The control channel</h3>
+<pre class="spec">
+frame     = [u16 length][u16 length, bits inverted] ‖ Noise transport message (at most 65,535 bytes)
+plaintext = [u8 type][u8 flags: bit 0 = more follows][u32 total length, first fragment only] ‖ bytes
+</pre>
+  <ul>
+    <li>The repeated length is there for accidents: a flipped bit in a bare length leaves the reader waiting for bytes that never come, which this project has already met once. A deliberate change is caught by the seal, and can do no more than stall a connection, which someone on the path can do anyway.</li>
+    <li><strong>Large messages are fragmented</strong> (a manifest can be hundreds of megabytes; a Noise message cannot exceed 65,535 bytes). Fragments of one message are consecutive and in order; nothing else may come between them. Noise's own counter makes dropping or reordering one a failure to open.</li>
+    <li>Reassembly limits: one fragment (no reassembly at all) for anything before the receiver's person has accepted the drop; after, <code>manifest</code> and <code>plan</code> only, within the bounds under Admission and never more than 512 MB.</li>
+    <li>A control key seals at most 2<sup>24</sup> messages. A session that would exceed that reconnects, which gives the control channel new keys.</li>
+  </ul>
+
+  <h3>Pairing</h3>
+  <p>Runs inside the Noise channel, between the two static keys being paired. Used for a first pairing, a renewal, a replacement and a pairing again after a reset: there is one procedure.</p>
+<pre class="spec">
+S → R   pair-request {}                    R's person is asked. Nothing below exists until they choose "Pair…"
+R → S   pair-go {}
+S → R   commit  = SHA-256("nimbus-drop pair commit v1" ‖ h ‖ Ns)        Ns: 32 random bytes
+R → S   Nr                                                               Nr: 32 random bytes, made after commit arrives
+S → R   Ns                                 R checks it against commit; a mismatch ends the pairing
+
+codes   = KDF(Ns ‖ Nr, "nimbus-drop pair codes v1" ‖ h, 16)
+code_R  = (first 8 bytes as u64) mod 1,000,000      shown on R, typed on S
+code_S  = (last 8 bytes as u64)  mod 1,000,000      shown on S, typed on R
+
+each side: its person types the other's code; the app compares it with its own computation
+           right  → send paired {}                  wrong → count it; a third ends the pairing with pair-failed {}
+each side: stores the pairing when it has BOTH its own person's right code AND the other's paired {}
+</pre>
+  <p><strong>The transaction.</strong> A pairing is one transaction and every part of it is fixed once set: one connection and its <code>h</code>, one purpose, one <code>commit</code>, one <code>Nr</code>, one <code>Ns</code>, one pair of codes, one deadline, one window on screen, one key to be stored, and (where asked) one answer to "replaces or another Mac".</p>
+  <ul>
+    <li>Each message is accepted exactly once and only in the order shown. A second <code>commit</code>, <code>Nr</code> or <code>Ns</code>, a message out of order, a message of any other type, or anything after <code>pair-failed</code> ends the transaction and the connection. There is no restart within a connection.</li>
+    <li>The codes are computed once, when the third value arrives, and never recomputed. The typing retries compare against those same codes. (An implementation that took a second <code>Nr</code> after <code>Ns</code> was revealed would let the other side search for a code of its choosing; that is the mistake this rule exists to prevent.)</li>
+    <li>A click or a typed code is acted on only if it comes from the window of the current transaction. Windows of ended transactions are closed, and a late event from one is dropped.</li>
+    <li>What is stored is the static key of this connection's handshake and the answers given in this transaction, nothing looked up again later.</li>
+    <li>A pending drop is never accepted by a pairing completing. Pairing ends, then the offer is made, then the person is asked.</li>
+  </ul>
+  <ul>
+    <li><strong>Why hearing the codes does not help.</strong> Someone in the middle holds two different Noise sessions with two different <code>h</code>. To pass, the codes of the two sessions must be equal. In each session the attacker must fix its own random value before it learns the honest side's (the sender's is hidden inside the commitment; the receiver's is not made until the commitment has arrived), so it cannot steer either code, and cannot try again within a session. Its chance is one in a million against each Mac, and since each Mac decides independently the chance that at least one of the two stores the attacker's key is about two in a million per pairing. Two six-digit codes do not add up to a twelve-digit check. The codes are computed from values the attacker already sees; saying them aloud tells it nothing new.</li>
+    <li><strong>Why two codes.</strong> Each Mac must learn from its own person that the codes agree. A message from the other Mac saying "it matched" could be written by the attacker. With one typed code, the Mac that only displayed it would have nothing but that message.</li>
+    <li><strong>An attacker cannot make attempts by itself.</strong> Every pairing needs a person at each Mac to choose to pair and to type a code read out by a voice they know. Draft 2 let a stranger's connection start a code and spend guesses with nobody present.</li>
+    <li><strong>One pairing at a time</strong> on each Mac, in either role. A request arriving meanwhile is answered <code>busy</code>. If two Macs ask each other at the same moment, the request from the lower static public key proceeds and the other is withdrawn.</li>
+    <li><strong>Requests are rationed.</strong> One request panel on screen at a time, across all addresses. After "Not expecting this", a failed pairing, or a request abandoned by the other side, no new request is shown for 10 seconds, doubling each time up to 10 minutes, and resetting after a success. Every refusal, failure and abandonment is logged, counted and listed in Known Macs. Settings can turn requests off entirely, so that pairing starts only from this Mac.</li>
+    <li>Codes last 120 seconds from display and die with their connection. They are never logged.</li>
+    <li>A wrong entry by an honest person is a typing slip, so two retries are allowed; they are retries of typing, not new chances for an attacker, whose one chance was fixed when the values were exchanged.</li>
+    <li>If the last <code>paired {}</code> is lost, one Mac has stored the pairing and the other has not. The next handshake shows it (<code>paired: yes</code> against <code>no</code>) and pairing runs again. Nothing is sent on a one-sided pairing.</li>
+    <li><strong>By identity number:</strong> purpose <code>verify</code>. The person enters the other Mac's 30 digits; the app compares them with the number of the key just proved, and on a match sends <code>paired {}</code>. The same rule applies: stored only when both sides have done it. Three wrong entries end it.</li>
+    <li><strong>Replacement or another Mac.</strong> When the new key's name folds to that of a Known Mac, each person is asked which it is before the codes (screen 5). "Replaces" moves the old key to the retired list when the pairing is stored.</li>
+  </ul>
+  <div class="note warn">
+    <strong>Changed from draft 2, which had the receiver invent a code that the sender typed into a password-authenticated key exchange (CPace).</strong> That protects only while the code is secret, and this plan reads it aloud in a room that may hold the attacker. The review showed a man in the middle within earshot pairing with both Macs and leaving no trace. <strong>Still rejected: codes from a hash of the keys with no commitment</strong> (the side that speaks last can search for a match), and <strong>a code used as a Noise pre-shared key</strong> (testable offline).
+  </div>
+
+  <h3>Key expiry</h3>
+  <ul>
+    <li><strong>Every key has an end.</strong> A key ends its lifetime after it was made. The lifetime is this Mac's setting: 90 days by default, or 30 days, 1 week, 1 day or 1 hour. There is no setting for "never" (decision D8).</li>
+    <li><strong>The end date is stated, and capped.</strong> Each side sends <code>key ends</code> in the encrypted hello, so it is vouched for by the key it describes. At pairing the other Mac records the earlier of that date and 90 days from now. A modified copy cannot claim a longer life than that, and a recorded date is never moved later.</li>
+    <li><strong>A pairing lasts until either key ends.</strong> There is no separate clock for pairings.</li>
+    <li><strong>After its end date a key is refused</strong> by every Mac that recorded one for it, exactly like a retired key, and cannot be paired again; the record of it is kept as a tombstone when the rest of its entry is dropped. The Mac that owned it has destroyed it by then: at the end date (or at the next launch after it) the app makes a new key, marks each of its Known Macs "renew" (keeping your name for it and its key, so that a later renewal can say it is the same Mac), and destroys the old key. Nothing is shown and nobody is asked: a marked Mac is renewed if and when a drop to or from it is next wanted, and its entry is dropped when its own key's end date passes unused. A drop in progress keeps its session, within the limit below.</li>
+    <li><strong>Why this and not expiring pairings</strong> (draft 4 did that). Renewing a pairing with the same key renews trust in every copy of that key, a thief's included. Replacing the key is what ends an unnoticed copy. It also needs no message at the moment of change: both sides already know the date.</li>
+    <li><strong>Telling a scheduled change from a surprise.</strong> An unknown key whose name folds to a Known Mac's is "expected" if that Mac's recorded end date has passed, and gets the wording of screen 10. Before that date it gets the full stop of screen 5. Both lead to the same codes; the wording grants nothing.</li>
+    <li><strong>Renewal recognises what it can.</strong> The Mac whose key was replaced still holds the other's key in its marked entry. If the other Mac proves that same key, the renewal says "the same Mac you paired with before".</li>
+    <li><strong>How time is counted.</strong> An end date is turned into a deadline in elapsed time when it is recorded, and a key is refused when <em>either</em> the elapsed time is used up <em>or</em> the calendar says the date has passed, whichever comes first.
+      <ul>
+        <li><em>While the Mac is up,</em> elapsed time comes from the system's continuous clock, which runs through sleep and cannot be set. The trust file records, at each write and at least hourly, the boot session, the continuous time and the calendar time.</li>
+        <li><em>Same boot session at the next launch:</em> the continuous clock gives the time since the last record exactly, whether or not the app was running.</li>
+        <li><em>After a reboot:</em> elapsed time is advanced by the larger of the time since boot and the calendar time since the last record, never by less than zero.</li>
+        <li>So a calendar clock that is held still or set back, by a forged time server or otherwise, does not stop a deadline from arriving: every second the Mac is on is counted regardless. A clock set forward ends keys early, which costs a renewal.</li>
+        <li><strong>Stated limit:</strong> time the Mac spends switched off is known only from the calendar. Someone who controls its clock across every period it is off can keep that off-time from being counted. They cannot stop the counting of time it is on.</li>
+      </ul></li>
+    <li><strong>What the limit of 90 days is measured from.</strong> Each Mac caps a key at 90 days from when it first trusted it. That is not the key's true age, which the Mac has no way to check: a thief presenting a copied key to a Mac that never knew it gets a fresh 90 days there, after a pairing with two people and codes. A deadline already recorded is never moved later.</li>
+    <li><strong>Sessions end too.</strong> Expiry stops new drops at once. A session already authenticated may continue past its key's end by at most the shorter of 24 hours and that key's lifetime (so one hour for a one-hour key), then it is ended whatever its progress. Reset, retirement and Forget end sessions immediately instead (below).</li>
+    <li>The identity number and the key tag change with the key. An identity number is shown with the date it is good until.</li>
+    <li>With a one-hour lifetime nearly every drop begins with a pairing. That is the intended behaviour of that setting.</li>
+  </ul>
+
+  <h3>Data connections</h3>
+<pre class="spec">
+master       = third output of the Split HKDF                       secret; one per drop, never replaced
+session_id   = KDF(master, "nimbus-drop session id v1", 16)         public
+attach_key   = KDF(master, "nimbus-drop attach v1", 32)
+resume_key   = KDF(master, "nimbus-drop resume v1", 32)
+stream_key   = KDF(master, "nimbus-drop stream v1" ‖ conn (u64), 32)
+
+conn         = a number the sender takes from one counter for the whole drop, starting at 1,
+               for every data connection it ever opens. Never reused, whatever happened to earlier ones.
+
+receiver →   challenge: 16 random bytes, sent as soon as "NDATA" is read
+attach       = session_id ‖ conn (u64) ‖ HMAC-SHA-256(attach_key, session_id ‖ conn ‖ challenge), first 16 bytes
+record       = seal(header, counter n) ‖ seal(chunk, counter n+1, aad = header)
+header       = file index (u32) ‖ chunk index (u32) ‖ length (u32)          28 bytes sealed
+nonce        = 0x00000000 ‖ counter (u64); the counter starts at 0 on each connection and only rises
+end marker   = a sealed header with file index 0xFFFFFFFF, chunk index 0 and length 0, and no chunk;
+               nothing may follow it on the connection
+</pre>
+  <ul>
+    <li><strong>No key and nonce pair can repeat.</strong> A key belongs to one <code>conn</code>, and a <code>conn</code> is used once. A connection replacing one that failed gets a new number and so a new key; draft 2 keyed by round and slot, and a replacement in the same slot would have started the same key again at zero.</li>
+    <li><strong>The attach answers a challenge and is checked before anything is read or set aside.</strong> Because the tag covers 16 bytes the receiver has just made for this socket, a recorded attach is useless on any other socket, and the first connection to present a number is one that holds the key now. A wrong tag, an unknown session or a <code>conn</code> already claimed closes the connection; claiming a number is a single atomic step. Someone on the path can still delay or relay a connection, as they can any traffic; they cannot attach one of their own.</li>
+    <li><strong>The header is sealed too, and opened before the chunk is read.</strong> An observer cannot see which file a record belongs to or where files begin and end, and a damaged length is caught at once instead of leaving the reader waiting.</li>
+    <li>A record must name an ordinary file of the manifest and a chunk that file has, and its length must equal exactly what the manifest implies for that chunk (the chunk size, or the remainder for a file's last chunk), as the receiver requires today. Anything else is a failed record. File and chunk counts must fit their fields, and are checked when the manifest is validated.</li>
+    <li><strong>A record that fails to open is a damaged chunk, as today:</strong> that connection is closed, the chunk is asked for again, the failure is counted and logged as a warning, and the drop's summary reports the count. It never ends the drop by itself. Draft 2 ended a drop after three, which let anyone who had seen one session id stop a drop with three junk connections, and would have stopped the project's own chaos runs. A drop that makes no progress still ends by the existing rules.</li>
+    <li><strong>A stream key has a budget:</strong> at most 2<sup>38</sup> bytes (256 GiB) and at most 2<sup>24</sup> seals, counting header and chunk seals separately. Before either would be passed the sender ends the connection with the end marker and opens another under the next number. Both figures are far inside the cipher's limits (Noise advises staying under 2<sup>56</sup> bytes per key). Counters are checked arithmetic; a counter that would pass its limit closes the connection and is never wrapped.</li>
+    <li><strong>Opened bytes stay private until they are proved.</strong> A chunk is opened into a buffer nothing else can see, and only a chunk that opened is written or counted, whatever the decryption call leaves behind on failure.</li>
+    <li>The record format needs no lock shared between connections: each has its own key and counter.</li>
+  </ul>
+
+  <h3>Reconnecting and resuming</h3>
+  <ul>
+    <li><strong>Reconnect within a drop</strong> (the 60-second window): a new connection and a new Noise XX handshake, purpose <code>resume</code>, which must prove the same static keys as before. Then <code>resume {session_id, HMAC(resume_key, "resume" ‖ new h)}</code>, answered with <code>resumed {HMAC(resume_key, "resumed" ‖ new h)}</code> and the plan.</li>
+    <li><strong>The new handshake keys the control channel only.</strong> The master, the session id and the connection counter carry on unchanged, so data connections that outlived the control connection (this project has seen 5 GB cross that way) keep working, and a replacement opened during the reconnect uses the next number like any other.</li>
+    <li><strong>How long keys live.</strong> The sender wipes everything when the drop ends. The receiver wipes the master and every stream key when the drop ends, and keeps only <code>resume_key</code> and the answer for the five minutes in which a sender that missed "complete" may ask again.</li>
+    <li><strong>Resume after a failure</strong> (sending the same drop again later): a normal new drop with new keys. The partial folder's name is derived from the sender's static key and the manifest, so only the same paired Mac can continue it.</li>
+  </ul>
+
+  <h3>Withdrawing trust: retire, replace, forget, reset</h3>
+  <p>Whenever a key stops being trusted on this Mac for any reason but its scheduled end, these steps happen in this order, and the change counts as made only when all have:</p>
+  <ol>
+    <li>The trust file is rewritten with the key retired (or forgotten) and the write has reached the disk.</li>
+    <li>No new handshake, offer, pairing or attach is accepted from the key.</li>
+    <li>Every pairing in progress and every offer from it waiting for an answer is cancelled and its window closed. An answer clicked after this point is dropped.</li>
+    <li>Every session it authenticated is ended: control and data connections closed, and the master, attach, resume and stream keys wiped, including the resume key kept for five minutes after a finished drop.</li>
+    <li>A drop being written is stopped before its files are put in place. Its partial folder remains for a later, properly paired resume. Files already delivered stay delivered; nothing can undo that.</li>
+    <li>Only then is <code>retired {}</code> sent, where a notice asked for it, and that connection closed.</li>
+  </ol>
+  <p>This applies when a notice arrives, when the person chooses "It Replaces…" or Forget, and to every Known Mac when this Mac resets its own identity. Scheduled expiry is different on purpose: there the session may run on for its bounded grace.</p>
+  <ul>
+    <li><strong>The retire notice.</strong> On a reset, before the old static key is destroyed, this Mac opens a handshake (purpose <code>retire</code>) with each paired Mac it can find, proving the old key, and sends <code>retire {}</code>. It waits for <code>retired {}</code> and records that the Mac was told. It tries for at most 10 seconds in all, then destroys the old key whatever the outcome. There is no later retry: the key that could prove the notice no longer exists.</li>
+    <li><strong>A notice touches one entry.</strong> It is accepted only from a key that is paired, over a session that key has just proved, and it retires that key and nothing else. Nobody can retire a key they do not hold, and no notice can affect another Mac's pairing.</li>
+    <li><strong>The notice names no successor.</strong> The new identity is never vouched for by the old one, which may be in someone else's hands. It earns trust the only way any does: the codes, or the identity numbers.</li>
+    <li><strong>A thief can send the notice too.</strong> All that achieves is that the pairing goes on hold and two people pair again, which is the right outcome when a key has been copied, and less than the thief could do by using the key.</li>
+    <li><strong>The retired list.</strong> Each Mac keeps the public keys it has retired: those named in a notice, and those replaced through "It Replaces…". Each entry holds the key, the name it was known by, the date and the reason. It outlives Forget.</li>
+    <li><strong>A retired key is refused, not New.</strong> A handshake that proves a retired key is ended at that point. No request is shown and no pairing is possible. It is counted and logged in summary. The person is told at most once a day per retired key and three times a day in all, in a notice that does not take the keyboard; further attempts only add to the count. The notice gives the address and says that the name is what that Mac claimed, unverified.</li>
+    <li><strong>The pair-again list.</strong> The resetting Mac moves every Known Mac to it: your name for it, its public key, and whether the notice was acknowledged. Nothing on the list is trusted. When one is paired again, the key it proves is compared with the one recorded: the same key is ticked off as "same Mac as before"; a different one is paired too (the codes are what count) and the list says its identity is also new.</li>
+    <li><strong>What remains open, and for how long:</strong> a Mac that was not reached trusts the old key until it is paired again or the old key reaches the end date that Mac recorded, 90 days at most from when the key was made. The list shows it in red with that date.</li>
+  </ul>
+
+  <h3>Without the internet</h3>
+  <p>A requirement (owner, 23 Nov): the system must work on a LAN with no internet access at all. What that rules in and out:</p>
+  <ul>
+    <li><strong>Time.</strong> No trusted time source may be assumed, which is why expiry counts elapsed time on the Mac's own continuous clock and treats the calendar only as a second way for a key to end sooner. Two Macs whose calendars disagree still agree closely enough: each counts its own deadline. A Mac whose calendar is far ahead ends keys early and says why.</li>
+    <li><strong>Keys.</strong> Made, stored and checked locally. The Secure Enclave needs no network. There is no revocation list to fetch; retirement travels from Mac to Mac on the LAN.</li>
+    <li><strong>Code.</strong> No cryptographic or other component is downloaded at run time. The app is notarised with its ticket stapled, so macOS can check it on first launch with no connection.</li>
+    <li><strong>Updates.</strong> The daily check simply fails without a route and says nothing. An air-gapped Mac is updated by carrying the disk image to it. Since protocol versions must match to exchange drops, the Macs of an air-gapped LAN are updated together.</li>
+    <li><strong>Discovery.</strong> Bonjour is link-local and needs no DNS server. Add by Address covers a LAN where multicast is filtered.</li>
+    <li><strong>Tested as such.</strong> Phase 4's acceptance run is repeated with both Macs' internet access cut and their time servers unreachable.</li>
+  </ul>
+
+  <h3>The command line</h3>
+  <ul>
+    <li><code>--receive</code> takes offers only from paired keys and <strong>asks in the terminal for each drop</strong>, showing what the app's panel shows; no answer is a refusal. It keeps the local-network rule. <code>--pair</code> runs a pairing in the terminal: it prints this side's code and reads the other's from standard input. <code>--identity</code> prints the identity number and the key tag; <code>--known</code> lists pairings.</li>
+    <li><strong>Unattended receiving is a separate, explicit grant</strong> (the tests between two Macs need it): <code>--receive DIR --unattended-from &lt;key tag&gt; [--max-bytes N]</code>. It accepts without asking only from the one paired key named, only into that folder, one drop at a time, up to the byte limit (default 100 GB), for as long as the process runs and that key lasts. It cannot be combined with <code>--any-network</code>, is announced on the terminal when it starts, and has no equivalent in the app (decision D6). 0.2's "accept everything" is gone.</li>
+    <li>There is no flag that accepts unpaired drops, and completing a pairing never accepts a drop that was waiting. The tests build sessions from identities held in memory.</li>
+  </ul>
+
+  <h3>What is stored, and what is not</h3>
+  <ul>
+    <li>Stored: the device file and the trust file (the identity and the Known Macs store (with the retired list and, after a reset, the pair-again list)), history (file names and peers, as today), the debug log.</li>
+    <li>Never stored or logged: pairing codes, the random values behind them, session keys, the Noise chaining key. Logs use key tags.</li>
+    <li>Received data is written as plain files, as it must be.</li>
+    <li><strong>What integrity covers.</strong> Encryption proves each chunk as it arrives. It does not prove bytes already sitting in a partial folder when a drop resumes: those are taken on the ledger's word and the file's length, as today, and the ledger does not survive a power cut. A resumed drop is therefore as trustworthy as this Mac's own disk between the two attempts. Proving it end to end would need a digest of every file, which is a pass over the data on each side; that is left for a later decision and measured before it is taken.</li>
+  </ul>
+
+  <h3>What stays visible on the network</h3>
+  <p>The Bonjour record (a host name, and that Nimbus Drop runs), the two addresses, how many connections a drop uses, how many bytes each carries, and timing. Nothing is padded. Where one file ends and the next begins is no longer marked, but volume and timing still allow inference: a drop of one file shows roughly that file's size, and many small files look different from one large one. Anyone can also learn which key answers at an address by probing it, so a Mac can be followed from network to network by someone who looks. Hiding either is a different project.</p>
+</section>
+
+<section id="properties">
+  <h2>Security properties claimed</h2>
+  <p>Each is a claim a reviewer can try to break and a test can try to hold. Restated after each review. The first rated P4, P7, P10 and P11 of draft 2 as not achieved; the second gave a counterexample to P16 of draft 5 and asked for P1, P4, P9, P11, P12 and P14 to be narrowed to what is actually guaranteed.</p>
+  <div>
+    <div class="prop"><span class="k">P1</span><div><strong>Confidentiality.</strong> File names, the folder tree and file contents are encrypted. Someone who sees all traffic of a drop sees the total volume, the number of connections and the timing, and may infer from those: nothing is padded.</div></div>
+    <div class="prop"><span class="k">P2</span><div><strong>Integrity.</strong> Any change to any byte in transit is detected before that byte is written to disk: a chunk is opened whole, then written.</div></div>
+    <div class="prop"><span class="k">P3</span><div><strong>Peer authentication.</strong> A drop completes only between the two static keys that were paired. No third key can take either role.</div></div>
+    <div class="prop"><span class="k">P4</span><div><strong>Pairing soundness.</strong> Against an attacker who controls the network and hears everything said, a Mac stores a pairing with a key other than the one its person meant with probability at most 1 in 1,000,000 per pairing carried out; for at least one of the two Macs, about 2 in 1,000,000. A pairing is carried out only when a person at each Mac chose to pair and typed a code. The attacker cannot start one, repeat one or test anything offline. This holds for the exact-once transaction as specified and for no looser one.</div></div>
+    <div class="prop"><span class="k">P5</span><div><strong>Forward secrecy.</strong> Compromise of both static keys after a drop does not reveal that drop.</div></div>
+    <div class="prop"><span class="k">P6</span><div><strong>No impersonation by key theft of the victim.</strong> Stealing Mac A's static key does not let an attacker pose as B to A.</div></div>
+    <div class="prop"><span class="k">P7</span><div><strong>A known key is never displaced.</strong> A paired entry's key is replaced only by a completed pairing in which this Mac's person chose "replaces". Nothing another key announces or sends changes whether a paired key can exchange drops, or where its tile points.</div></div>
+    <div class="prop"><span class="k">P8</span><div><strong>No downgrade.</strong> Two protocol 3 Macs never exchange a drop unencrypted. When later majors exist, two Macs that both support one never complete a handshake on an earlier one because of anything changed in transit.</div></div>
+    <div class="prop"><span class="k">P9</span><div><strong>Nothing before proof.</strong> A sender aiming at a Mac it knows reveals nothing about itself or the drop, its own key included, until the receiver has proved the expected key. In a first pairing the initiator's key is necessarily shown before any person has verified anything, and any Mac shows its key to whoever probes it. A receiver shows nothing from an unpaired key but a rationed request to pair.</div></div>
+    <div class="prop"><span class="k">P10</span><div><strong>No nonce reuse.</strong> No key ever seals two different things with the same nonce. This follows from one counter per drop for connection numbers and one counter per connection for records, and from nothing else.</div></div>
+    <div class="prop"><span class="k">P11</span><div><strong>Session binding.</strong> Only a holder of the session's keys at that moment can attach a data connection or resume a control connection; each connection number is claimed once; anyone else is turned away before a byte is buffered and cannot end the drop. Someone on the path can delay or relay, as with any traffic.</div></div>
+    <div class="prop"><span class="k">P12</span><div><strong>Trust cannot be made or moved by copying files.</strong> The stored trust file opens only on the hardware that made it, and an edited one does not open. Not claimed: protection of the key in the running app's memory from software running as you, or detection of an older copy put back on the same Mac.</div></div>
+    <div class="prop"><span class="k">P13</span><div><strong>0.2.2's defences are unchanged, and limits follow authorisation.</strong> Confined writes, offer and manifest agreement, quarantine and the local-network rule hold for paired Macs too. Every connection is held to the budget of its class (Admission); completing a handshake with a key nobody paired raises no limit.</div></div>
+    <div class="prop"><span class="k">P14</span><div><strong>A retired identity is never trusted again.</strong> Once a Mac has durably retired a key, no handshake with that key as recorded leads to a drop, a request on screen or a pairing; sessions it had are ended and offers it had waiting are cancelled before the retirement is acknowledged. Forgetting the Mac does not undo this. Subject to the stated limits: an older trust file put back, a trust file lost to damage with the person's explicit consent, and equivalent encodings, which count as unknown keys.</div></div>
+    <div class="prop"><span class="k">P15</span><div><strong>A reset transfers no trust and harms no one else.</strong> Nothing sent with an old identity can make another Mac trust a new one, and a retire notice affects only the entry of the key that proved it.</div></div>
+    <div class="prop"><span class="k">P16</span><div><strong>No key is for ever.</strong> No Mac begins a drop or a pairing with a key after the deadline it recorded for it: at most 90 days of elapsed time from when that Mac first trusted the key, counted while the Mac is on whatever its calendar clock is told, and never extended by use or by anything the key's holder says. A session already running ends within the stated grace. Not claimed: the key's true age, or the counting of time a Mac spends switched off under someone who controls its clock.</div></div>
+    <div class="prop"><span class="k">P17</span><div><strong>People are not asked by machines alone.</strong> A stranger on the network can put at most one request to pair on screen at a time, at a rate that falls with each refusal, and can cause no other panel.</div></div>
+    <div class="prop"><span class="k">P18</span><div><strong>Withdrawn trust is withdrawn everywhere at once.</strong> After a retirement, replacement, Forget or Reset is reported as done, nothing authenticated earlier under the withdrawn key can still deliver, accept, attach or resume.</div></div>
+    <div class="prop"><span class="k">P19</span><div><strong>Nothing depends on the internet.</strong> Pairing, drops, expiry, reset and recovery work identically on a network with no route out and no time server. The only outside contact is the update check, which is optional and whose failure changes nothing.</div></div>
+  </div>
+</section>
+
+<section id="speed">
+  <h2>Speed: the constraint everything else answers to</h2>
+  <p>Measured on both Macs, single core, sealing 4 MiB chunks with the system's own crypto library. One scale, in gigabits per second, with the 10 GbE line drawn in.</p>
+  <div class="bars" role="img" aria-label="Throughput in gigabits per second against the 10 gigabit Ethernet target">
+    <div class="bar"><span class="name">AES-GCM, MacBook Pro</span><div class="track"><div class="fill" style="width:93.6%"></div></div><span class="v">74.9</span></div>
+    <div class="bar"><span class="name">AES-GCM, MacBook Air</span><div class="track"><div class="fill" style="width:68.6%"></div></div><span class="v">54.9</span></div>
+    <div class="bar"><span class="name">Engine today, loopback</span><div class="track"><div class="fill now" style="width:32%"></div></div><span class="v">25.6</span></div>
+    <div class="bar"><span class="name">ChaCha20-Poly1305</span><div class="track"><div class="fill slow" style="width:10.4%"></div></div><span class="v">8.3</span></div>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Measured 22 Nov 2026</th><th>MacBook Pro (M4 Max)</th><th>MacBook Air (M4)</th></tr></thead>
+    <tbody>
+      <tr><td>AES-256-GCM seal, 1 core</td><td class="num">9.36 GB/s</td><td class="num">6.86 GB/s</td></tr>
+      <tr><td>AES-256-GCM open (verify and decrypt), 1 core</td><td class="num">9.82 GB/s</td><td class="num">8.22 GB/s</td></tr>
+      <tr><td>AES-256-GCM seal, 8 threads</td><td class="num">64.2 GB/s</td><td class="num">21.3 GB/s</td></tr>
+      <tr><td>ChaCha20-Poly1305, 1 core</td><td class="num">1.03 GB/s</td><td class="num">0.97 GB/s</td></tr>
+      <tr><td>CRC-32 (what 0.2 computes), 1 core</td><td class="num">47.7 GB/s</td><td class="num">20.3 GB/s</td></tr>
+      <tr><td>Key agreement (two key pairs and one agreement)</td><td class="num">43 µs</td><td class="num">45 µs</td></tr>
+    </tbody>
+  </table></div>
+  <ul>
+    <li><strong>AES-GCM is the cipher.</strong> Apple silicon accelerates it in hardware. ChaCha20, the usual choice in Signal and WireGuard, would need more than one core just to reach 10 GbE here.</li>
+    <li><strong>The cost at 10 GbE is small:</strong> about 15% of one core per side, spread over 8 connections. The slower Mac has more than five times the headroom needed on a single core.</li>
+    <li><strong>The real limits are unchanged:</strong> reading from and writing to disk, and the copies between. The seal replaces the CRC pass, but where the CRC only read the chunk, sealing also writes it out, so it costs a pass over memory. CryptoKit's in-place seal and open exist only from macOS 27 (checked in the installed SDK); on macOS 15, our minimum, sealing returns a new buffer. The figures above were measured with that allocating call and are already several times what is needed, so no rule about allocation is imposed: the first task of Phase 3 is to measure the macOS 15 path inside the real pipeline, use the in-place calls where the system has them, and accept a copy wherever the gate still holds. Meeting the gate is never a reason to write our own GCM or to use a private API.</li>
+    <li><strong>The handshake costs nothing that shows:</strong> under a millisecond per drop, and about 5 ms once per launch to open the identity.</li>
+  </ul>
+  <div class="note">
+    <strong>Not yet measured, and it must be:</strong> the engine has never run on a real link faster than gigabit. The 25.6 Gbit/s figure is loopback, one Mac doing both jobs. Both Macs have Thunderbolt, and a Thunderbolt cable between them is a network link well above 10 Gbit/s. That is the test rig, with nothing to buy. Phase 0 measures the current engine on it, before any cryptography, so the starting point is known.
+  </div>
+  <p><strong>The gate,</strong> in file bytes delivered (goodput), over the whole path from one disk to the other, not the cipher alone. A 10 Gbit/s link cannot carry 10 Gbit/s of file bytes once packet headers are paid for: with standard frames the ceiling is about 9.4. So: (1) on the same link at the same commit, an encrypted drop delivers at least 95% of what an unencrypted build of the same engine delivers; and (2) on a link held to 10 Gbit/s, an encrypted drop delivers at least 9.0 Gbit/s of file bytes. The figure on the open Thunderbolt link, where memory is the limit, is recorded for each phase but does not gate it.</p>
+</section>
+
+<section id="antifragile">
+  <h2>Anti-fragile: built so that trouble makes it stronger</h2>
+  <p>The project already works this way: a pulled cable became a chaos test, and the security review became fifteen attack tests. The plan extends that to cryptography, where failures are quieter.</p>
+  <ul>
+    <li><strong>Fail closed, never fall back.</strong> No plain mode, no negotiation. The only answer to trouble is to stop and say so.</li>
+    <li><strong>Misuse ruled out by structure.</strong> One small component hands out keys and counters and cannot issue the same pair twice. No other code touches a key.</li>
+    <li><strong>An attacker in the test suite.</strong> The chaos proxy learns to be an active man in the middle: substitute keys, run the pairing from the middle with both codes known, replay and reorder records, replay whole connections, race an observed attach, send each pairing message twice and out of order, flood with completed handshakes from fresh keys, retire a key mid-drop, splice one drop's connections into another, strip or truncate the handshake, replay a pairing, flip bits. Every case must end in a clean refusal with the right message.</li>
+    <li><strong>Known answers.</strong> The handshake is checked against published Noise test vectors. Everything of our own (the master, every derived key, records, both pairing codes, the attach and resume proofs, the identity number) is checked against vectors produced by a second implementation written independently of the app's, in another language, so "it talks to itself" is never mistaken for "it is correct".</li>
+    <li><strong>Every finding becomes a test first.</strong> Reproduce it, watch the test fail, fix it, keep the test, and check the test fails again with the fix removed.</li>
+    <li><strong>Attacks are noticed and counted.</strong> A failed proof, a wrong code, a refused request to pair, a retired key, a record that will not open: each is logged at warning or error level, shown in Internals, and kept in Known Macs against the name involved. A Mac under attack looks different from one that is not.</li>
+    <li><strong>Time and storage are attacked too.</strong> Tests run expiry against a frozen clock, repeated rollback, sleep, restart, reboot and forward jumps, and kill the process at every step of every write to the trust file.</li>
+    <li><strong>Recovery is a designed path.</strong> Reset identity, forget a Mac, pair again, renew after a key ends. None needs a support call or a file edited by hand.</li>
+    <li><strong>Layers stay.</strong> Everything 0.2.2 added applies to paired Macs. Encryption protects the wire; it does not vouch for the other end.</li>
+    <li><strong>Small surface.</strong> Standard methods in a composition of our own, small enough to specify byte for byte. The primitives come from the operating system. Noise is implemented here because it is a few hundred lines over those primitives, with public vectors; that is a judgement about audit burden, not a rule, and a mature Noise library is the fallback if review of ours finds reason.</li>
+  </ul>
+</section>
+
+<section id="phases">
+  <h2>Phases</h2>
+  <div>
+    <div class="phase"><span class="k">Phase 0</span><div><h3>Measure before changing anything</h3>
+      <p>Thunderbolt link between the two Macs. Current engine, large files and many small ones. Find where it tops out and why.</p>
+      <p class="exit">Done when: there is a written baseline above 10 Gbit/s, or we know what stops us.</p></div></div>
+    <div class="phase"><span class="k">Phase 1</span><div><h3>Independent review of this plan</h3>
+      <p>Two reviews done, on 22 and 23 Nov 2026, by different models, and answered in this draft (see the review record). The second asked that the next review be given a normative byte-level specification, independent vectors and an implementation with adversarial tests, so the next one comes after Phase 3, not before it. </p>
+      <p class="exit">Done when: every finding of both reviews is answered in the plan, by a change or a stated limit. (Now.)</p></div></div>
+    <div class="phase"><span class="k">Phase 2</span><div><h3>Identity, with no change on the wire</h3>
+      <p>The byte-level specification as a document of its own, with vectors from a second implementation. Then key generation and the Secure Enclave wrap, the trust file with its recovery cases and crash tests, elapsed-time expiry, identity numbers, key tags in Internals. Can ship in a 0.2.x release.</p>
+      <p class="exit">Done when: each Mac accepts the other's identity number, and the identity file copied to the other Mac will not open.</p></div></div>
+    <div class="phase"><span class="k">Phase 3</span><div><h3>Protocol 3: the encrypted channel</h3>
+      <p>The opening, handshake, probing, sealed and fragmented control messages, sealed records, per-connection keys, reconnect. The man-in-the-middle tests are written alongside.</p>
+      <p class="exit">Done when: test vectors pass, every attack test refuses cleanly, the speed gate holds.</p></div></div>
+    <div class="phase"><span class="k">Phase 4</span><div><h3>Pairing and the interface</h3>
+      <p>The two codes, the states, the familiar-name stop, Known Macs, key expiry and renewal, reset and retirement, the command line.</p>
+      <p class="exit">Done when: you and one other person pair two Macs with no instructions, a staged impostor with a familiar name stops you both, a man in the middle who is told both codes fails, and all of it works again with the internet and the time servers cut off.</p></div></div>
+    <div class="phase"><span class="k">Phase 5</span><div><h3>Second review, then release 0.3</h3>
+      <p>Review of the code against the specification, with the vectors and the adversarial tests in hand. Fuzzing of the handshake, fragmentation and pairing parsers. Migration notes.</p>
+      <p class="exit">Done when: the findings are tests, and all are green.</p></div></div>
+  </div>
+</section>
+
+<section id="decisions">
+  <h2>Decisions</h2>
+  <p>Three are settled. The rest carry my recommendation and are yours to change.</p>
+
+  <div class="decision"><span class="id">D1</span><h3>How is the code used? <span class="pill good">decided 22 Nov</span></h3>
+    <p>Draft 2 recommended one secret code typed into a password-authenticated exchange. The review showed that fails when the attacker can hear, which in one room is the normal case.</p>
+    <div class="rec"><b>Decided:</b> two codes derived from the connection behind a commitment, each read aloud and typed on the other Mac. Nothing depends on the codes being secret, nothing can be clicked through, and no outside library is needed.</div></div>
+
+  <div class="decision"><span class="id">D2</span><h3>Where does the identity key live?</h3>
+    <p>The Keychain properties draft 2 relied on need a provisioning profile and are unavailable to the command line, the tests and ssh sessions (tested on both Macs). A plain file would migrate to a new Mac and give two Macs one identity.</p>
+    <div class="rec"><b>Recommend:</b> a file that only this Mac's Secure Enclave can open, as specified. Device-bound by hardware, no entitlement, identical for app and command line. The alternative is to add a provisioning profile to the build and keep a separate, weaker store for the command line.</div></div>
+
+  <div class="decision"><span class="id">D3</span><h3>Is there any drop without pairing?</h3>
+    <div class="rec"><b>Recommend:</b> no. Pairing takes half a minute, the people can hear each other, and it removes a whole state from the design.</div></div>
+
+  <div class="decision"><span class="id">D4</span><h3>What happens to 0.2 Macs? <span class="pill good">decided 22 Nov</span></h3>
+    <div class="rec"><b>Decided:</b> nothing. Protocol 2 is not honoured in any way; it runs on four Macs you control and they will be updated together. Protocol 3 does not read, answer or recognise it.</div></div>
+
+  <div class="decision"><span class="id">D5</span><h3>May an unknown key ever be waved through?</h3>
+    <div class="rec"><b>Recommend:</b> never. There is no "send anyway" anywhere; the only way to exchange anything with a key is to pair with it.</div></div>
+
+  <div class="decision"><span class="id">D6</span><h3>Should a paired Mac be able to skip the accept panel, or reach you from another network?</h3>
+    <div class="rec"><b>Recommend:</b> neither in the app in 0.3. Both later, per Mac, off by default. The command line gets one narrow exception, <code>--unattended-from</code>, because testing between two Macs needs a receiver nobody is sitting at: one named key, one folder, a byte limit, and only while that process runs.</div></div>
+
+  <div class="decision"><span class="id">D7</span><h3>Post-quantum key agreement?</h3>
+    <div class="rec"><b>Recommend:</b> not now. The protocol major leaves room; revisit when the minimum macOS allows.</div></div>
+
+  <div class="decision"><span class="id">D8</span><h3>How long does trust last? <span class="pill good">decided 22 Nov</span></h3>
+    <p>Draft 4 expired pairings and kept the key. That does not end an unnoticed copy of a key, since each renewal trusts the same key again.</p>
+    <div class="rec"><b>Decided:</b> the key itself expires. 90 days by default, with 30 days, a week, a day and an hour as the other choices, and no "never". A pairing lasts until either Mac's key ends. Each pair of Macs renews about twice in 90 days.</div></div>
+
+  <div class="decision"><span class="id">D9</span><h3>Keep the retire notice? <span class="pill good">decided 22 Nov</span></h3>
+    <p>You asked whether a revocation message could be turned against everyone else. As specified it cannot: it is accepted only from the key it retires, over a session that key has proved, and touches that one entry.</p>
+    <div class="rec"><b>Decided:</b> keep it, alongside key expiry. The notice acts at once when you know a key was copied; expiry acts when you do not.</div></div>
+
+  <div class="decision"><span class="id">D10</span><h3>No internet required <span class="pill good">decided 23 Nov</span></h3>
+    <div class="rec"><b>Decided:</b> everything works on an air-gapped LAN. No trusted time source, no online check and no download is assumed anywhere; the update check is the one optional outside contact.</div></div>
+
+  <div class="decision"><span class="id">D11</span><h3>Should a resumed drop be proved end to end?</h3>
+    <p>Encryption proves chunks in transit, not bytes left in a partial folder between attempts. A per-file digest would close that, at the cost of one more pass over the data on each side.</p>
+    <div class="rec"><b>Recommend:</b> not in 0.3; state the narrower guarantee, as the plan now does. Measure the cost in Phase 0 and decide with the number.</div></div>
+</section>
+
+<section id="record">
+  <h2>Review record</h2>
+  <p>Draft 2 was reviewed adversarially on 22 Nov 2026 by an independent agent given the plan, the source and an attacker's brief. Its verdict was "not safe to build the encrypted channel and pairing from as written". Every finding and its answer in this draft:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Finding</th><th>What was wrong</th><th>Answer in this draft</th></tr></thead>
+    <tbody>
+      <tr><td><strong>C1</strong> critical</td><td>The pairing code had to be secret and was read aloud. A man in the middle within earshot paired with both Macs, silently.</td><td>Pairing replaced: two committed codes that need not be secret. CPace and libsodium removed. P4 restated against an attacker who hears everything.</td></tr>
+      <tr><td><strong>H1</strong> high</td><td>A stranger's connection started a code and could spend guesses with nobody present.</td><td>Nothing exists until a person at each Mac chooses to pair. One pairing at a time, rationed requests, every failure recorded. P17.</td></tr>
+      <tr><td><strong>H2</strong> high</td><td>"They Match" was a one-click pairing, offered on the warning dialog.</td><td>Removed. Identity numbers are entered and compared by the app.</td></tr>
+      <tr><td><strong>H3</strong> high</td><td>The Changed state was keyed on a name: anyone could block a real Mac, or avoid the check with "name-2".</td><td>State removed. A proven key is never affected by other keys; a familiar name on an unknown key is a marked New tile, with the full stop when used. Names folded. P7 restated.</td></tr>
+      <tr><td><strong>H4</strong> high</td><td>Reset revoked nothing.</td><td>Retire notice, retired list, pair-again list (draft 3), and keys that end (draft 5).</td></tr>
+      <tr><td><strong>M1</strong></td><td>Cleartext attach: whole connections replayable; three junk records ended a drop.</td><td>Authenticated attach checked before buffering; each connection number once; failed records never end a drop.</td></tr>
+      <tr><td><strong>M2</strong></td><td>A replacement connection could reuse a key from counter zero; reconnect contradicted itself about keys.</td><td>One master per drop; keys by a never-reused connection number; reconnect keys control only; key lifetimes stated.</td></tr>
+      <tr><td><strong>M3</strong></td><td>Clear headers leaked every file's size; a damaged length could hang a reader.</td><td>Headers sealed and opened first; control lengths repeated. P1 says what still shows.</td></tr>
+      <tr><td><strong>M4</strong></td><td>Noise messages stop at 65,535 bytes; manifests do not.</td><td>Fragmentation specified, with reassembly limits by trust.</td></tr>
+      <tr><td><strong>M5</strong></td><td>Minor in the prologue; the frozen frame dropped; a future major downgradable.</td><td>A short opening naming the majors each side speaks, bound into the handshake; major only in the label; highest major remembered per key. Protocol 2 itself is dropped outright, by the owner's decision.</td></tr>
+      <tr><td><strong>M6</strong></td><td>The Keychain properties claimed are not available to these binaries.</td><td>Confirmed by test on both Macs. Identity kept in a file only this Mac's Secure Enclave can open. Command-line pairing specified.</td></tr>
+      <tr><td><strong>M7</strong></td><td>Copying a tag into a Bonjour record captured a Paired tile; 40-bit tags can be matched.</td><td>No key material in Bonjour. Tile state only from a proved key, per address. Tags are 80 bits.</td></tr>
+      <tr><td><strong>M8</strong></td><td>Gaps in the pairing state machine.</td><td>Order of messages, scope and life of codes, retries, simultaneous requests, one-sided results, replacement and unique names all specified.</td></tr>
+      <tr><td><strong>L1</strong></td><td>Three-strikes rule against the chaos runs.</td><td>Rule removed (M1).</td></tr>
+      <tr><td><strong>L2</strong></td><td>Sealing may force a copy per chunk; the speed gate measured the wrong thing.</td><td>Sealing in place into reused buffers is a requirement measured in Phase 3; the gate is defined at 10 Gbit/s.</td></tr>
+      <tr><td><strong>L3</strong></td><td>The sender sent its key before checking the receiver's.</td><td>Checked after message 2.</td></tr>
+      <tr><td><strong>L4</strong></td><td>Master derived loosely from the chaining key.</td><td>Third output of Split, written out.</td></tr>
+      <tr><td><strong>L5</strong></td><td>The store could be rolled back.</td><td>Stated as a limit, with what it can and cannot restore.</td></tr>
+      <tr><td><strong>L6, L7</strong></td><td>"Nobody is between them" overclaimed; a green "Paired" on the accept panel read as "safe".</td><td>Both reworded.</td></tr>
+      <tr><td><strong>L8</strong></td><td>The tag in Bonjour tracked a Mac across networks.</td><td>Gone with M7; the id of protocol 2 is gone too.</td></tr>
+      <tr><td><strong>L9</strong></td><td>CPace details.</td><td>Moot.</td></tr>
+      <tr><td><strong>L10</strong></td><td>1 MB allowed before the handshake.</td><td>1 KB.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Second review, of draft 5 (23 Nov 2026, a different model)</h3>
+  <p>The full text is in <code>docs/plans/nimbus-drop-security-review.md</code>. It found no practical break in the handshake or in the pairing as intended, and withheld approval over R1 to R4.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Finding</th><th>What was wrong</th><th>Answer in this draft</th></tr></thead>
+    <tbody>
+      <tr><td><strong>R1</strong> high</td><td>A high-water mark over the calendar clock stops time going back, not standing still: a held clock kept a copied key alive. The 90 days were not the key's age. Sessions could outlive expiry without limit.</td><td>Deadlines in elapsed time on the continuous clock, with rules for restart and reboot and a stated limit for time spent off. Guarantee restated per Mac, from when it first trusted the key. Sessions bounded. Tombstones kept. P16.</td></tr>
+      <tr><td><strong>R2</strong> high</td><td>Limits ended when a handshake completed, and anyone can complete one with a fresh key.</td><td>Admission classes with counts, byte budgets and absolute deadlines; slots taken before work and kept; metadata bounded by the accepted offer; probing and logging rationed. P13.</td></tr>
+      <tr><td><strong>R3</strong> high</td><td>Retirement updated a list but left sessions, waiting offers and resume keys alive.</td><td>One ordered procedure for every withdrawal of trust, acknowledged only when complete. P18.</td></tr>
+      <tr><td><strong>R4</strong></td><td>An unreadable store silently became an empty one, forgetting every retired key.</td><td>Five cases told apart; damaged files kept; loss of history only by explicit choice. One trust file, atomic writes, a device key that survives rotation and reset.</td></tr>
+      <tr><td><strong>R5</strong></td><td>"We invent nothing" was untrue; the pairing needed an exact state machine; P4's figure was per Mac; the extra Split output and the identity number were loosely described.</td><td>All written out. Exact-once transaction. P4 gives both figures. Independent vectors required. The ban on third-party code restated as a judgement.</td></tr>
+      <tr><td><strong>R6</strong></td><td>The command line accepted every drop, against "pairing is not permission".</td><td>Asks per drop. One narrow unattended grant, explicit and scoped.</td></tr>
+      <tr><td><strong>R7</strong></td><td>A stream key could seal 2<sup>58</sup> bytes; chunk lengths only bounded above.</td><td>Byte and seal budgets with rotation; exact lengths; canonical end marker.</td></tr>
+      <tr><td><strong>R8</strong></td><td>In-place sealing does not exist on macOS 15; the gate confused link rate with file bytes.</td><td>Confirmed in the SDK. Allocation rule dropped; gate in goodput against the unencrypted baseline.</td></tr>
+      <tr><td><strong>R9</strong></td><td>An observed attach could be raced.</td><td>Receiver challenge per socket.</td></tr>
+      <tr><td><strong>R10</strong></td><td>One X25519 key has several encodings; a retired key could reappear as New.</td><td>Canonical encoding enforced; the remaining equivalents stated as unknown keys. P14 qualified.</td></tr>
+      <tr><td>Other</td><td>Overstated: "cannot be copied", P1 on sizes, P9's scope. Retired-key alerts unbounded. Resumed bytes unproved.</td><td>Reworded. Alerts rationed globally. The integrity boundary stated; D11.</td></tr>
+    </tbody>
+  </table></div>
+  <p>What the first review tried and could not break, and which this draft keeps unchanged: Noise XX itself, forward secrecy, the nonce format and cipher limits, splicing of records between connections or sessions, truncation, the resume proof, and the length of the identity number.</p>
+</section>
+
+<section id="review">
+  <h2>For reviewers</h2>
+  <p>This plan is meant to be attacked before anything is built. Nothing here exists in code. The current app (0.2.2, protocol 2.2) is unencrypted and unauthenticated; its source and its own security notes are in the repository. This is draft 6, after two reviews; admission, elapsed-time expiry, withdrawal of trust, the trust file and its recovery, the attach challenge, key expiry, the pairing, the key schedule, discovery, versioning and identity storage are all new since the first review and have not been reviewed.</p>
+  <h3>What to assume</h3>
+  <ul>
+    <li>Apple silicon Macs, macOS 15 or later, on one local network. A network attacker can read, drop, delay, inject and modify anything, and can announce any Bonjour record.</li>
+    <li>The people pairing can hear each other, in a room or on a call. <strong>The attacker can hear them too</strong>, but cannot speak in their voices.</li>
+    <li>Users are not experts and are sometimes in a hurry.</li>
+    <li>Throughput of 10 Gbit/s between two Macs is a hard requirement.</li>
+  </ul>
+  <h3>What to try to break</h3>
+  <ol>
+    <li>Each of P1 to P19. Is the claim true of the specification as written? What is under-specified?</li>
+    <li>The pairing: the commitment, the order of the three values, two codes from one derivation, the rule for storing. Can someone in the middle who hears both codes, and controls timing, get either Mac to store the wrong key with better than the stated chance? Can the two retries of typing be turned into more chances?</li>
+    <li>The request to pair: can it still be used to wear a person down or to slip in beside a genuine pairing in progress?</li>
+    <li>A familiar name on an unknown key: the folding of names, the two choices, and what a hurried person does with them. Is "It Replaces…" too easy to choose for an attacker's Mac?</li>
+    <li>The data records: connection numbering under replacement and reconnect, the authenticated attach, sealed headers, the end marker.</li>
+    <li>Reconnect: the two proofs, and a master that outlives its control channel.</li>
+    <li>Versions: the openings in the prologue. Is there any way to make two Macs settle on less than they both support?</li>
+    <li>Discovery by probe: what a flood of records or probes costs, and whether per-address results can still mislead.</li>
+    <li>Identity storage: is the Secure Enclave wrap what it is said to be? What happens on restore, migration, a second user account, a Mac without a working enclave?</li>
+    <li>Key expiry and the clock: can any key be accepted after its date? Does the gentler wording for an expected new key give an impostor who waits for the date anything but wording? Can forced early expiry be used to train people to pair carelessly?</li>
+    <li>Reset and retirement: can a thief of the old key gain anything, or deny the owner the reset?</li>
+    <li>Performance: does anything in the record format or key schedule prevent sealing in place at 1.25 GB/s?</li>
+    <li>Admission: is there still a state a stranger can hold open, or work it can cause, outside a counted class?</li>
+    <li>Elapsed time: the rules for restart and reboot, and whether the stated limit for time spent off is the only one.</li>
+    <li>Withdrawal of trust: any path by which something authenticated before a retirement acts after it.</li>
+    <li>The trust file: crash at each step, the five recovery cases, two processes at once.</li>
+    <li>What is missing entirely.</li>
+  </ol>
+  <h3>What a finding should contain</h3>
+  <p>The property or section it concerns, a concrete sequence of events that shows the problem, how serious it is and why, and a proposed change if there is one. "This is fine" with reasons is a finding too.</p>
+</section>
+
+<footer>
+  Figures were measured on the owner's MacBook Pro (M4 Max) and MacBook Air (M4) on 22 November 2026 with CryptoKit, sealing 4 MiB buffers, 1 GiB per run. The loopback engine figure is from the 0.2 test notes. The screens are mock-ups drawn for this page. The absence of in-place AES-GCM before macOS 27 was read from the installed SDK on 23 November. The Keychain and Secure Enclave behaviour was tested the same day with a bare command-line binary on both Macs, on the Air over ssh. Nothing in this plan has been built.
+</footer>
+</main>
+</div>

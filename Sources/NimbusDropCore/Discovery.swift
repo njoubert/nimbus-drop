@@ -200,6 +200,7 @@ public final class PeerBrowser: @unchecked Sendable {
     private var restartPending = false
     private var lastRestart = Date.distantPast
     private var stopped = false
+    private var recheck: Timer?
     /// Asks each address found to prove who it is.
     public let prober = Prober()
 
@@ -215,6 +216,15 @@ public final class PeerBrowser: @unchecked Sendable {
 
     public func start() {
         stopped = false
+        // A Mac's key changes under an address that does not: it was reset, or it ran out and
+        // was made anew, with the app running throughout. Nothing Bonjour reports changes then,
+        // so every address is asked again as time passes. Without this a Mac that reset its
+        // identity stayed "Identity not accepted" at the others until one of the two was
+        // restarted (found by the owner, 2026-11-23).
+        recheck?.invalidate()
+        let t = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.probeAll() }
+        RunLoop.main.add(t, forMode: .common)
+        recheck = t
         let b = NWBrowser(for: .bonjourWithTXTRecord(type: bonjourType, domain: nil), using: NWParameters())
         b.browseResultsChangedHandler = { [weak self, weak b] results, _ in
             guard let self, let b, self.browser === b else { return }
@@ -257,6 +267,8 @@ public final class PeerBrowser: @unchecked Sendable {
 
     public func stop() {
         stopped = true
+        recheck?.invalidate()
+        recheck = nil
         browser?.cancel()
         browser = nil
         for c in resolving.values { c.cancel() }

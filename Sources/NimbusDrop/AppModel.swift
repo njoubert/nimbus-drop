@@ -318,7 +318,7 @@ final class AppModel: ObservableObject {
         // Nothing goes to a Mac that is not paired: pair first, then send.
         let standing = standing(peer)
         guard standing.canSend else {
-            if standing.canPair { pair(with: peer, then: urls) } else { explain(peer, standing) }
+            if standing.canPair { pair(with: peer, then: urls) } else { browser?.probe(peer.id, fresh: true); explain(peer, standing) }
             return
         }
         pendingURLs = []
@@ -424,7 +424,7 @@ final class AppModel: ObservableObject {
         case .needsUpdate: alert.informativeText = "It runs a version of Nimbus Drop from before drops were encrypted. Update Nimbus Drop there."
         case .checking: alert.informativeText = "This Mac is still finding out who that is. Try again in a moment."
         case .unproved: alert.informativeText = "The Mac at \(peer.address ?? "that address") did not answer when asked to prove who it is. Check that Nimbus Drop 0.3 or later is running there with receiving on."
-        case .refused(let why): alert.informativeText = "\(why). It cannot be used; the Mac behind it needs a new identity."
+        case .refused(let why): alert.informativeText = "\(why). It cannot be used. If that Mac has a new identity by now, its tile will change in a moment and you can pair with it again."
         default: alert.informativeText = "It is not paired with this Mac."
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -493,6 +493,11 @@ final class AppModel: ObservableObject {
     private func trustChanged() {
         trustChanges += 1
         onChange?()
+        // A key was paired, forgotten, retired or ran out: what each tile shows may be a key
+        // its Mac no longer has. A Mac that retires a key says so just before it has the new
+        // one, hence the second look.
+        browser?.probeAll()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.browser?.probeAll() }
     }
 
     // MARK: Known Macs and this Mac's identity

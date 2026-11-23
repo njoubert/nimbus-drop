@@ -360,7 +360,9 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             if next.type == .error { throw DropError(try decode(Reason.self, from: next.body).message) }
             guard next.type == .done else { throw DropError("Unexpected message from \(peerName)") }
             let roundStart = lock.withLock { roundStartBytes }
-            settle(opened: try decode(Done.self, from: next.body).streams)
+            let done = try decode(Done.self, from: next.body)
+            if let resent = done.resent { note { $0.retransmittedChunks = resent } }
+            settle(opened: done.streams)
             if isOver { return }
             if ledger.isComplete { break }
             idle = ledger.doneBytes > roundStart ? 0 : idle + 1

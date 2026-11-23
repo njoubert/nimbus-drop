@@ -614,6 +614,7 @@ final class AppModel: ObservableObject {
         entry.connectionsLost = stats.connectionFailures
         entry.damagedChunks = stats.damagedChunks
         entry.reconnects = stats.reconnects
+        entry.retransmittedChunks = stats.retransmittedChunks
         historyStore?.add(entry)
         history = historyStore?.entries ?? []
     }
@@ -662,15 +663,16 @@ final class AppModel: ObservableObject {
                            canRetry: failed && sends[t.id] != nil)
     }
 
-    /// What the drop got past, said so that it cannot be taken for starting over: after trouble
-    /// only the missing parts go again, never the whole drop.
+    /// What the drop got past, with what it cost: the number of chunks that went a second time.
+    /// (It used to end "re-sent", which read as starting over; the owner asked for the count.)
     static func troubleText(_ s: TransferStats) -> String {
         var parts: [String] = []
         let lost = s.connectionFailures - s.damagedChunks
         if s.reconnects > 0 { parts.append("reconnected \(s.reconnects == 1 ? "once" : "\(s.reconnects) times")") }
         if lost > 0 { parts.append("\(lost) \(lost == 1 ? "connection" : "connections") dropped") }
         if s.damagedChunks > 0 { parts.append("\(s.damagedChunks) damaged \(s.damagedChunks == 1 ? "chunk" : "chunks") caught") }
-        return "Recovered: " + parts.joined(separator: ", ") + (lost > 0 || s.damagedChunks > 0 ? ". Only the missing parts were sent again." : ".")
+        if s.retransmittedChunks > 0 { parts.append("\(s.retransmittedChunks) \(s.retransmittedChunks == 1 ? "chunk" : "chunks") retransmitted") }
+        return "Recovered: " + parts.joined(separator: ", ")
     }
 
     // MARK: Notifications

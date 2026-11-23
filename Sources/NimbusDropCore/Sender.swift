@@ -157,7 +157,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 }
                 if isOver { return }
                 setState(.finishing)
-                try control.send(.done, Done(streams: lock.withLock { opened }))
+                try control.send(.done, Done(streams: lock.withLock { opened }, resent: stats.retransmittedChunks))
                 reply = try nextFrame()
                 switch reply.type {
                 case .complete:
@@ -410,6 +410,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
         }
     }
 
+    /// Every chunk that has been written to a connection once; one taken again is a retransmission.
+    private var written = Set<UInt64>()
+
     private func takeJob() -> Job? {
         jobLock.lock()
         defer { jobLock.unlock() }
@@ -421,7 +424,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
         }
         chunksSent += 1
         nextJob += 1
-        return jobs[nextJob - 1]
+        let job = jobs[nextJob - 1]
+        if !written.insert(UInt64(job.file) << 32 | UInt64(job.chunk)).inserted { note { $0.retransmittedChunks += 1 } }
+        return job
     }
 
     private func runStream(_ stream: Stream) throws {

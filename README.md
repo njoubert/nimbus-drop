@@ -149,7 +149,8 @@ to about 3 GB/s before the Macs themselves are the limit.
 - **Written where it belongs:** each chunk is written straight to its offset in its file
   (`pwrite`), so nothing is reassembled afterwards. Modification times and permissions are set
   at the end and the finished items are moved into place in one rename each.
-- **Versioned:** the protocol is 2.1 (2.1 added reconnecting; it works with 2.0, without that). The first number changes when two copies could no longer
+- **Versioned:** the protocol is 2.2 (2.1 added reconnecting, 2.2 a count of retransmitted
+  chunks; all of 2.x work together). The first number changes when two copies could no longer
   exchange a drop, the second when something is added that an older copy can ignore.
 - **No encryption and no accounts,** by design: this is for a network you trust, and the
   safeguard is that a person at the receiving Mac approves every drop. Anyone on the same

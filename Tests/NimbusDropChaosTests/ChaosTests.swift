@@ -146,7 +146,7 @@ final class ChaosTests: XCTestCase {
         let s = send(src)
         wait(s)
         XCTAssertEqual(s.state, .completed)
-        XCTAssertEqual(s.stats, TransferStats(rounds: 1, connectionFailures: 0, damagedChunks: 0))
+        XCTAssertEqual(s.stats, TransferStats(rounds: 1, connectionFailures: 0, damagedChunks: 0), "and nothing was sent twice")
         XCTAssertEqual(proxy.stats.connections, 5, "one control connection and four for data")
         XCTAssertGreaterThan(proxy.stats.bytesToTarget, 8 << 20)
         try assertArrived(src)
@@ -243,6 +243,12 @@ final class ChaosTests: XCTestCase {
         XCTAssertEqual(s.state, .completed)
         XCTAssertGreaterThanOrEqual(s.stats.rounds, 2, "the missing chunks went out in a later round")
         XCTAssertEqual(received.value.count, 1)
+        // What the trouble cost is counted, and the receiver is told the same number. (Here it
+        // is most of the drop, twice: behind a 6 MB/s proxy nearly all 8 MB is sitting in
+        // buffers when the connections are cut, and what is in a buffer is lost with it. On a
+        // real link it is a chunk or two per connection: 9 for the owner's 6 GB.)
+        XCTAssertGreaterThan(s.stats.retransmittedChunks, 0)
+        XCTAssertEqual(try receiverSide().stats.retransmittedChunks, s.stats.retransmittedChunks)
         try assertArrived(src)
     }
 

@@ -70,6 +70,7 @@ private struct HistoryRow: View {
         s.connectionFailures = entry.connectionsLost ?? 0
         s.damagedChunks = entry.damagedChunks ?? 0
         s.reconnects = entry.reconnects ?? 0
+        s.retransmittedChunks = entry.retransmittedChunks ?? 0
         guard s.connectionFailures > 0 || s.damagedChunks > 0 || s.reconnects > 0 else { return nil }
         return AppModel.troubleText(s)
     }

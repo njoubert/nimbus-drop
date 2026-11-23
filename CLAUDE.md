@@ -156,7 +156,7 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 2.1)
+## The protocol (version 2.2)
 
 Control connection, sender → receiver. A frame is
 `[u32 length][u32 CRC of the length][u8 type][JSON][u32 CRC of type + JSON]`, big-endian.
@@ -173,7 +173,7 @@ manifest {chunkSize, entries[]}
 N data connections, each: attach {token}, then
   [u32 file][u32 chunk][u32 length][u32 crc] + bytes, repeated;      crc covers the first twelve
   file = 0xFFFFFFFF ends the stream                                   header bytes and the chunk
-done {streams: data connections opened so far}
+done {streams: data connections opened so far, resent: chunks sent twice so far (2.2)}
                                      settle: wait for those connections to finish, close the rest
                                      everything here → set times and modes, rename, complete {saved[]}
                                      something missing → plan {…} again, and the sender goes round

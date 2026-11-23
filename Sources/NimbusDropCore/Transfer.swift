@@ -64,10 +64,14 @@ public struct TransferStats: Equatable, Sendable {
     public var damagedChunks = 0
     /// Times the whole drop lost its connection and got it back.
     public var reconnects = 0
+    /// Chunks that had to be sent a second time (the first copy was lost with its connection or
+    /// arrived damaged). The measure of what trouble cost: everything else went once.
+    public var retransmittedChunks = 0
 
-    public init(rounds: Int = 0, connectionFailures: Int = 0, damagedChunks: Int = 0, reconnects: Int = 0) {
+    public init(rounds: Int = 0, connectionFailures: Int = 0, damagedChunks: Int = 0, reconnects: Int = 0, retransmittedChunks: Int = 0) {
         self.rounds = rounds; self.connectionFailures = connectionFailures
         self.damagedChunks = damagedChunks; self.reconnects = reconnects
+        self.retransmittedChunks = retransmittedChunks
     }
 }
 
@@ -141,7 +145,7 @@ public class Transfer: @unchecked Sendable, Identifiable {
         lock.unlock()
         if changed {
             log("\(new)" + (new.isFinal || new == .reconnecting
-                ? "  (\(p.doneBytes) of \(p.totalBytes) bytes, \(p.doneFiles) of \(p.totalFiles) files; rounds \(s.rounds), connections lost \(s.connectionFailures), damaged chunks \(s.damagedChunks), reconnects \(s.reconnects))"
+                ? "  (\(p.doneBytes) of \(p.totalBytes) bytes, \(p.doneFiles) of \(p.totalFiles) files; rounds \(s.rounds), connections lost \(s.connectionFailures), damaged chunks \(s.damagedChunks), reconnects \(s.reconnects), chunks retransmitted \(s.retransmittedChunks))"
                 : ""))
         }
         onChange?()

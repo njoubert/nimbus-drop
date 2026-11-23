@@ -192,6 +192,7 @@ enum CLI {
             let moved = p.totalBytes - p.resumedBytes
             let trouble = t.stats
             Swift.print("done: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(moved) / seconds)) (\(Format.rate(Double(moved) / seconds)))"
+                + (trouble.retransmittedChunks > 0 ? "; \(trouble.retransmittedChunks) chunks retransmitted" : "")
                 + (trouble.reconnects > 0 ? "; reconnected \(trouble.reconnects) time\(trouble.reconnects == 1 ? "" : "s")" : "")
                 + (trouble.connectionFailures > 0 ? "; got past \(trouble.connectionFailures) lost connections\(trouble.damagedChunks > 0 ? " (\(trouble.damagedChunks) for damaged chunks)" : "") in \(trouble.rounds) rounds" : ""))
             return 0

@@ -34,7 +34,7 @@ func errnoError(_ what: String) -> DropError {
 /// What may never change, because it is how any two versions find out that they differ: the
 /// control frame layout (`Socket.send`), and the `version` field of `Offer` and `Hello`.
 public let protocolVersion = 2
-public let protocolMinor = 1
+public let protocolMinor = 2
 
 /// "2.0".
 public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
@@ -317,7 +317,11 @@ struct Plan: Codable {
 
 /// "Every chunk I had to send has been written." `streams` is how many data connections the
 /// sender has opened in all, so the receiver knows how many to wait for.
-struct Done: Codable { var streams: Int }
+struct Done: Codable {
+    var streams: Int
+    /// Chunks the sender has sent more than once so far (2.2; absent from older senders).
+    var resent: Int?
+}
 
 struct Complete: Codable { var saved: [String] }
 

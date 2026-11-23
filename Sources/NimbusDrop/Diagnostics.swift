@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
+import NimbusDropCore
 
 /// The app's flight recorder, as in Nimbus Leviton Bar: every line that goes to the log file is
 /// also kept here, in memory, for the Internals panel to show live. It records from launch, not
@@ -28,7 +29,7 @@ final class Diagnostics: @unchecked Sendable {
         /// For a drop's line: its tag, "3F9A2C send".
         let tag: String?
         let text: String
-        let isError: Bool
+        let level: LogLevel
     }
 
     private let lock = NSLock()
@@ -60,12 +61,20 @@ final class Diagnostics: @unchecked Sendable {
         for line in lines.suffix(Self.capacity) where line.count > 24 {
             let cut = line.index(line.startIndex, offsetBy: 23)
             guard let at = stamp.date(from: String(line[..<cut])) else { continue }
-            record(String(line[line.index(after: cut)...]), at: at)
+            var rest = line[line.index(after: cut)...]
+            // "INFO  …": the level, in five columns. Lines from before levels existed have none.
+            var level = LogLevel.info
+            if rest.count > 6, let parsed = LogLevel(label: String(rest.prefix(5))), rest[rest.index(rest.startIndex, offsetBy: 5)] == " " {
+                level = parsed
+                rest = rest.dropFirst(6)
+            }
+            record(level, String(rest), at: at)
         }
     }
 
-    /// Takes a log line as the engine and the app write it and files it under its kind.
-    func record(_ line: String, at: Date = Date()) {
+    /// Takes a log line as the engine and the app write it and files it under its kind. Its
+    /// level is the one it was written with.
+    func record(_ level: LogLevel, _ line: String, at: Date = Date()) {
         var kind = Kind.app, tag: String?, text = line
         if line.hasPrefix("["), let end = line.firstIndex(of: "]") {
             kind = .drop
@@ -75,11 +84,9 @@ final class Diagnostics: @unchecked Sendable {
             kind = .discovery
             text = String(line.dropFirst("discovery:".count)).trimmingCharacters(in: .whitespaces)
         }
-        let lowered = text.lowercased()
-        let isError = ["failed", "lost", "damaged", "gave up", "cannot", "could not", "no sign of life", "moved nothing"].contains { lowered.contains($0) }
         lock.withLock {
             nextID += 1
-            events.append(Event(id: nextID, at: at, kind: kind, tag: tag, text: text, isError: isError))
+            events.append(Event(id: nextID, at: at, kind: kind, tag: tag, text: text, level: level))
             if events.count > Self.capacity { events.removeFirst(events.count - Self.capacity) }
             _version += 1
         }

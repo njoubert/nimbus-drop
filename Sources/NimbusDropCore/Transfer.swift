@@ -172,7 +172,9 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// "[3F9A2C send]": which drop a log line is about.
     var tag: String { "[\(id.uuidString.prefix(6)) \(direction == .send ? "send" : "recv")]" }
 
-    func log(_ message: @autoclosure () -> String) { DropLog.write("\(tag) \(message())") }
+    func log(_ message: @autoclosure () -> String, _ level: LogLevel = .info) {
+        DropLog.write("\(tag) \(message())", level)
+    }
 
     func setState(_ new: TransferState) {
         lock.lock()
@@ -186,7 +188,7 @@ public class Transfer: @unchecked Sendable, Identifiable {
         if changed {
             log("\(new)" + (new.isFinal || new == .reconnecting
                 ? "  (\(p.doneBytes) of \(p.totalBytes) bytes, \(p.doneFiles) of \(p.totalFiles) files; rounds \(s.rounds), connections lost \(s.connectionFailures), damaged chunks \(s.damagedChunks), reconnects \(s.reconnects) in \(s.reconnectAttempts) attempts, chunks \(s.chunks) of which retransmitted \(s.retransmittedChunks))"
-                : ""))
+                : ""), { if case .failed = new { return .error }; return new == .reconnecting ? .warn : .info }())
         }
         onChange?()
     }
@@ -227,7 +229,7 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// Nothing has moved and nothing has been said for too long. The sessions take it as a lost
     /// connection and try to get it back; this is what is left when they cannot.
     func silence() {
-        log("no sign of life from \(peerName) for too long; giving up")
+        log("no sign of life from \(peerName) for too long; giving up", .error)
         fail(DropError("\(peerName) stopped responding; send the drop again to continue it"))
     }
 

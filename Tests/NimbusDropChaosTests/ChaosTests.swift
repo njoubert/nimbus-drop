@@ -313,7 +313,7 @@ final class ChaosTests: XCTestCase {
         // Here: the control connection dies on the receiver's side only. The drop must carry
         // on, must say it is moving while it moves, and must end with one reconnect.
         let lines = Box<[String]>([])
-        DropLog.sink = { line in lines.value += [line] }
+        DropLog.sink = { _, line in lines.value += [line] }
         defer { DropLog.sink = nil }
         Tuning.reconnectSeconds = 2   // far less than the rest of the drop takes
         let src = try makeTree(megabytes: 48)

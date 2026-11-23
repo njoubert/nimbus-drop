@@ -166,7 +166,7 @@ final class AppModel: ObservableObject {
             if was == nil {
                 DropLog.write("discovery: found \(p.name) at \(place) (Nimbus Drop \(p.appVersion ?? "?"), protocol \(p.protocolText))")
             } else if was?.address != p.address || was?.port != p.port {
-                DropLog.write("discovery: \(p.name) is at \(place)")
+                DropLog.write("discovery: \(p.name) is at \(place)", .debug)
             }
         }
         for p in old where after[p.id] == nil { DropLog.write("discovery: \(p.name) is gone") }
@@ -207,7 +207,7 @@ final class AppModel: ObservableObject {
                 DropLog.write("receiving as \(identity.name) on port \(l.port); addresses \(LocalHost.addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", "))")
             } catch {
                 listenProblem = (error as? DropError)?.message ?? error.localizedDescription
-                DropLog.write("cannot receive: \(listenProblem ?? "")")
+                DropLog.write("cannot receive: \(listenProblem ?? "")", .error)
             }
         }
         updateProblem()

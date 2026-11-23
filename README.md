@@ -78,8 +78,10 @@ last 500 drops), goes nowhere, and *Clear History* empties it.
 network, the Macs it can see with their versions, and every drop with each of its connections
 (how many chunks each has carried, and whether it is moving). Under that runs the debug log as
 it is written: every step of every drop with its time, each connection lost, each attempt to
-reconnect, how many chunks were sent and how many had to go twice. Filter it, pause it, copy it
-into a bug report. The same lines are kept in `~/Library/Logs/Nimbus Drop/nimbus-drop.log` (two
+reconnect, how many chunks were sent and how many had to go twice. Every line has a level
+(debug, info, warning, error) and is coloured by it: amber for trouble a drop is getting past,
+red for trouble that ended something. Filter by level, kind or text, pause it, copy it into a
+bug report. The same lines are kept in `~/Library/Logs/Nimbus Drop/nimbus-drop.log` (two
 files of 4 MB at most, on this Mac only), which is what to look at, or send, when a drop fails.
 
 **Nothing is overwritten.** If `~/Downloads/Christmas 2026` already exists, the new one lands as

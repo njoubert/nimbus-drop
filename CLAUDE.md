@@ -323,6 +323,17 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   (`streamOpened` / `streamCarried` / `streamClosed` in the engine). A drop's last lines are a
   `summary:` (bytes, time, rate, chunks, retransmitted, rounds, connections dropped, reconnects
   and attempts) on each side; each round logs how many chunks it sent.
+- **Log levels are set where a line is written, and are the only thing that colours it.**
+  `debug` (step-by-step detail: connections opened, what a round sent, an address looked up),
+  `info` (the story: offered, accepted, moving, done, a Mac found), `warn` (trouble a drop is
+  getting past: a connection lost, a damaged chunk, the control connection gone, a reconnect
+  attempt that failed), `error` (trouble that ended something: a drop failed, reconnecting given
+  up, cannot listen). The first version of the panel coloured by keywords and painted a clean
+  drop's summary red for containing "0 damaged" and "connections lost 0" (the owner asked what
+  had gone wrong; nothing had). `testLogLevelsSayWhatHappenedNotWhatWordsWereUsed` holds that a
+  good drop logs nothing at `warn` or above. A new line gets a level on purpose:
+  `log("…", .warn)`. The file holds every level, as `<time> LEVEL <line>`; the panel's picker
+  chooses the least important one listed.
 - **The debug log** is `~/Library/Logs/<bundle name>/nimbus-drop.log` (so "Nimbus Drop Dev" for
   the development copy), 4 MB then rotated to `.1`. Read it first when a drop misbehaves: every
   line about a drop starts with its tag (`[3F9A2C send]`), and a state change that ends or

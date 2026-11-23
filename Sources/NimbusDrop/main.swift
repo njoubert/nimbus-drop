@@ -117,7 +117,7 @@ while !args.isEmpty {
     case "--only": let v = takeValue(a).split(separator: ",").map { String($0).replacingOccurrences(of: ".", with: "") }; MainActor.assumeIsolated { CLI.only = v }
     case "--streams": let v = Int(takeValue(a)); MainActor.assumeIsolated { CLI.streams = v }
     case "--print": cli = .print
-    case "--verbose": DropLog.sink = { line in FileHandle.standardError.write(Data(("  " + line + "\n").utf8)) }
+    case "--verbose": DropLog.sink = { level, line in FileHandle.standardError.write(Data(("  \(level.label) \(line)\n").utf8)) }
     case "--check-update": cli = .checkUpdate
     case "--preflight": cli = .preflight(app: takeValue(a))
     case "-h", "--help": usage()
@@ -187,9 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The same lines go to the Internals panel's buffer, which starts with what the file
         // already holds: the panel shows earlier runs too, not only this one.
         Diagnostics.shared.seed(from: AppDelegate.logURL)
-        DropLog.sink = { line in
-            log.append(line)
-            Diagnostics.shared.record(line)
+        DropLog.sink = { level, line in
+            log.append("\(level.label) \(line)")
+            Diagnostics.shared.record(level, line)
         }
         DropLog.write("—— \(StatusBarController.versionString()) started from \(Bundle.main.bundlePath); macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
 

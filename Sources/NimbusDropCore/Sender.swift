@@ -147,11 +147,11 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 setState(.transferring)
                 if !jobs.isEmpty {
                     let sockets = try openStreams(token: plan.token)
-                    log("opened \(sockets.count) data connections to \(lock.withLock { "\(host):\(port)" })")
+                    log("opened \(sockets.count) data connections to \(lock.withLock { "\(host):\(port)" })", .debug)
                     let before = stats
                     defer {
                         let now = stats
-                        log("round \(now.rounds) over: \(now.chunks - before.chunks) chunks sent (\(now.chunks) in all, \(now.retransmittedChunks) of them retransmissions), \(now.connectionFailures - before.connectionFailures) connections dropped, \(progress.doneBytes) of \(manifest.totalBytes) bytes written")
+                        log("round \(now.rounds) over: \(now.chunks - before.chunks) chunks sent (\(now.chunks) in all, \(now.retransmittedChunks) of them retransmissions), \(now.connectionFailures - before.connectionFailures) connections dropped, \(progress.doneBytes) of \(manifest.totalBytes) bytes written", .debug)
                     }
                     let group = DispatchGroup()
                     for s in sockets {
@@ -180,7 +180,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 // The conversation's own connection is gone (the other Mac changed networks,
                 // slept, lost Wi-Fi). The drop is still wanted on both sides: get it back.
                 if isOver { return }
-                log("lost the control connection: \(lost.message)")
+                log("lost the control connection: \(lost.message)", .warn)
                 reply = try reconnect(after: lost)
                 reconnected = true
             }
@@ -219,7 +219,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
             let fresh: Socket?
             do { fresh = try Socket.connect(host: h, port: p, timeout: min(Tuning.connectTimeout, 5)) } catch {
                 fresh = nil
-                log("reconnect attempt \(attempt) to \(h):\(p): \((error as? DropError)?.message ?? "\(error)")")
+                log("reconnect attempt \(attempt) to \(h):\(p): \((error as? DropError)?.message ?? "\(error)")", .warn)
             }
             if let fresh {
                 fresh.setNoDelay()
@@ -240,14 +240,14 @@ public final class SendSession: Transfer, @unchecked Sendable {
                         log("reconnected on attempt \(attempt); the receiver answered \(answer.type)")
                         return answer
                     }
-                    log("reconnect attempt \(attempt) to \(h):\(p): connected, but no answer to resume")
+                    log("reconnect attempt \(attempt) to \(h):\(p): connected, but no answer to resume", .warn)
                 }
             }
             if isOver { break }
             Thread.sleep(forTimeInterval: 1)
         }
         if isOver { throw lost }
-        log("gave up reconnecting after \(attempt) attempts in \(Int(Tuning.reconnectSeconds)) s")
+        log("gave up reconnecting after \(attempt) attempts in \(Int(Tuning.reconnectSeconds)) s", .error)
         throw DropError("Lost the connection to \(peerName) and could not get it back; send the drop again to continue it")
     }
 
@@ -266,7 +266,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// minute if the other Mac really is frozen.
     override func silence() {
         guard let control, !token.isEmpty, state != .reconnecting else { return super.silence() }
-        log("no sign of life from \(peerName); treating the connection as lost")
+        log("no sign of life from \(peerName); treating the connection as lost", .warn)
         control.shutdown()
     }
 
@@ -370,7 +370,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
             var failed = false
             do { try runStream(stream) } catch {
                 failed = true
-                log("a data connection failed after \(stream.chunks) chunks: \((error as? DropError)?.message ?? "\(error)")")
+                log("a data connection failed after \(stream.chunks) chunks: \((error as? DropError)?.message ?? "\(error)")", .warn)
                 note { $0.connectionFailures += 1 }
                 socket.shutdown()
             }
@@ -396,7 +396,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
         while !state.isFinal {
             let now = Date()
             for s in lock.withLock({ live }) where now.timeIntervalSince(lock.withLock { s.lastProgress }) > Tuning.stallSeconds {
-                log("a data connection has moved nothing for \(Int(Tuning.stallSeconds)) s; closing it")
+                log("a data connection has moved nothing for \(Int(Tuning.stallSeconds)) s; closing it", .warn)
                 lock.withLock { s.lastProgress = now }
                 s.socket.shutdown()
             }

@@ -19,6 +19,8 @@ struct InternalsView: View {
     @State private var status = ""
     @State private var filter: Diagnostics.Kind?
     @State private var paused = false
+    /// The least important level shown.
+    @State private var floor = LogLevel.debug
     @State private var search = ""
     private let tick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
@@ -40,7 +42,7 @@ struct InternalsView: View {
 
     private var shown: [Diagnostics.Event] {
         events.filter { e in
-            (filter == nil || e.kind == filter)
+            e.level >= floor && (filter == nil || e.kind == filter)
                 && (search.isEmpty || e.text.localizedCaseInsensitiveContains(search) || (e.tag ?? "").localizedCaseInsensitiveContains(search))
         }
     }
@@ -65,6 +67,14 @@ struct InternalsView: View {
                         Text("App").tag(Diagnostics.Kind?.some(.app))
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    Picker("Level", selection: $floor) {
+                        Text("Debug and up").tag(LogLevel.debug)
+                        Text("Info and up").tag(LogLevel.info)
+                        Text("Warnings and errors").tag(LogLevel.warn)
+                        Text("Errors only").tag(LogLevel.error)
+                    }
+                    .labelsHidden().fixedSize()
+                    .help("The log file always holds every level; this chooses what is listed here.")
                     TextField("Filter", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
                     Spacer()
                     Button(paused ? "Resume" : "Pause") { paused.toggle(); if !paused { reload(force: true) } }
@@ -98,12 +108,14 @@ struct InternalsView: View {
         }
     }
 
+    /// A line is coloured by the level it was written with, and by nothing else.
     private func row(_ e: Diagnostics.Event) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(Self.when(e.at)).foregroundStyle(.secondary)
-            Text(e.kind.rawValue).foregroundStyle(colour(e.kind)).frame(width: 36, alignment: .leading)
+            Text(e.level.label).foregroundStyle(colour(e.level)).frame(width: 40, alignment: .leading)
+            Text(e.kind.rawValue).foregroundStyle(.secondary).frame(width: 36, alignment: .leading)
             Text(e.tag ?? "").foregroundStyle(.secondary).frame(width: 84, alignment: .leading)
-            Text(e.text).foregroundStyle(e.isError ? AnyShapeStyle(Palette.failure) : AnyShapeStyle(.primary))
+            Text(e.text).foregroundStyle(e.level == .info ? AnyShapeStyle(.primary) : AnyShapeStyle(colour(e.level)))
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -111,11 +123,12 @@ struct InternalsView: View {
         .padding(.horizontal, 10).padding(.vertical, 1.5)
     }
 
-    private func colour(_ kind: Diagnostics.Kind) -> Color {
-        switch kind {
-        case .drop: return Palette.send
-        case .discovery: return Palette.receive
-        case .app: return .secondary
+    private func colour(_ level: LogLevel) -> Color {
+        switch level {
+        case .debug: return Color.secondary.opacity(0.75)
+        case .info: return .secondary
+        case .warn: return Palette.warning
+        case .error: return Palette.failure
         }
     }
 
@@ -127,7 +140,7 @@ struct InternalsView: View {
     }
 
     private func copy() {
-        let lines = shown.map { "\(Self.when($0.at)) \($0.kind.rawValue.padding(toLength: 4, withPad: " ", startingAt: 0)) \($0.tag.map { "[\($0)] " } ?? "")\($0.text)" }
+        let lines = shown.map { "\(Self.when($0.at)) \($0.level.label) \($0.kind.rawValue.padding(toLength: 4, withPad: " ", startingAt: 0)) \($0.tag.map { "[\($0)] " } ?? "")\($0.text)" }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(model.internalsStatus() + "\n\n" + lines.joined(separator: "\n") + "\n", forType: .string)
     }
@@ -159,29 +172,29 @@ final class InternalsPanelController {
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
         let d = Diagnostics.shared
-        for line in [
-            "—— Nimbus Drop v0.2.1 (31) · protocol 2.2 started from /Applications/Nimbus Drop.app; macOS Version 27.0.1",
-            "receiving as macbookpro on port 47823; addresses 192.168.1.107 (en9)",
-            "discovery: found macbookairm4 at 192.168.1.143:47823 (Nimbus Drop 0.2.1, protocol 2.2)",
-            "sending /Volumes/Photos/Christmas 2026 to macbookairm4",
-            "[3972FA send] “Christmas 2026” to macbookairm4 at 192.168.1.143:47823: 1204 files, 31200000000 bytes, 8 connections",
-            "[3972FA send] waitingForAccept",
-            "[3972FA send] round 1: the receiver has 0 of 31200000000 bytes; 7440 chunks to send",
-            "[3972FA send] opened 8 data connections to 192.168.1.143:47823",
-            "[3972FA send] transferring",
-            "[3972FA send] a data connection failed after 31 chunks: Connection lost: Broken pipe",
-            "[3972FA send] a data connection failed after 33 chunks: Connection lost: Broken pipe",
-            "discovery: macbookairm4 is at 192.168.1.122:47823",
-            "[3972FA send] lost the control connection: Connection lost: Broken pipe",
-            "[3972FA send] reconnecting  (6236681569 of 31200000000 bytes, 240 of 1204 files; rounds 1, connections lost 8, damaged chunks 0, reconnects 0 in 0 attempts, chunks 1487 of which retransmitted 0)",
-            "[3972FA send] trying to reach macbookairm4 again for up to 60 s",
-            "[3972FA send] reconnect attempt 1 to 192.168.1.143:47823: Cannot connect to 192.168.1.143: Operation timed out",
-            "[3972FA send] macbookairm4 is now at 192.168.1.122:47823",
-            "[3972FA send] reconnected on attempt 2; the receiver answered plan",
-            "[3972FA send] round 2: the receiver has 6210991569 of 31200000000 bytes; 5959 chunks to send",
-            "[3972FA send] opened 8 data connections to 192.168.1.122:47823",
-            "[3972FA send] transferring",
-        ] { d.record(line) }
+        for (level, line): (LogLevel, String) in [
+            (.info, "—— Nimbus Drop v0.2.1 (31) · protocol 2.2 started from /Applications/Nimbus Drop.app; macOS Version 27.0.1"),
+            (.info, "receiving as macbookpro on port 47823; addresses 192.168.1.107 (en9)"),
+            (.info, "discovery: found macbookairm4 at 192.168.1.143:47823 (Nimbus Drop 0.2.1, protocol 2.2)"),
+            (.info, "sending /Volumes/Photos/Christmas 2026 to macbookairm4"),
+            (.info, "[3972FA send] “Christmas 2026” to macbookairm4 at 192.168.1.143:47823: 1204 files, 31200000000 bytes, 8 connections"),
+            (.info, "[3972FA send] waitingForAccept"),
+            (.info, "[3972FA send] round 1: the receiver has 0 of 31200000000 bytes; 7440 chunks to send"),
+            (.debug, "[3972FA send] opened 8 data connections to 192.168.1.143:47823"),
+            (.info, "[3972FA send] transferring"),
+            (.warn, "[3972FA send] a data connection failed after 31 chunks: Connection lost: Broken pipe"),
+            (.warn, "[3972FA send] a data connection failed after 33 chunks: Connection lost: Broken pipe"),
+            (.debug, "discovery: macbookairm4 is at 192.168.1.122:47823"),
+            (.warn, "[3972FA send] lost the control connection: Connection lost: Broken pipe"),
+            (.warn, "[3972FA send] reconnecting  (6236681569 of 31200000000 bytes, 240 of 1204 files; rounds 1, connections lost 8, damaged chunks 0, reconnects 0 in 0 attempts, chunks 1487 of which retransmitted 0)"),
+            (.info, "[3972FA send] trying to reach macbookairm4 again for up to 60 s"),
+            (.warn, "[3972FA send] reconnect attempt 1 to 192.168.1.143:47823: Cannot connect to 192.168.1.143: Operation timed out"),
+            (.debug, "[3972FA send] macbookairm4 is now at 192.168.1.122:47823"),
+            (.info, "[3972FA send] reconnected on attempt 2; the receiver answered plan"),
+            (.info, "[3972FA send] round 2: the receiver has 6210991569 of 31200000000 bytes; 5959 chunks to send"),
+            (.debug, "[3972FA send] opened 8 data connections to 192.168.1.122:47823"),
+            (.info, "[3972FA send] transferring"),
+        ] { d.record(level, line) }
         let model = AppModel(demoPeers: [Peer(id: "1", name: "macbookairm4", address: "192.168.1.122", port: 47823)], manual: [], rows: [])
         model.demoInternals = """
         This Mac     macbookpro · 192.168.1.107 (en9) · Nimbus Drop 0.2.1 · protocol 2.2

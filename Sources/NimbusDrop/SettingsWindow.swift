@@ -32,8 +32,6 @@ struct SettingsView: View {
             Section("General") {
                 Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
                     .disabled(Bundle.main.bundleIdentifier == nil)
-                Text("So this Mac is ready to receive after a restart. It starts in the menu bar, without opening the window.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Updates") {
                 if let updater, updater.canInstall {

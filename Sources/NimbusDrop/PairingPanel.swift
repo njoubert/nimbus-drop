@@ -316,8 +316,12 @@ struct PairingStageView: View {
                 Text(spaced(mine)).font(.system(size: 40, weight: .semibold, design: .monospaced)).textSelection(.disabled)
                 Text("Type the code they read to you:").foregroundStyle(.secondary)
                 TextField("000 000", text: $entry)
-                    .textFieldStyle(.roundedBorder).font(.system(size: 22, design: .monospaced)).multilineTextAlignment(.center)
-                    .frame(width: 150).focused($typing).onSubmit { if PublicKey.digits(entry).count == 6 { act(.submit) } }
+                    // Not .roundedBorder: its height is fixed for body text and cut 22 pt digits off.
+                    .textFieldStyle(.plain).font(.system(size: 24, weight: .medium, design: .monospaced)).multilineTextAlignment(.center)
+                    .padding(.vertical, 7).padding(.horizontal, 10).frame(width: 180)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.08)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(typing ? Palette.send : Color.primary.opacity(0.25), lineWidth: typing ? 2 : 1))
+                    .focused($typing).onSubmit { if PublicKey.digits(entry).count == 6 { act(.submit) } }
                     .onAppear { typing = true }
                 HStack(spacing: 8) {
                     Button("Stop Pairing") { act(.refuse) }.keyboardShortcut(.cancelAction).buttonStyle(PanelButton(fill: Color.primary.opacity(0.14), text: .primary))

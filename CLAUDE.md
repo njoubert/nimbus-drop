@@ -430,7 +430,8 @@ Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
 from the git-ignored `.signing` (copied from a sibling on this machine).
 
-Releases: **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
+Releases: **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
+or counts itself as waiting; chunks retransmitted, counted; Internals; log levels), **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
 service, Settings) and **0.1.0 on 2026-11-22** (DMG + zip, Developer ID, notarized, protocol 2.0). 0.1.0 was
 published step by step rather than with `build.sh release`: `./build.sh dmg`, check the
 artefacts (`spctl` on the app, on the DMG, on the app inside the mounted DMG, and on the app

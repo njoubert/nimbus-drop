@@ -330,7 +330,7 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
 
   <div class="scenario" id="s-new">
     <h3>3. A new Mac: pairing with two codes</h3>
-    <p>You drag a folder onto a Mac you have never paired with. Its person is asked whether to pair. When they agree, each Mac shows a code of its own and a field for the other's. Each of you reads yours out and types what you hear. Then the drop proceeds to the usual accept panel.</p>
+    <p>You drag a folder onto a Mac you have never paired with. Its person is asked whether to pair. When they agree, the codes go one at a time: your Mac shows its code, you read it out and they type it; then their Mac shows its code, they read it out and you type it. Then the drop proceeds to the usual accept panel. (As first built, both codes and both fields were on screen at once, and whoever pressed Return first could no longer see the code the other still needed. The messages on the wire and what each Mac checks are unchanged; only the order on screen is.)</p>
     <div class="stage">
       <div class="shot"><span class="cap">Receiver: asked first</span>
         <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with a New Mac?</span></div>
@@ -340,14 +340,28 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
             <div class="sub">wants to pair with this Mac. Go on only if someone you can hear is asking you to.</div>
             <div class="btns" style="width:100%"><span class="btn red">Not expecting this</span><span class="btn">Pair…</span></div>
           </div></div></div>
-      <div class="shot"><span class="cap">Each Mac: read yours, type theirs</span>
+      <div class="shot"><span class="cap">Step 1, the Mac that asked: read it out</span>
         <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with dads-imac</span></div>
           <div class="body center">
-            <div class="sub">Read this code out to the person at dads-imac:</div>
+            <div class="sub">Step 1 of 2 · Read this code out to the person at dads-imac:</div>
             <div class="code">482 913</div>
-            <div class="sub">Type the code they read to you:</div>
-            <div class="boxes"><b>7</b><b>0</b><b>5</b><span class="gap"></span><b>3</b><b class="cur"></b><b></b></div>
-            <div class="btns" style="width:100%"><span class="btn ghost">Cancel</span><span class="btn blue">Pair</span></div>
+            <div class="sub">Waiting for them to type it…</div>
+            <div class="btns" style="width:100%"><span class="btn ghost">Stop Pairing</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Step 1, the Mac that was asked: type it</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with macbookpro</span></div>
+          <div class="body center">
+            <div class="sub">Step 1 of 2 · Type the code the person at macbookpro reads to you:</div>
+            <div class="boxes"><b>4</b><b>8</b><b>2</b><span class="gap"></span><b>9</b><b class="cur"></b><b></b></div>
+            <div class="btns" style="width:100%"><span class="btn ghost">Stop Pairing</span><span class="btn blue">Next</span></div>
+          </div></div></div>
+      <div class="shot"><span class="cap">Step 2: they swap</span>
+        <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with macbookpro</span></div>
+          <div class="body center">
+            <div class="sub">Step 2 of 2 · that was the right code. Now read this code out to the person at macbookpro:</div>
+            <div class="code">705 316</div>
+            <div class="sub">Waiting for them to type it…</div>
+            <div class="btns" style="width:100%"><span class="btn ghost">Stop Pairing</span></div>
           </div></div></div>
       <div class="shot"><span class="cap">Either Mac: the codes disagree</span>
         <div class="win"><div class="bar"><i></i><i></i><i></i><span>Pair with dads-imac</span></div>
@@ -360,6 +374,7 @@ footer { color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--lin
           </div></div></div>
     </div>
     <ul>
+      <li>The Mac that was asked types first, so a request from the network alone leads to a field that wants six digits somebody has to say. "They typed your code", which moves the Mac that asked to step 2, is the other Mac's word and decides nothing but what is shown.</li>
       <li>The codes last two minutes and belong to this one connection. A third wrong entry ends the attempt on both Macs, and both say so.</li>
       <li>One pairing at a time per Mac. A second request waits its turn; it does not get a panel of its own.</li>
       <li>"Not expecting this" is the red button because it is the safe answer for someone who does not know what the panel is. Neither button answers to the Return key.</li>

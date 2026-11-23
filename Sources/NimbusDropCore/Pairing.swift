@@ -110,6 +110,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     private var socket: Socket?
     private var theirs: SecureHello?
     private var expected = ""
+    private var _mine = ""
     private var tries = 3
     private var localRight = false
     private var remoteRight = false
@@ -131,6 +132,12 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     public var standing: KeyStanding { lock.withLock { _standing } }
     /// Set when the other Mac's name is that of a Mac this one already knows under another key.
     public var clash: NameClash? { lock.withLock { _clash } }
+    /// This Mac's code, from the moment the codes exist to the end: a window shows it for as
+    /// long as the other person still has to type it, which is after this Mac's own entry.
+    public var myCode: String { lock.withLock { _mine } }
+    /// The other Mac has said its person typed this Mac's code. Good for choosing what a
+    /// window shows next and for nothing else: anyone at the other end can say it.
+    public var otherTyped: Bool { lock.withLock { remoteRight } }
     public var secondsLeft: Double { lock.withLock { max(0, deadline.timeIntervalSinceNow) } }
 
     // MARK: Starting
@@ -363,6 +370,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     private func beginCodes(mine: String, expecting: String) {
         lock.lock()
         expected = expecting
+        _mine = mine
         tries = 3
         deadline = Date().addingTimeInterval(Tuning.pairSeconds)
         lock.unlock()
@@ -385,6 +393,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
             case .paired:
                 let again = lock.withLock { () -> Bool in defer { remoteRight = true }; return remoteRight }
                 guard !again else { throw DropError("The other Mac did not keep to the pairing. Nothing was paired.") }
+                onChange?()
                 finishIfBoth()
                 // Nothing more is expected from it. The loop goes on reading all the same, so
                 // that anything more is seen for what it is.

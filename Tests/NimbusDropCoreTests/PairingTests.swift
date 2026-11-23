@@ -118,6 +118,30 @@ final class PairingTests: XCTestCase {
         mine.cancel()
     }
 
+    /// The window shows one code at a time: the Mac that was asked types first, then reads
+    /// its own out. So its code must outlast its own entry, and the Mac that asked must hear
+    /// that it is its turn.
+    func testAMacStillKnowsItsCodeAfterItsPersonHasTyped() throws {
+        let a = try TestMac("a"), b = try TestMac("b")
+        b.onRequest = { $0.proceed() }
+        let mine = a.pair(with: b)
+        XCTAssertTrue(until { !b.requests.withLock { $0 }.isEmpty })
+        let theirs = b.requests.withLock { $0[0] }
+        let codeA = try XCTUnwrap(mine.code()), codeB = try XCTUnwrap(theirs.code())
+        XCTAssertFalse(mine.otherTyped)
+        let told = Locked(0)
+        mine.onChange = { told.withLock { $0 += 1 } }
+        theirs.submit(codeA)
+        XCTAssertEqual(theirs.state, .confirming)
+        XCTAssertEqual(theirs.myCode, codeB, "it is still to be read out")
+        XCTAssertTrue(until { mine.otherTyped })
+        XCTAssertTrue(until { told.withLock { $0 } > 0 }, "the window is told it is its turn")
+        XCTAssertFalse(mine.isPaired, "hearing that they typed pairs nothing")
+        XCTAssertEqual(a.trust.standing(of: b.key), .unknown)
+        mine.submit(codeB)
+        XCTAssertTrue(until { mine.isPaired && theirs.isPaired })
+    }
+
     func testNothingIsPairedUntilBothPeopleHaveTypedTheRightCode() throws {
         let a = try TestMac("a"), b = try TestMac("b")
         b.onRequest = { $0.proceed() }

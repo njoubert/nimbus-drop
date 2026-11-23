@@ -40,15 +40,15 @@ with an arrow while receiving is on, a hollow cloud while it is off, a percentag
 while a drop moves. The app has a Dock icon and its own menu only while the window is open.
 
 **Pairing, once per pair of Macs.** A Mac you have not paired with shows as *New*. Drop a file
-on it and the person there is asked whether to pair. Then each Mac shows a 6-digit code of its
-own: each of you reads yours out and types the one you hear. That is all. The codes are safe to
+on it and the person there is asked whether to pair. Then, one code at a time: you read out the 6-digit code on your
+Mac and they type it; then they read out theirs and you type it. That is all. The codes are safe to
 say aloud; they are not passwords. After that the two Macs know each other by their keys,
 whatever they are called and wherever they are, and nothing another Mac announces can take
 either one's place. (No voice to hand? Right-click the tile, *Pair by Identity Number…*: each
 of you enters the other's 30-digit number, sent by any means you trust.)
 
 <p align="center">
-  <img src="docs/pairing.png" alt="The pairing panel: read this code out, type the code they read to you" width="400">
+  <img src="docs/pairing.png" alt="The pairing panel, step 1 of 2: read this code out and wait for the other person to type it" width="400">
 </p>
 
 **Keys do not last for ever.** Each Mac's key is replaced after 90 days (Settings: down to an

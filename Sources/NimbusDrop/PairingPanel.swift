@@ -50,6 +50,8 @@ final class PairingModel: ObservableObject {
     let session: PairingSession
     @Published var state: PairingSession.State
     @Published var entry = ""
+    /// The other Mac says its person has typed this Mac's code: it is this person's turn.
+    @Published var otherTyped = false
     /// A responder's person has said yes to pairing at all (and, where asked, what the Mac is).
     @Published var agreed = false
     /// The question "does it replace the Mac you know, or is it another?" is showing.
@@ -76,6 +78,7 @@ final class PairingModel: ObservableObject {
         let new = session.state
         if case .codes(_, let left) = new, case .codes(_, let before) = state, left != before { entry = "" }
         state = new
+        if session.otherTyped != otherTyped { otherTyped = session.otherTyped; entry = "" }
     }
 
     var clash: NameClash? { session.clash }
@@ -161,8 +164,11 @@ final class PairingPanel: NSObject, NSWindowDelegate {
             ("renew", .request(name: "macbookpro", address: "192.168.1.107", clash: nil, renewal: true)),
             ("which", .which(name: "macbookairm4")),
             ("waiting", .waiting(name: "dads-imac")),
-            ("codes", .codes(name: "dads-imac", mine: "482913", entry: "7053", left: 3, renewal: false)),
-            ("wrong", .codes(name: "dads-imac", mine: "482913", entry: "", left: 2, renewal: false)),
+            ("read", .read(name: "dads-imac", mine: "482913", renewal: false, second: false)),
+            ("type", .type(name: "macbookpro", entry: "4829", left: 3, renewal: false, second: false)),
+            ("wrong", .type(name: "macbookpro", entry: "", left: 2, renewal: false, second: false)),
+            ("read2", .read(name: "macbookpro", mine: "705316", renewal: false, second: true)),
+            ("type2", .type(name: "dads-imac", entry: "70", left: 3, renewal: false, second: true)),
             ("number", .number(name: "dads-imac", mine: "305178492611370652084991307754", entry: "9284136605711295843020", left: 3)),
             ("paired", .paired(name: "Dad's iMac", until: Date().addingTimeInterval(88 * 86400), pending: "Christmas 2026")),
             ("failed", .failed("The codes do not match. Something may be between the two Macs. Nothing was paired.")),
@@ -192,7 +198,11 @@ enum PairingStage {
     case request(name: String, address: String, clash: NameClash?, renewal: Bool)
     case which(name: String)
     case waiting(name: String)
-    case codes(name: String, mine: String, entry: String, left: Int, renewal: Bool)
+    /// One code is on screen at a time. First the Mac that asked reads its code out and the
+    /// other types it; then they swap (`second`). Both typed at once at first, and whoever
+    /// pressed Return first lost sight of the code the other still needed (the owner, 2026-11-23).
+    case read(name: String, mine: String, renewal: Bool, second: Bool)
+    case type(name: String, entry: String, left: Int, renewal: Bool, second: Bool)
     case number(name: String, mine: String, entry: String, left: Int)
     case confirming(name: String)
     case paired(name: String, until: Date, pending: String?)
@@ -200,7 +210,7 @@ enum PairingStage {
 
     var entry: String {
         switch self {
-        case .codes(_, _, let e, _, _), .number(_, _, let e, _): return e
+        case .type(_, let e, _, _, _), .number(_, _, let e, _): return e
         default: return ""
         }
     }
@@ -219,9 +229,16 @@ private struct PairingView: View {
         case .asking:
             return model.agreed ? .waiting(name: s.peerName) : .request(name: s.peerName, address: s.peerAddress, clash: model.clash, renewal: model.isRenewal)
         case .codes(let mine, let left):
-            return s.byNumber ? .number(name: s.peerName, mine: model.myNumber, entry: model.entry, left: left)
-                              : .codes(name: s.peerName, mine: mine, entry: model.entry, left: left, renewal: model.isRenewal)
-        case .confirming: return .confirming(name: s.peerName)
+            if s.byNumber { return .number(name: s.peerName, mine: model.myNumber, entry: model.entry, left: left) }
+            // The Mac that was asked types first: a request from the network alone leads to a
+            // field that wants six digits somebody has to say.
+            if !s.initiator { return .type(name: s.peerName, entry: model.entry, left: left, renewal: model.isRenewal, second: false) }
+            return model.otherTyped ? .type(name: s.peerName, entry: model.entry, left: left, renewal: model.isRenewal, second: true)
+                                    : .read(name: s.peerName, mine: mine, renewal: model.isRenewal, second: false)
+        case .confirming:
+            // This Mac's person typed theirs. For the Mac that was asked, that was step one.
+            if !s.byNumber, !s.initiator, !model.otherTyped { return .read(name: s.peerName, mine: s.myCode, renewal: model.isRenewal, second: true) }
+            return .confirming(name: s.peerName)
         case .paired(let mac): return .paired(name: mac.name, until: mac.endsWall, pending: model.pending)
         case .failed(let why): return .failed(why)
         }
@@ -303,18 +320,30 @@ struct PairingStageView: View {
                 Text("They are being asked whether to pair. Tell them it is you.").foregroundStyle(.secondary).multilineTextAlignment(.center)
                 Button("Cancel") { act(.refuse) }.keyboardShortcut(.cancelAction).buttonStyle(PanelButton(fill: Color.primary.opacity(0.14), text: .primary))
 
-            case .codes(let name, let mine, _, let left, let renewal):
+            case .read(let name, let mine, let renewal, let second):
+                if renewal, !second { Text("The same Mac you paired with before").font(.caption).foregroundStyle(Palette.receive) }
+                Text(second ? "Step 2 of 2 · that was the right code" : "Step 1 of 2").font(.caption).foregroundStyle(second ? AnyShapeStyle(Palette.receive) : AnyShapeStyle(.secondary))
+                Text(second ? "Now read this code out to the person at \(name):" : "Read this code out to the person at \(name):")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(spaced(mine)).font(.system(size: 40, weight: .semibold, design: .monospaced)).textSelection(.disabled)
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Waiting for them to type it…").foregroundStyle(.secondary)
+                }
+                Button("Stop Pairing") { act(.refuse) }.keyboardShortcut(.cancelAction).buttonStyle(PanelButton(fill: Color.primary.opacity(0.14), text: .primary))
+
+            case .type(let name, _, let left, let renewal, let second):
                 if left < 3 {
                     orb("exclamationmark.circle.fill", Palette.failure)
                     Text("That is not the code this Mac expected").font(.headline)
                     Text("Check it with the person at \(name) and type it once more (\(left) \(left == 1 ? "try" : "tries") left). If it is what they read out, stop: something may be between the two Macs.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    if renewal { Text("The same Mac you paired with before").font(.caption).foregroundStyle(Palette.receive) }
-                    Text("Read this code out to the person at \(name):").foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if renewal, !second { Text("The same Mac you paired with before").font(.caption).foregroundStyle(Palette.receive) }
+                    Text(second ? "Step 2 of 2 · they typed your code" : "Step 1 of 2").font(.caption).foregroundStyle(second ? AnyShapeStyle(Palette.receive) : AnyShapeStyle(.secondary))
+                    Text(second ? "Now type the code the person at \(name) reads to you:" : "Type the code the person at \(name) reads to you:")
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
-                Text(spaced(mine)).font(.system(size: 40, weight: .semibold, design: .monospaced)).textSelection(.disabled)
-                Text("Type the code they read to you:").foregroundStyle(.secondary)
                 TextField("000 000", text: $entry)
                     // Not .roundedBorder: its height is fixed for body text and cut 22 pt digits off.
                     .textFieldStyle(.plain).font(.system(size: 24, weight: .medium, design: .monospaced)).multilineTextAlignment(.center)
@@ -325,7 +354,7 @@ struct PairingStageView: View {
                     .onAppear { typing = true }
                 HStack(spacing: 8) {
                     Button("Stop Pairing") { act(.refuse) }.keyboardShortcut(.cancelAction).buttonStyle(PanelButton(fill: Color.primary.opacity(0.14), text: .primary))
-                    Button("Pair") { act(.submit) }.disabled(PublicKey.digits(entry).count != 6)
+                    Button(second ? "Pair" : "Next") { act(.submit) }.disabled(PublicKey.digits(entry).count != 6)
                         .buttonStyle(PanelButton(fill: Palette.send, text: .white))
                 }
 

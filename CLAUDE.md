@@ -254,6 +254,13 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   only when its own person typed the right code AND the other said the same. One pairing at a
   time per Mac (`PairingGate`); requests from others are shown one at a time, at most four
   waiting, with a pause after each refusal that doubles (`Tuning.pairQuiet…`).
+- **The window shows one code at a time** (`PairingStage.read` / `.type`): the Mac that asked
+  reads its code out and the Mac that was asked types it, then they swap. The wire and the
+  engine take the two entries in either order, as before; the order is the window's, driven
+  by `PairingSession.otherTyped` (which is a hint and proves nothing: a `paired {}` from the
+  other end still stores nothing by itself). Both codes were on screen at once at first, and
+  whoever pressed Return first lost sight of the code the other still had to type (the owner,
+  2026-11-23). The command line still prints its code and asks in one go; a terminal keeps it.
 - **The first plan read the code aloud into a PAKE** (CPace, libsodium). A PAKE's code is a
   secret; the plan's own assumption was that the room may hold the attacker. The first review
   found a man in the middle within earshot pairing with both Macs, silently. Now the codes are

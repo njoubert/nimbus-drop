@@ -90,11 +90,17 @@ Sources/NimbusDrop/         the app
                             --check-update / --preflight
   AppModel.swift            destinations (found + added by address), transfer rows, the receiving
                             switch, the save prompt, notifications, the sleep hold
-  StatusBarController.swift the status item: no menu, a click opens (or closes) the window; --dump-bar
-  MainMenu.swift            the app's own menu bar while the window is open: version, updates,
-                            Receive Drops, Open at Login, Parallel Connections
-  MainWindow.swift          the window (SwiftUI in an NSWindow): header, destinations and Add by
-                            Address, drops, the settings footer; --dump-window
+  StatusBarController.swift the status item: a click opens (or closes) the window, a right-click
+                            brings a short menu; --dump-bar
+  MainMenu.swift            the app's own menu bar while the window is open: version, Settings,
+                            updates, Receive Drops
+  MainWindow.swift          the window (SwiftUI in an NSWindow): This computer, Destinations and
+                            Add by Address, the drops, the kinds-of-file sheet; --dump-window,
+                            --dump-kinds
+  SettingsWindow.swift      Settings (⌘,): parallel connections, Open at login, updates, the
+                            version and protocol. Nothing of the kind is on the main window.
+  OfferPanel.swift          the Accept / Decline panel for an incoming drop; --dump-offer
+  Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
 Tests/NimbusDropCoreTests/  20 tests: whole drops, decline, collisions, resume, cancel, a hostile

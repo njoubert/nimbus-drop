@@ -17,6 +17,7 @@ import NimbusUpdater
 //   --dump-window PATH      render the window with made-up Macs and drops to PATH (+ -light, -empty), exit
 //   --crowd N               with --dump-window: N made-up destinations, at the default size and a wide one
 //   --dump-kinds PATH       render the "which kinds of file?" sheet to PATH, exit
+//   --dump-settings PATH    render the Settings window to PATH, exit
 //   --dump-offer PATH       render the "do you want this drop?" panel to PATH, exit
 //   --show-window           open the window at launch (the app otherwise starts in the menu bar only)
 //
@@ -89,6 +90,7 @@ while !args.isEmpty {
     case "--dump-bar": dumpBarPath = takeValue(a)
     case "--dump-window": dumpWindowPath = takeValue(a)
     case "--dump-kinds": let v = takeValue(a); exit(MainActor.assumeIsolated { MainWindowController.dumpKinds(to: v) ? 0 : 1 })
+    case "--dump-settings": let v = takeValue(a); exit(MainActor.assumeIsolated { SettingsWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-offer": let v = takeValue(a); exit(MainActor.assumeIsolated { OfferPanel.dump(to: v) ? 0 : 1 })
     case "--crowd": dumpCrowd = Int(takeValue(a)) ?? 0
     case "--show-window": showWindowAtLaunch = true
@@ -146,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var updater: Updater?
     var window: MainWindowController?
     var menu: MainMenu!
+    var settings: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -204,6 +207,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showWindow() {
         if window == nil { window = MainWindowController(model: model) }
         window?.show()
+    }
+
+    /// The Settings window (⌘,), made on first use and kept.
+    @objc func showSettings() {
+        if settings == nil { settings = SettingsWindowController(model: model, updater: updater) }
+        settings?.show()
     }
 
     /// The menu bar item: open the window, or close it when it is already in front.

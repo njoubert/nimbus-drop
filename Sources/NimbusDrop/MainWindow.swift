@@ -51,10 +51,19 @@ struct MainView: View {
                 // As tall as its drops, and no taller than about three of them.
                 .frame(height: min(max(dropsHeight, 40), 250))
             }
-            Divider()
-            footer
+            // The few settings live in the Settings window. All that shows here is an update
+            // that is downloaded and waiting.
+            if let version = model.updateReady {
+                Divider()
+                HStack {
+                    Text("Nimbus Drop \(version) is ready to install.").font(.callout)
+                    Spacer()
+                    Button("Install and Relaunch") { model.installUpdate?() }.controlSize(.small)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 8)
+            }
         }
-        .frame(minWidth: 500, idealWidth: 560, minHeight: 380, idealHeight: 510)
+        .frame(minWidth: 500, idealWidth: 560, minHeight: 360, idealHeight: 480)
         .tint(Palette.send)
         .sheet(item: $model.kindQuestion) { KindSheet(question: $0, model: model).tint(Palette.send) }
     }
@@ -180,26 +189,6 @@ struct MainView: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.4)))
         }
     }
-
-    private var footer: some View {
-        HStack(spacing: 14) {
-            Picker("Connections", selection: Binding(get: { model.streams }, set: { model.setStreams($0) })) {
-                ForEach(Settings.streamChoices, id: \.self) { Text("\($0)").tag($0) }
-            }
-            .fixedSize()
-            .help("How many parallel connections a drop you send is spread over. More helps on fast wired networks and with many small files.")
-            Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
-                .disabled(Bundle.main.bundleIdentifier == nil)
-            Spacer()
-            if let version = model.updateReady {
-                Button("Install Update \(version)") { model.installUpdate?() }.controlSize(.small)
-            }
-            Text(StatusBarController.versionString())
-                .font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)
-        }
-        .controlSize(.small)
-        .padding(.horizontal, 20).padding(.vertical, 9)
-    }
 }
 
 private struct HeightKey: PreferenceKey {
@@ -321,7 +310,8 @@ private struct KindSheet: View {
                     .controlSize(.small)
                 Spacer()
                 Button("Cancel") { model.answer(question, kinds: nil, send: false) }.keyboardShortcut(.cancelAction)
-                Button(all ? "Send All" : "Send \(Format.files(files)) (\(Format.bytes(bytes)))") {
+                // Always with what is about to go: the size is the thing being decided.
+                Button(all ? "Send All (\(Format.bytes(bytes)))" : "Send \(Format.files(files)) (\(Format.bytes(bytes)))") {
                     model.answer(question, kinds: all ? nil : chosen, send: true)
                 }
                 .keyboardShortcut(.defaultAction).disabled(chosen.isEmpty)
@@ -448,9 +438,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         // Room for two rows of destinations with no drops showing; the person's own size and
         // place are remembered from then on.
-        window.setContentSize(NSSize(width: 560, height: 510))
+        window.setContentSize(NSSize(width: 560, height: 480))
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("NimbusDropMain3")
+        window.setFrameAutosaveName("NimbusDropMain4")
         if window.frame.origin == .zero { window.center() }
         window.delegate = self
     }

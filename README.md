@@ -96,10 +96,10 @@ again, save to the same folder, and only what is missing is sent.
 
 **Versions.** Every copy announces its app version and its protocol version. A Mac that speaks a
 different protocol major shows as *Needs an update* and cannot be sent to; an offer from one is
-declined with both versions named. The bottom of the window shows this copy's.
+declined with both versions named. Settings shows this copy's.
 
-At the bottom of the window: the number of parallel connections, *Open at login*, and the
-version. The app menu has the same, plus updates.
+**Settings** (⌘, or right-click the menu bar icon): how many parallel connections a send uses,
+*Open at login*, updates, and which version and protocol this copy is.
 
 ## How fast
 
@@ -122,7 +122,7 @@ to about 3 GB/s before the Macs themselves are the limit.
   47823 and takes any free one otherwise.
 - **A drop:** one control connection carries the offer, the answer, the manifest (every file,
   folder and symlink with size, time and mode) and the receiver's note of what it already has.
-  Then 8 parallel TCP connections (*Connections* at the bottom of the window: 1 to 16) carry the
+  Then 8 parallel TCP connections (*Parallel connections* in Settings: 1 to 16) carry the
   data in 4 MiB chunks. Every connection takes the next unsent chunk from one shared list, so a
   single huge file is spread across all of them and so is a folder of small ones.
 - **Checked end to end:** every chunk carries a CRC-32 over its header and its bytes, verified
@@ -157,7 +157,7 @@ Both Macs need Nimbus Drop running, Apple silicon and macOS 15 or later, on the 
 The first launch asks for **Local Network** access; allow it, or the Macs cannot see each other
 (System Settings › Privacy & Security › Local Network to change it later). Launched from
 `/Applications` it adds itself to Login Items once, so the Mac is ready to receive after a
-restart; turn that off at the bottom of the window (*Open at login*) or in System Settings.
+restart; turn that off in Settings (*Open at login*) or in System Settings.
 
 ## From the command line
 

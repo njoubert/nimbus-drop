@@ -41,11 +41,14 @@ final class StatusBarController: NSObject {
         receive.target = self
         receive.state = model.receiving ? .on : .off
         menu.addItem(receive)
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = LoginItem.isEnabled ? .on : .off
         if Bundle.main.bundleIdentifier == nil { login.action = nil }
         menu.addItem(login)
+        menu.addItem(settings)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Nimbus Drop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
         // A status item with a menu set shows it on every click; set it for this click only.
@@ -55,6 +58,7 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func openWindow() { AppDelegate.shared?.showWindow() }
+    @objc private func openSettings() { AppDelegate.shared?.showSettings() }
     @objc private func toggleReceiving() { model.setReceiving(!model.receiving) }
     @objc private func toggleLogin() { model.setOpenAtLogin(!LoginItem.isEnabled) }
 

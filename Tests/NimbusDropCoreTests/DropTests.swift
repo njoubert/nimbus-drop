@@ -352,6 +352,48 @@ final class DropTests: XCTestCase {
         XCTAssertTrue(HistoryStore(url: url).entries.isEmpty, "a damaged file is an empty history, not a crash")
     }
 
+    // MARK: The debug log
+
+    func testTheLogFileIsStampedAndRotates() throws {
+        let url = root.appendingPathComponent("logs/nimbus-drop.log")
+        let log = LogFile(url: url, rotateAt: 2000)
+        log.append("first line")
+        log.flush()
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.hasSuffix(" first line\n"), text)
+        XCTAssertNotNil(text.range(of: #"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} "#, options: .regularExpression), "each line begins with when")
+        for i in 0..<100 { log.append("line \(i) with enough in it to fill the file up and force it over") }
+        log.flush()
+        let old = url.appendingPathExtension("1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path), "the full file was set aside")
+        XCTAssertLessThan(try Data(contentsOf: url).count, 2200, "and a new one started")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path).count, 2, "two files at most")
+        XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).hasSuffix("line 99 with enough in it to fill the file up and force it over\n"))
+    }
+
+    func testADropLeavesItsStoryInTheLog() throws {
+        let lines = Box<[String]>([])
+        DropLog.sink = { line in lines.value += [line] }
+        defer { DropLog.sink = nil }
+        let src = try makeTree()
+        let dst = try destination()
+        let l = try listen { $0.accept(destination: dst) }
+        defer { l.stop() }
+        let first = send([src], to: l, failAfter: 12)
+        wait(first)
+        Thread.sleep(forTimeInterval: 0.3)
+        let second = send([src], to: l)
+        wait(second)
+        Thread.sleep(forTimeInterval: 0.2)
+        let log = lines.value.joined(separator: "\n")
+        for expected in ["“Photos” to receiver at 127.0.0.1", "offer from sender at 127.0.0.1", "accepted, saving to", "waitingForAccept",
+                         "transferring", #"failed("Stopped by the test")"#, "lost the control connection", "superseded", "already here:",
+                         "completed", "saved as"] {
+            XCTAssertTrue(log.contains(expected), "the log does not mention: \(expected)\n\(log)")
+        }
+        XCTAssertTrue(lines.value.allSatisfy { $0.hasPrefix("[") }, "every line says which drop it is about")
+    }
+
     // MARK: Finding each other
 
     func testAMacAddedByAddressSaysWhoItIs() throws {

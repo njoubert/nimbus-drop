@@ -19,8 +19,8 @@ rest: how to work here, how the engine is put together, and what was measured.
   its paths become paths here. `Manifest.validate()` is the gate; a change to it, or to how the
   receiver builds paths, without a case in `testAManifestThatReachesOutsideIsRefused` is not
   finished. Nothing existing is ever overwritten: collisions get a "keep both" name.
-- **Nothing is written before the person accepts.** The app asks twice: Accept or Decline, then
-  where to save; declining either declines the drop. `--receive` (the CLI) accepts everything and is for a machine the owner controls.
+- **Nothing is written before the person accepts.** The Accept panel's answers are Save to
+  Downloads (one click), Save to… (then the folder chooser; cancelling it declines) and Decline. `--receive` (the CLI) accepts everything and is for a machine the owner controls.
 - **Grill me relentlessly** before building a feature: every question whose answer would change
   the work, with the facts already checked. Decisions, not options.
 - **Be concise.** Short reports, the salient facts only.
@@ -76,6 +76,8 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
                             PeerTable (pure: who is on the network, from what Bonjour reports);
                             PeerBrowser (NWBrowser + resolve to IPv4 + restart on trouble)
   Host.swift                LocalHost: the Bonjour host name, the IPv4 addresses
+  Log.swift                 DropLog (the engine's and the app's debug lines, to whatever sink the
+                            app sets) and LogFile (stamped, appended from any thread, rotated)
   History.swift             HistoryEntry, HistoryStore (one JSON file, newest first, 500 at most)
   FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
                             extension to mean); ScannedDrop.keeping(kinds:) (send only some)
@@ -93,8 +95,9 @@ Sources/NimbusDrop/         the app
                             switch, the save prompt, notifications, the sleep hold
   StatusBarController.swift the status item: a click opens (or closes) the window, a right-click
                             brings a short menu; --dump-bar
-  MainMenu.swift            the app's own menu bar while the window is open: version, Settings,
-                            updates, Receive Drops
+  MainMenu.swift            the app's menu bar while the window is open. `fill(_:)` is THE menu:
+                            the app menu and the menu bar icon's right-click menu are both made
+                            by it, so an item added there is in both. Never build either by hand.
   MainWindow.swift          the window (SwiftUI in an NSWindow): This computer, Destinations and
                             Add by Address, the drops, the kinds-of-file sheet; --dump-window,
                             --dump-kinds
@@ -293,6 +296,12 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   button with it; it is written to the history the moment it ends. The poll timer therefore
   runs while anything is listed (four times a second while something moves, once a second
   otherwise) and stops when the list is empty; the sleep hold is only for drops that are moving.
+- **The debug log** is `~/Library/Logs/<bundle name>/nimbus-drop.log` (so "Nimbus Drop Dev" for
+  the development copy), 4 MB then rotated to `.1`. Read it first when a drop misbehaves: every
+  line about a drop starts with its tag (`[3F9A2C send]`), and a state change that ends or
+  interrupts a drop carries the byte counts and the trouble counts. `--verbose` prints the same
+  lines for the command line. When something new can go wrong in the engine, give it a
+  `log(...)` line; `testADropLeavesItsStoryInTheLog` shows the shape.
 - **Each offer owns its questions** (`AppModel.asking`, by drop id): its Accept panel, then its
   folder chooser, independent of any other drop. A sender giving up removes exactly its own. The
   first version queued offers behind one shared "a question is open" flag, and a withdrawn offer

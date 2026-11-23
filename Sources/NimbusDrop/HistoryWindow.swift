@@ -31,9 +31,11 @@ struct HistoryView: View {
             }
             Divider()
             HStack {
-                Text(model.history.isEmpty ? "" : "\(model.history.count) \(model.history.count == 1 ? "drop" : "drops"), kept on this Mac only")
+                Text(model.history.isEmpty ? "" : "\(model.history.count) \(model.history.count == 1 ? "drop" : "drops")")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                Button("Show Log") { AppDelegate.shared?.showLog() }
+                    .help("The debug log: everything each drop did, with times. Useful when one fails.")
                 Button("Clear History") { model.clearHistory() }.disabled(model.history.isEmpty)
             }
             .controlSize(.small)
@@ -62,6 +64,16 @@ private struct HistoryRow: View {
         }
     }
 
+    /// "reconnected once, 3 connections lost; re-sent": what the drop went through, when it did.
+    private var trouble: String? {
+        var s = TransferStats()
+        s.connectionFailures = entry.connectionsLost ?? 0
+        s.damagedChunks = entry.damagedChunks ?? 0
+        s.reconnects = entry.reconnects ?? 0
+        guard s.connectionFailures > 0 || s.damagedChunks > 0 || s.reconnects > 0 else { return nil }
+        return AppModel.troubleText(s)
+    }
+
     /// The saved items that are still where they were put.
     private var saved: [URL] {
         entry.savedPaths.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -81,6 +93,7 @@ private struct HistoryRow: View {
                 Text(summary).font(.caption.monospacedDigit())
                     .foregroundStyle(entry.outcome == .completed ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.failure))
                     .lineLimit(2)
+                if let trouble { Text(trouble).font(.caption).foregroundStyle(.tertiary) }
             }
             Spacer(minLength: 8)
             Text(when).font(.caption).foregroundStyle(.secondary)

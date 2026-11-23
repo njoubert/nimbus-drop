@@ -5,8 +5,8 @@ import NimbusDropCore
 
 /// The menu bar item: the cloud (hollow when receiving is off, a percentage beside it while a
 /// drop moves). A click opens the window, which is where files are dropped and where everything
-/// else lives; a click while the window is in front closes it again. A right-click brings a
-/// short menu: open, Receive Drops, Open at Login, quit.
+/// else lives; a click while the window is in front closes it again. A right-click brings the
+/// app's menu: the same list `MainMenu.fill` puts under the app's name, from the same function.
 @MainActor
 final class StatusBarController: NSObject {
     private let model: AppModel
@@ -32,39 +32,14 @@ final class StatusBarController: NSObject {
             AppDelegate.shared?.toggleWindow()
             return
         }
+        // The same list as the app's own menu, from the same function (MainMenu.fill).
         let menu = NSMenu()
-        let open = NSMenuItem(title: "Open Nimbus Drop", action: #selector(openWindow), keyEquivalent: "")
-        open.target = self
-        menu.addItem(open)
-        menu.addItem(.separator())
-        let receive = NSMenuItem(title: "Receive Drops", action: #selector(toggleReceiving), keyEquivalent: "")
-        receive.target = self
-        receive.state = model.receiving ? .on : .off
-        menu.addItem(receive)
-        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
-        settings.target = self
-        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
-        login.target = self
-        login.state = LoginItem.isEnabled ? .on : .off
-        if Bundle.main.bundleIdentifier == nil { login.action = nil }
-        menu.addItem(login)
-        let history = NSMenuItem(title: "History…", action: #selector(openHistory), keyEquivalent: "")
-        history.target = self
-        menu.addItem(history)
-        menu.addItem(settings)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Nimbus Drop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        AppDelegate.shared?.menu.fill(menu)
         // A status item with a menu set shows it on every click; set it for this click only.
         item.menu = menu
         item.button?.performClick(nil)
         item.menu = nil
     }
-
-    @objc private func openWindow() { AppDelegate.shared?.showWindow() }
-    @objc private func openSettings() { AppDelegate.shared?.showSettings() }
-    @objc private func openHistory() { AppDelegate.shared?.showHistory() }
-    @objc private func toggleReceiving() { model.setReceiving(!model.receiving) }
-    @objc private func toggleLogin() { model.setOpenAtLogin(!LoginItem.isEnabled) }
 
     private func updateBar() {
         let fraction = model.overallFraction

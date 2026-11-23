@@ -96,6 +96,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
         update { $0.totalBytes = manifest.totalBytes; $0.totalFiles = manifest.fileCount }
         if isOver { return }
 
+        log("“\(title)” to \(peerName) at \(host):\(port): \(manifest.fileCount) files, \(manifest.totalBytes) bytes, \(streams) connections")
         setState(.connecting)
         control = try Socket.connect(host: host, port: port)
         control.setNoDelay()
@@ -140,6 +141,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 reconnected = false
                 guard fruitless < 3 else { throw DropError("\(peerName) stopped responding; send the drop again to continue it") }
                 note { $0.rounds += 1 }
+                log("round \(stats.rounds): the receiver has \(have) of \(manifest.totalBytes) bytes; \(jobs.count) chunks to send")
                 setState(.transferring)
                 if !jobs.isEmpty {
                     let sockets = try openStreams(token: plan.token)
@@ -169,6 +171,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 // The conversation's own connection is gone (the other Mac changed networks,
                 // slept, lost Wi-Fi). The drop is still wanted on both sides: get it back.
                 if isOver { return }
+                log("lost the control connection: \(lost.message)")
                 reply = try reconnect(after: lost)
                 reconnected = true
             }
@@ -183,13 +186,21 @@ public final class SendSession: Transfer, @unchecked Sendable {
         setState(.reconnecting)
         for s in lock.withLock({ live }) { s.socket.shutdown() }
         let deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+        var attempt = 0
         while !isOver, Date() < deadline {
             if let found = relocate?() {
+                if lock.withLock({ found.host != host || found.port != port }) { log("\(peerName) is now at \(found.host):\(found.port)") }
                 lock.withLock { host = found.host; port = found.port }
                 setPeerAddress(found.host)
             }
             let (h, p) = lock.withLock { (host, port) }
-            if let fresh = try? Socket.connect(host: h, port: p, timeout: min(Tuning.connectTimeout, 5)) {
+            attempt += 1
+            let fresh: Socket?
+            do { fresh = try Socket.connect(host: h, port: p, timeout: min(Tuning.connectTimeout, 5)) } catch {
+                fresh = nil
+                log("reconnect attempt \(attempt) to \(h):\(p): \((error as? DropError)?.message ?? "\(error)")")
+            }
+            if let fresh {
                 fresh.setNoDelay()
                 replaceControl(control, with: fresh)
                 control = fresh
@@ -205,8 +216,10 @@ public final class SendSession: Transfer, @unchecked Sendable {
                     if let answer = try? nextFrame(within: max(2, Tuning.connectTimeout)), answer.type == .plan || answer.type == .complete {
                         note { $0.reconnects += 1 }
                         touch()
+                        log("reconnected on attempt \(attempt); the receiver answered \(answer.type)")
                         return answer
                     }
+                    log("reconnect attempt \(attempt) to \(h):\(p): connected, but no answer to resume")
                 }
             }
             if isOver { break }
@@ -231,6 +244,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// minute if the other Mac really is frozen.
     override func silence() {
         guard let control, !token.isEmpty, state != .reconnecting else { return super.silence() }
+        log("no sign of life from \(peerName); treating the connection as lost")
         control.shutdown()
     }
 
@@ -333,6 +347,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
             var failed = false
             do { try runStream(stream) } catch {
                 failed = true
+                log("a data connection failed after \(stream.chunks) chunks: \((error as? DropError)?.message ?? "\(error)")")
                 note { $0.connectionFailures += 1 }
                 socket.shutdown()
             }
@@ -357,6 +372,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
         while !state.isFinal {
             let now = Date()
             for s in lock.withLock({ live }) where now.timeIntervalSince(lock.withLock { s.lastProgress }) > Tuning.stallSeconds {
+                log("a data connection has moved nothing for \(Int(Tuning.stallSeconds)) s; closing it")
+                lock.withLock { s.lastProgress = now }
                 s.socket.shutdown()
             }
             Thread.sleep(forTimeInterval: min(0.25, Tuning.stallSeconds / 8))

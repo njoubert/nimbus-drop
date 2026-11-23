@@ -154,6 +154,7 @@ public final class PeerBrowser: @unchecked Sendable {
             switch state {
             case .failed(let e):
                 // A failed browser stays failed; the network changing under it is the usual cause.
+                DropLog.write("discovery: the browser failed: \(e)")
                 problem = "\(e.localizedDescription)"
                 restartSoon()
             case .waiting(let e): problem = "\(e.localizedDescription)"
@@ -175,6 +176,7 @@ public final class PeerBrowser: @unchecked Sendable {
             restartPending = false
             lastRestart = Date()
             onTrace?("restarting the browser")
+            DropLog.write("discovery: browsing afresh (a result came without its TXT record, or the browser failed)")
             browser?.cancel()
             table.forgetWhereTheyWere()
             start()

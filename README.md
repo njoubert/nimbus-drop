@@ -32,16 +32,17 @@
 
 ## What it does
 
-**The menu bar icon opens the window**, and the window is the app. (A right-click on the icon
-gives a short menu: open, Receive Drops, Open at Login, quit.) A cloud
+**The menu bar icon opens the window**, and the window is the app. A right-click on the icon
+gives the app's menu, the same one that sits under its name while the window is open: Receive
+Drops, Open at Login, History, Show Log, Settings, updates, Quit. A cloud
 with an arrow while receiving is on, a hollow cloud while it is off, a percentage beside it
 while a drop moves. The app has a Dock icon and its own menu only while the window is open.
 
 **Receiving.** While *Receive drops* is on, this Mac announces itself on the local network and
 other Macs running Nimbus Drop can offer it files. Nothing is written until you say so. An offer raises a small
 panel that says who is sending (host name and IP address), what, how many files and how big,
-with *Decline* and *Accept*. Accept, and a folder chooser asks where to save it, starting in
-`~/Downloads`; cancelling that declines too. Several drops arriving at once each get their
+with three answers: *Save to Downloads* (one click, and Return), *Save to…* (choose a folder
+first; cancelling that declines) and *Decline*. Several drops arriving at once each get their
 own panel and can be answered in any order. Turn
 receiving off and this Mac disappears from everyone's list.
 
@@ -72,6 +73,11 @@ get a notification when a drop finishes or stops, and neither sleeps while one i
 to or from whom, when, how big, how it ended, with *Show in Finder* for what was received. It is
 a file on this Mac (`~/Library/Application Support/com.njoubert.nimbusdrop/history.json`, the
 last 500 drops), goes nowhere, and *Clear History* empties it.
+
+**A debug log** is kept at `~/Library/Logs/Nimbus Drop/nimbus-drop.log` (*Show Log* in the menu,
+in History and in Settings): every step of every drop with its time, each connection lost and
+each attempt to get it back, Macs appearing and leaving. It is what to look at, or send, when a
+drop fails. Two files of 4 MB at most, on this Mac only.
 
 **Nothing is overwritten.** If `~/Downloads/Christmas 2026` already exists, the new one lands as
 `Christmas 2026 2`, the way Finder keeps both.

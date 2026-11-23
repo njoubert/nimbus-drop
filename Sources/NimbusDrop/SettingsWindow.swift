@@ -33,12 +33,16 @@ struct SettingsView: View {
                 Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
                     .disabled(Bundle.main.bundleIdentifier == nil)
             }
-            Section("History") {
+            Section("History and log") {
                 HStack {
-                    Text("Finished drops leave the window after a minute. The history keeps them, on this Mac only.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Drops that have ended.")
                     Spacer()
                     Button("Show History…") { AppDelegate.shared?.showHistory() }
+                }
+                HStack {
+                    Text("What each drop did, step by step, for when one fails.")
+                    Spacer()
+                    Button("Show Log") { AppDelegate.shared?.showLog() }
                 }
             }
             Section("Updates") {

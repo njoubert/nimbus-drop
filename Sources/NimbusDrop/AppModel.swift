@@ -124,6 +124,7 @@ final class AppModel: ObservableObject {
         b.onChange = { [weak self] peers in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.logPeers(from: self.peers, to: peers)
                 self.peers = peers
                 self.updateProblem()
                 self.onChange?()
@@ -144,11 +145,31 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let now = LocalHost.addresses
-                if now != self.addresses { self.addresses = now; self.onChange?() }
+                if now != self.addresses {
+                    DropLog.write("this Mac's addresses changed: \(now.map { "\($0.address) (\($0.interface))" }.joined(separator: ", "))")
+                    self.addresses = now
+                    self.onChange?()
+                }
                 self.probeManual()
             }
         }
         RunLoop.main.add(t, forMode: .common)
+    }
+
+    /// Who came, who went, whose address changed.
+    private func logPeers(from old: [Peer], to new: [Peer]) {
+        let before = Dictionary(uniqueKeysWithValues: old.map { ($0.id, $0) })
+        let after = Dictionary(uniqueKeysWithValues: new.map { ($0.id, $0) })
+        for p in new {
+            let was = before[p.id]
+            let place = "\(p.address ?? "address not known yet")\(p.port.map { ":\($0)" } ?? "")"
+            if was == nil {
+                DropLog.write("discovery: found \(p.name) at \(place) (Nimbus Drop \(p.appVersion ?? "?"), protocol \(p.protocolText))")
+            } else if was?.address != p.address || was?.port != p.port {
+                DropLog.write("discovery: \(p.name) is at \(place)")
+            }
+        }
+        for p in old where after[p.id] == nil { DropLog.write("discovery: \(p.name) is gone") }
     }
 
     func stop() {
@@ -173,6 +194,7 @@ final class AppModel: ObservableObject {
         listener?.stop()
         listener = nil
         listenProblem = nil
+        if !receiving { DropLog.write("receiving is off") }
         if receiving {
             do {
                 let l = try DropListener(identity: identity)
@@ -182,8 +204,10 @@ final class AppModel: ObservableObject {
                 l.start()
                 listener = l
                 advertiser = try Advertiser(identity: identity, port: l.port)
+                DropLog.write("receiving as \(identity.name) on port \(l.port); addresses \(LocalHost.addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", "))")
             } catch {
                 listenProblem = (error as? DropError)?.message ?? error.localizedDescription
+                DropLog.write("cannot receive: \(listenProblem ?? "")")
             }
         }
         updateProblem()
@@ -271,6 +295,8 @@ final class AppModel: ObservableObject {
     private func begin(_ urls: [URL], _ scanned: ScannedDrop, kinds: Set<String>?, to peer: Peer, host: String, port: UInt16) {
         let session = SendSession(urls: urls, host: host, port: port, peerName: peer.name,
                                   identity: identity, streams: Settings.streams, prescanned: scanned)
+        DropLog.write("sending \(urls.map(\.path).joined(separator: ", ")) to \(peer.name)\(peer.isManual ? " (added by address)" : "")"
+            + (kinds.map { "; only \($0.sorted().joined(separator: ", "))" } ?? ""))
         if !peer.isManual {
             // If the drop loses its connection, the engine asks where the Mac is now: one that
             // changed networks comes back under another address, and Bonjour knows it.
@@ -411,10 +437,9 @@ final class AppModel: ObservableObject {
 
     // MARK: Receiving
 
-    /// Each incoming drop asks its own two questions, independently of any other: "do you want
-    /// this?" in a small panel that says who is sending, what, how many files and how big;
-    /// then, only after Accept, "where do you want to save it?" in a folder chooser. Declining
-    /// either declines that drop. A second drop that arrives while the first is still being
+    /// Each incoming drop asks its own question, independently of any other: a small panel that
+    /// says who is sending, what, how many files and how big, answered with Save to Downloads
+    /// (one click), Save to… (then a folder chooser; cancelling that declines), or Decline. A second drop that arrives while the first is still being
     /// decided gets its own panel beside it, and they can be answered in any order.
     private func offered(_ session: ReceiveSession) {
         add(session)
@@ -422,15 +447,20 @@ final class AppModel: ObservableObject {
         session.onWithdrawn = { [weak self] in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.withdraw(id) } }
         }
-        let q = OfferPanel(session: session) { [weak self] accepted in
+        let q = OfferPanel(session: session) { [weak self] answer in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.asking[id]?.question = nil
-                if accepted, session.state == .waitingForAccept {
-                    self.askWhere(session)
-                } else {
+                guard session.state == .waitingForAccept, answer != .decline else {
                     session.decline("\(self.identity.name) declined")
                     self.asking[id] = nil
+                    return
+                }
+                if answer == .downloads, let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first {
+                    session.accept(destination: downloads)
+                    self.asking[id] = nil
+                } else {
+                    self.askWhere(session)
                 }
             }
         }
@@ -576,9 +606,15 @@ final class AppModel: ObservableObject {
         }
         let p = t.progress
         let seconds = t.transferStartedAt.map { (t.finishedAt ?? Date()).timeIntervalSince($0) }
-        historyStore?.add(HistoryEntry(date: t.finishedAt ?? Date(), sent: t.direction == .send, title: t.title, peerName: t.peerName,
-                                       peerAddress: t.peerAddress, files: p.totalFiles, bytes: p.totalBytes, seconds: seconds,
-                                       outcome: outcome, detail: detail, savedPaths: t.savedURLs.map(\.path)))
+        var entry = HistoryEntry(date: t.finishedAt ?? Date(), sent: t.direction == .send, title: t.title, peerName: t.peerName,
+                                 peerAddress: t.peerAddress, files: p.totalFiles, bytes: p.totalBytes, seconds: seconds,
+                                 outcome: outcome, detail: detail, savedPaths: t.savedURLs.map(\.path))
+        let stats = t.stats
+        entry.rounds = stats.rounds
+        entry.connectionsLost = stats.connectionFailures
+        entry.damagedChunks = stats.damagedChunks
+        entry.reconnects = stats.reconnects
+        historyStore?.add(entry)
         history = historyStore?.entries ?? []
     }
 

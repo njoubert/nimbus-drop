@@ -101,6 +101,7 @@ public final class DropListener: @unchecked Sendable {
             return e === session ? nil : e
         }
         guard let earlier else { return }
+        DropLog.write("\(earlier.tag) superseded: the sender offered the same drop again")
         earlier.fail(DropError("The sender started this drop again"))
         earlier.waitUntilOver()
     }
@@ -159,6 +160,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         senderProtocol = "\(offer.version)" + (offer.minor.map { ".\($0)" } ?? "")
         super.init(direction: .receive, state: .waitingForAccept, peerName: offer.senderName, peerAddress: control.peerAddress)
         setItems(offer.items)
+        log("offer from \(offer.senderName) at \(control.peerAddress) (Nimbus Drop \(senderAppVersion), protocol \(senderProtocol)): “\(offer.items.joined(separator: "”, “"))”, \(offer.fileCount) files, \(offer.totalBytes) bytes")
         update { $0.totalBytes = offer.totalBytes; $0.totalFiles = offer.fileCount }
         track(control)
     }
@@ -185,6 +187,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// held open for the sender to come back to, rather than ended.
     override func silence() {
         guard ledger != nil, state == .transferring else { return super.silence() }
+        log("no sign of life from \(peerName); treating the connection as lost")
         control.shutdown()
     }
 
@@ -216,6 +219,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private func awaitSender(token: String, after lost: Error) throws {
         while true {
             if isOver { throw lost }
+            log("lost the control connection: \((lost as? DropError)?.message ?? "\(lost)"); holding the drop for \(Int(Tuning.reconnectSeconds)) s")
             setState(.reconnecting)
             // Whatever is wrong with the old connection (gone, or it delivered a damaged
             // message), it is finished: closing it is how the sender learns to reconnect.
@@ -234,6 +238,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             replaceControl(control, with: fresh)
             control = fresh
             setPeerAddress(fresh.peerAddress)
+            log("the sender is back, from \(fresh.peerAddress)")
             // The old data connections are closing; let them finish before saying what is here.
             streams.lock()
             let settled = Date().addingTimeInterval(5)
@@ -285,6 +290,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             return
         }
 
+        log("accepted, saving to \(destination.path)")
         try control.send(.accept, Empty())
         let frame = try control.readFrame()
         guard frame.type == .manifest else { throw DropError("Unexpected message from the sender") }
@@ -309,6 +315,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         let empties = manifest.entries.indices.filter { manifest.entries[$0].kind == .file && manifest.chunkCount($0) == 0 }.count
         update { $0.resumedBytes = ledger.doneBytes; $0.doneBytes = ledger.doneBytes; $0.doneFiles = ledger.doneFiles + empties }
         roundStartBytes = ledger.doneBytes
+        log("partial folder \(partial.lastPathComponent); already here: \(ledger.doneBytes) of \(manifest.totalBytes) bytes")
         let needed = manifest.totalBytes - ledger.doneBytes
         if let free = try? destination.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage,
            free < needed {
@@ -346,6 +353,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             guard idle < Tuning.idleRounds else { throw DropError("The drop arrived incomplete; send it again to continue it") }
             note { $0.rounds += 1 }
             let have = ledger.doneBytes
+            log("the sender is done but \(manifest.totalBytes - have) bytes are missing; asking for them (round \(stats.rounds + 1))")
             lock.withLock { roundStartBytes = have }
             update { $0.doneBytes = have }
             do { try control.send(.plan, ledger.plan(token: token)) } catch {
@@ -357,6 +365,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         let saved = try finalize(partial: partial, destination: destination)
         setSaved(saved)
         update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
+        log("saved as \(saved.map(\.path).joined(separator: ", "))")
         let complete = Complete(saved: saved.map(\.lastPathComponent))
         try? control.send(.complete, complete)
         // A sender that lost the connection meanwhile will come back asking; it is told then.
@@ -421,6 +430,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         streams.unlock()
         update { $0.connections += 1 }
         do { try receive(socket) } catch let fault as StreamFault {
+            log(fault == .damaged ? "a chunk arrived damaged from \(socket.peerAddress); closing that connection" : "a data connection from \(socket.peerAddress) was lost")
             note {
                 $0.connectionFailures += 1
                 if fault == .damaged { $0.damagedChunks += 1 }

@@ -21,6 +21,11 @@ public struct HistoryEntry: Codable, Identifiable, Equatable, Sendable {
     public var detail: String?
     /// Received drops: where the items were saved.
     public var savedPaths: [String]
+    /// What the drop got past, or was stopped by (absent in entries written before 0.2.0).
+    public var rounds: Int?
+    public var connectionsLost: Int?
+    public var damagedChunks: Int?
+    public var reconnects: Int?
 
     public init(id: UUID = UUID(), date: Date, sent: Bool, title: String, peerName: String, peerAddress: String,
                 files: Int, bytes: Int64, seconds: Double?, outcome: Outcome, detail: String?, savedPaths: [String]) {

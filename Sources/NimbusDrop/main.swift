@@ -32,6 +32,7 @@ import NimbusUpdater
 //   --port N                the port to listen on / connect to (default 47823)
 //   --streams N             parallel connections for --send
 //   --only jpg,cr3          with --send (before it): only these kinds of file
+//   --verbose               print the debug log's lines while --send / --receive run (before them)
 //   --print                 this Mac's name, addresses and settings; exit
 //   --check-update          what the updater sees on GitHub; exit
 //   --preflight APP.app     the release checks build.sh release runs; exit
@@ -114,6 +115,7 @@ while !args.isEmpty {
     case "--only": let v = takeValue(a).split(separator: ",").map { String($0).replacingOccurrences(of: ".", with: "") }; MainActor.assumeIsolated { CLI.only = v }
     case "--streams": let v = Int(takeValue(a)); MainActor.assumeIsolated { CLI.streams = v }
     case "--print": cli = .print
+    case "--verbose": DropLog.sink = { line in FileHandle.standardError.write(Data(("  " + line + "\n").utf8)) }
     case "--check-update": cli = .checkUpdate
     case "--preflight": cli = .preflight(app: takeValue(a))
     case "-h", "--help": usage()
@@ -152,10 +154,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var menu: MainMenu!
     var settings: SettingsWindowController?
     var history: HistoryWindowController?
+    var log: LogFile?
+
+    static var logURL: URL {
+        let name = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "Nimbus Drop"
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/\(name)/nimbus-drop.log")
+    }
+
+    /// The log file, selected in Finder (it opens in Console with a double-click).
+    @objc func showLog() {
+        log?.flush()
+        NSWorkspace.shared.activateFileViewerSelecting([AppDelegate.logURL])
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         NSApp.setActivationPolicy(.accessory)
+        // The debug log: ~/Library/Logs/<the app's name>/nimbus-drop.log, so the development
+        // copy keeps its own. Everything the engine and the app note goes there.
+        let log = LogFile(url: AppDelegate.logURL)
+        self.log = log
+        DropLog.sink = { log.append($0) }
+        DropLog.write("—— \(StatusBarController.versionString()) started from \(Bundle.main.bundlePath); macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
 
         // One copy only, the newest: two copies on one Mac would both announce it and split the
         // incoming drops between them. The development bundle counts as a copy too.
@@ -276,7 +297,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 
-    func applicationWillTerminate(_ notification: Notification) { model?.stop() }
+    func applicationWillTerminate(_ notification: Notification) {
+        model?.stop()
+        DropLog.write("—— quit")
+        log?.flush()
+    }
 }
 
 MainActor.assumeIsolated {

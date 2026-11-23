@@ -4,22 +4,23 @@ import AppKit
 import NimbusDropCore
 import SwiftUI
 
-/// The first of the two questions an incoming drop asks: do you want this? It says who is
-/// sending (host name and address), what, how many files and how big. Not modal, so the app
-/// keeps running behind it and the panel can be taken away if the sender gives up.
+/// What an incoming drop asks: do you want this, and where? It says who is sending (host name
+/// and address), what, how many files and how big, and offers three answers: decline, save
+/// straight to Downloads (one click, the usual case), or choose a folder first. Not modal, so
+/// the app keeps running behind it and the panel can be taken away if the sender gives up.
 @MainActor
 final class OfferPanel: NSObject, NSWindowDelegate {
     private let panel: NSPanel
-    private var answer: ((Bool) -> Void)?
+    enum Answer { case decline, downloads, choose }
+    private var answer: ((Answer) -> Void)?
 
-    init(session: ReceiveSession, answer: @escaping (Bool) -> Void) {
+    init(session: ReceiveSession, answer: @escaping (Answer) -> Void) {
         self.answer = answer
         panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         let view = OfferView(sender: session.peerName, address: session.peerAddress, title: session.title,
                              detail: "\(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))",
-                             decline: { [weak self] in self?.finish(false) },
-                             accept: { [weak self] in self?.finish(true) })
+                             answer: { [weak self] in self?.finish($0) })
         panel.contentViewController = NSHostingController(rootView: view)
         panel.title = "Incoming Drop"
         panel.level = .modalPanel
@@ -42,25 +43,25 @@ final class OfferPanel: NSObject, NSWindowDelegate {
         panel.close()
     }
 
-    private func finish(_ accepted: Bool) {
+    private func finish(_ chosen: Answer) {
         let a = answer
         answer = nil
         panel.close()
-        a?(accepted)
+        a?(chosen)
     }
 
     /// Closing the panel by its close button is a no.
     func windowWillClose(_ notification: Notification) {
         guard let a = answer else { return }
         answer = nil
-        DispatchQueue.main.async { a(false) }
+        DispatchQueue.main.async { a(.decline) }
     }
 
     /// The panel's contents as a PNG, for `--dump-offer`.
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
         let view = OfferView(sender: "macbookairm4", address: "192.168.1.143", title: "2026-05-03 - M10 - Canon 28mm LTE evening walk",
-                             detail: "1,204 files, 31.2 GB", decline: {}, accept: {})
+                             detail: "1,204 files, 31.2 GB", answer: { _ in })
         let host = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua)
@@ -80,8 +81,7 @@ private struct OfferView: View {
     let address: String
     let title: String
     let detail: String
-    let decline: () -> Void
-    let accept: () -> Void
+    let answer: (OfferPanel.Answer) -> Void
 
     var body: some View {
         VStack(spacing: 14) {
@@ -95,13 +95,39 @@ private struct OfferView: View {
                     .lineLimit(4).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
                 Text(detail).font(.body.monospacedDigit())
             }
-            HStack(spacing: 12) {
-                Button("Decline", action: decline).keyboardShortcut(.cancelAction).frame(maxWidth: .infinity)
-                Button("Accept…", action: accept).keyboardShortcut(.defaultAction).frame(maxWidth: .infinity)
+            // One click for the usual case; the folder chooser for when it should go elsewhere.
+            // Coloured by what they do: blue to take it, red to refuse.
+            VStack(spacing: 8) {
+                Button { answer(.downloads) } label: { Label("Save to Downloads", systemImage: "arrow.down.to.line") }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(AnswerButton(fill: Palette.send, text: .white))
+                HStack(spacing: 8) {
+                    Button("Decline") { answer(.decline) }
+                        .keyboardShortcut(.cancelAction)
+                        .buttonStyle(AnswerButton(fill: Palette.failure, text: .white))
+                    Button("Save to…") { answer(.choose) }
+                        .buttonStyle(AnswerButton(fill: Color.primary.opacity(0.14), text: .primary))
+                }
             }
-            .controlSize(.large)
         }
         .padding(22)
         .frame(width: 380)
+    }
+}
+
+/// The panel's buttons, drawn here rather than left to the system so that they are the app's
+/// colours and look the same whether or not the panel is the key window.
+private struct AnswerButton: ButtonStyle {
+    let fill: Color
+    let text: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.medium))
+            .foregroundStyle(text)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(fill).opacity(configuration.isPressed ? 0.7 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 }

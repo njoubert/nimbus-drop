@@ -36,7 +36,7 @@ final class ProtocolTests: XCTestCase {
     func file(_ name: String, bytes: Int) throws -> URL {
         let url = root.appendingPathComponent(name)
         var data = Data(count: bytes)
-        data.withUnsafeMutableBytes { raw in for i in 0..<bytes { raw[i] = UInt8(truncatingIfNeeded: i &* 31 &+ i / 251) } }
+        data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in for i in 0..<bytes { raw[i] = UInt8(truncatingIfNeeded: i &* 31 &+ i / 251) } }
         try data.write(to: url)
         return url
     }

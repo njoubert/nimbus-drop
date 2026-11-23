@@ -143,6 +143,22 @@ final class ProtocolTests: XCTestCase {
         Opening.majors = [UInt8(protocolVersion)]
     }
 
+    /// One Mac forgets the other. The one that was forgotten finds out at its next drop, and
+    /// from then on shows the Mac as one to pair again, not as paired.
+    func testAMacThatWasForgottenStopsCallingItPaired() throws {
+        let (a, b) = try pairedMacs()
+        b.trust.forget(a.key)
+        XCTAssertTrue(a.trust.standing(of: b.key).isPaired, "nothing has told it yet")
+        let s = send([try file("after.txt", bytes: 100)], from: a, to: b)
+        wait(s)
+        XCTAssertTrue(s.needsPairing, "\(s.state)")
+        XCTAssertTrue(b.offers.withLock { $0.isEmpty })
+        guard case .renew(let r) = a.trust.standing(of: b.key) else { return XCTFail("\(a.trust.standing(of: b.key))") }
+        XCTAssertEqual(r.key, b.key)
+        XCTAssertTrue(a.trust.known.isEmpty, "it is not listed as paired")
+        XCTAssertTrue(a.trust.standing(of: b.key).mayPair, "and it can be paired again, by two people, like any other")
+    }
+
     func testAStrangerWhoClaimsToBePairedIsNotBelieved() throws {
         // A modified copy with a key nobody paired says "paired: yes" in its hello and sends an
         // offer anyway. What a Mac says about itself is not what this Mac knows about it.

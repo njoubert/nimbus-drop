@@ -549,6 +549,25 @@ public final class Trust: @unchecked Sendable {
         onChange?()
     }
 
+    /// A paired Mac has proved its key and said that it does not have this Mac paired: it
+    /// forgot this Mac, or the last word of the pairing never reached it. This Mac's half is
+    /// worth nothing, so it goes the way a Forget does (everything the key had authenticated
+    /// ends) and the Mac is listed to be paired again, where its tile says so. Only the key
+    /// itself can cause this, over a session it has proved, and only to its own entry.
+    /// Until this existed the tile went on saying Paired and every drop to it failed
+    /// (found by the owner, 2026-11-23).
+    public func notePairingGone(_ key: PublicKey) {
+        let changed: Bool = lock.withLock {
+            guard let mac = file.known.first(where: { $0.key == key }), current(mac.endsElapsed, mac.endsWall) else { return false }
+            DropLog.write("identity: \(mac.name) (\(key.tag)) no longer has this Mac paired; it needs pairing again", .warn)
+            withdrawLocked(key, name: mac.name, reason: "the other Mac forgot this one", refuseForGood: false)
+            file.again.append(Renewal(key: key, name: mac.name, told: nil, endsElapsed: mac.endsElapsed, endsWall: mac.endsWall))
+            save()
+            return true
+        }
+        if changed { onChange?() }
+    }
+
     /// A retired or expired key was presented. Counts it; true when the person should be told
     /// (once a day per key, three times a day in all).
     public func noteRefused(_ key: PublicKey) -> Bool {

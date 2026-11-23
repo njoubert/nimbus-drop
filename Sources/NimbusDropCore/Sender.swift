@@ -347,7 +347,10 @@ public final class SendSession: Transfer, @unchecked Sendable {
         let reply = try channel.read()
         guard reply.type == .hello else { throw DropError("Unexpected answer from \(peerName)") }
         let theirs = try decode(SecureHello.self, from: reply.body)
-        guard theirs.paired else { throw DropError.notPaired("\(peerName) no longer has this Mac paired; pair again") }
+        guard theirs.paired else {
+            trust.notePairingGone(channel.remote)
+            throw DropError.notPaired("\(peerName) no longer has this Mac paired; pair again")
+        }
         socket.setReadTimeout(0)
         trust.seen(channel.remote, name: theirs.name, major: protocolVersion)
         trust.track(self, key: channel.remote)

@@ -17,6 +17,7 @@ M=[
  ("withdrawing trust leaves sessions alone","Sources/NimbusDropCore/Trust.swift",'        endSessions(of: key, because: "\\(name) is no longer trusted (\\(reason))")\n','',"ProtocolTests/testRetiringAKeyEndsItsDropBeforeAnythingIsPutInPlace"),
  ("a held calendar stops time","Sources/NimbusDropCore/Trust.swift","let delta = boot == file.lastBoot ? c - file.lastContinuous : max(c, wall.timeIntervalSince(file.lastWall))","let delta = wall.timeIntervalSince(file.lastWall)","TrustTests/testACalendarHeldStillDoesNotKeepAKeyAlive"),
  ("unpaired connections are not counted","Sources/NimbusDropCore/Receiver.swift","guard unpaired < Tuning.unpaired else { return false }","guard unpaired < 100000 else { return false }","ProtocolTests/testCompletingAHandshakeWithAFreshKeyEarnsNothing"),
+ ("a forgotten Mac goes on calling the other paired","Sources/NimbusDropCore/Sender.swift","            trust.notePairingGone(channel.remote)\n","","ProtocolTests/testAMacThatWasForgottenStopsCallingItPaired"),
  ("a non-canonical key is taken","Sources/NimbusDropCore/Crypto.swift","guard b[31] & 0x80 == 0 else { return nil }","","TrustTests/testAKeyHasOneEncoding"),
 ]
 only=sys.argv[1:] 

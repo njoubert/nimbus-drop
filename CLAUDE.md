@@ -280,7 +280,10 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   then the store refuses the key, then every session it authenticated is ended and its keys
   wiped (`Transfer.withdrawn`), then listeners drop what it had waiting, and only then is a
   retire notice acknowledged. Retire and "It Replaces…" leave a tombstone (refused for good);
-  Forget does not. Scheduled expiry is different on purpose: a running drop may finish, within
+  Forget does not, and tells nobody: the forgotten Mac learns at its next drop, when the key
+  it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
+  withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
+  2026-11-23 it stayed "Paired" and every drop failed). Scheduled expiry is different on purpose: a running drop may finish, within
   a day or one key lifetime, whichever is shorter.
 - **Admission** (`DropListener.admit`, `serve`): a slot before a thread. Not yet a key: 64 at
   once, 500 a second, 1 KB, 10 s. A key nobody paired: 8 at once, 16 KB, pair/verify only.

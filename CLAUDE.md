@@ -103,6 +103,10 @@ Sources/NimbusDrop/         the app
                             --dump-kinds
   SettingsWindow.swift      Settings (⌘,): parallel connections, Open at login, updates, the
                             version and protocol. Nothing of the kind is on the main window.
+  Diagnostics.swift         the flight recorder: every log line, in memory, from launch (3000)
+  InternalsPanel.swift      Internals (⌘I), after Nimbus Leviton Bar's: live status (this Mac,
+                            destinations, each drop and each of its connections) over the log as
+                            it is written, with filter, Pause, Copy, Clear; --dump-internals
   HistoryWindow.swift       every drop that has ended (HistoryStore in the core keeps it in
                             ~/Library/Application Support/<bundle id>/history.json); --dump-history
   OfferPanel.swift          the Accept / Decline panel for an incoming drop; --dump-offer
@@ -309,6 +313,12 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   button with it; it is written to the history the moment it ends. The poll timer therefore
   runs while anything is listed (four times a second while something moves, once a second
   otherwise) and stops when the list is empty; the sleep hold is only for drops that are moving.
+- **Internals is the first place to look, and the first thing to ask an owner to copy.** Its
+  status text is `AppModel.internalsStatus()` (plain text on purpose: Copy puts it, and the lines
+  listed, on the clipboard). Per-connection figures come from `Transfer.dataConnections`
+  (`streamOpened` / `streamCarried` / `streamClosed` in the engine). A drop's last lines are a
+  `summary:` (bytes, time, rate, chunks, retransmitted, rounds, connections dropped, reconnects
+  and attempts) on each side; each round logs how many chunks it sent.
 - **The debug log** is `~/Library/Logs/<bundle name>/nimbus-drop.log` (so "Nimbus Drop Dev" for
   the development copy), 4 MB then rotated to `.1`. Read it first when a drop misbehaves: every
   line about a drop starts with its tag (`[3F9A2C send]`), and a state change that ends or

@@ -34,8 +34,8 @@ struct HistoryView: View {
                 Text(model.history.isEmpty ? "" : "\(model.history.count) \(model.history.count == 1 ? "drop" : "drops")")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Show Log") { AppDelegate.shared?.showLog() }
-                    .help("The debug log: everything each drop did, with times. Useful when one fails.")
+                Button("Internals…") { AppDelegate.shared?.showInternals() }
+                    .help("What the app is doing, live, and the debug log: everything each drop did, with times.")
                 Button("Clear History") { model.clearHistory() }.disabled(model.history.isEmpty)
             }
             .controlSize(.small)

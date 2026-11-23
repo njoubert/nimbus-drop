@@ -146,7 +146,11 @@ final class ChaosTests: XCTestCase {
         let s = send(src)
         wait(s)
         XCTAssertEqual(s.state, .completed)
-        XCTAssertEqual(s.stats, TransferStats(rounds: 1, connectionFailures: 0, damagedChunks: 0), "and nothing was sent twice")
+        var untroubled = TransferStats(rounds: 1)
+        untroubled.chunks = s.stats.chunks
+        XCTAssertEqual(s.stats, untroubled, "one round, nothing dropped, nothing sent twice")
+        XCTAssertGreaterThan(s.stats.chunks, 128, "8 MB in 64 KB chunks, counted")
+        XCTAssertEqual(try receiverSide().stats.chunks, s.stats.chunks, "and the receiver counted the same")
         XCTAssertEqual(proxy.stats.connections, 5, "one control connection and four for data")
         XCTAssertGreaterThan(proxy.stats.bytesToTarget, 8 << 20)
         try assertArrived(src)

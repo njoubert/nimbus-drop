@@ -14,6 +14,18 @@ public enum DropLog {
     }
 }
 
+/// A value behind a lock, for the small shared tables the engine keeps.
+final class Locked<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+    init(_ value: T) { self.value = value }
+    func withLock<R>(_ body: (inout T) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 /// A log file that looks after itself: lines are stamped and appended from any thread, and when
 /// the file passes `rotateAt` it becomes `<name>.1` (replacing the one before) and a new file
 /// starts. So there are at most two files and a bounded amount of disk.

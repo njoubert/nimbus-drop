@@ -55,6 +55,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
         var lastProgress = Date()
         /// Chunks written in full on this connection.
         var chunks = 0
+        /// What the drop knows this connection by (`Transfer.dataConnections`).
+        var info = 0
         init(_ socket: Socket) { self.socket = socket }
     }
     private var live: [Stream] = []
@@ -145,6 +147,12 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 setState(.transferring)
                 if !jobs.isEmpty {
                     let sockets = try openStreams(token: plan.token)
+                    log("opened \(sockets.count) data connections to \(lock.withLock { "\(host):\(port)" })")
+                    let before = stats
+                    defer {
+                        let now = stats
+                        log("round \(now.rounds) over: \(now.chunks - before.chunks) chunks sent (\(now.chunks) in all, \(now.retransmittedChunks) of them retransmissions), \(now.connectionFailures - before.connectionFailures) connections dropped, \(progress.doneBytes) of \(manifest.totalBytes) bytes written")
+                    }
                     let group = DispatchGroup()
                     for s in sockets {
                         group.enter()
@@ -162,6 +170,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 switch reply.type {
                 case .complete:
                     update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
+                    summarize()
                     finish(.completed)
                     return
                 case .plan: continue
@@ -178,12 +187,23 @@ public final class SendSession: Transfer, @unchecked Sendable {
         }
     }
 
+    /// The drop in one line, for the log: how much, how fast, and what it took.
+    private func summarize() {
+        let p = progress, s = stats
+        let seconds = max(0.001, Date().timeIntervalSince(transferStartedAt ?? startedAt))
+        let moved = p.totalBytes - p.resumedBytes
+        log("summary: \(Format.files(p.totalFiles)), \(Format.bytes(moved)) sent in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(moved) / seconds))"
+            + (p.resumedBytes > 0 ? " (\(Format.bytes(p.resumedBytes)) were already there)" : "")
+            + "; \(s.chunks) chunks, \(s.retransmittedChunks) retransmitted; \(s.rounds) rounds; \(s.connectionFailures) connections dropped; \(s.reconnects) reconnects in \(s.reconnectAttempts) attempts")
+    }
+
     /// Tries for `Tuning.reconnectSeconds` to reach the receiver again and pick the drop up
     /// where it stands, looking the receiver's address up afresh before each attempt. Returns
     /// the receiver's new plan. Throws when the minute runs out.
     private func reconnect(after lost: DropError) throws -> (type: FrameType, body: Data) {
         guard !token.isEmpty else { throw lost }
         setState(.reconnecting)
+        log("trying to reach \(peerName) again for up to \(Int(Tuning.reconnectSeconds)) s")
         for s in lock.withLock({ live }) { s.socket.shutdown() }
         let deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
         var attempt = 0
@@ -195,6 +215,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
             }
             let (h, p) = lock.withLock { (host, port) }
             attempt += 1
+            note { $0.reconnectAttempts += 1 }
             let fresh: Socket?
             do { fresh = try Socket.connect(host: h, port: p, timeout: min(Tuning.connectTimeout, 5)) } catch {
                 fresh = nil
@@ -226,6 +247,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
             Thread.sleep(forTimeInterval: 1)
         }
         if isOver { throw lost }
+        log("gave up reconnecting after \(attempt) attempts in \(Int(Tuning.reconnectSeconds)) s")
         throw DropError("Lost the connection to \(peerName) and could not get it back; send the drop again to continue it")
     }
 
@@ -342,6 +364,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
         var fruitless = 0
         while true {
             let stream = Stream(socket)
+            stream.info = streamOpened(remote: socket.peerAddress)
             lock.withLock { live.append(stream) }
             update { $0.connections += 1 }
             var failed = false
@@ -352,6 +375,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 socket.shutdown()
             }
             lock.withLock { live.removeAll { $0 === stream } }
+            streamClosed(stream.info)
             untrack(socket)
             update { $0.connections -= 1 }
             fruitless = stream.chunks == 0 ? fruitless + 1 : 0
@@ -471,6 +495,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 }
             }
             stream.chunks += 1
+            streamCarried(stream.info, bytes: length)
             if chunk == manifest.chunkCount(file) - 1 { update { $0.doneFiles += 1 } }
         }
         if isOver { return }

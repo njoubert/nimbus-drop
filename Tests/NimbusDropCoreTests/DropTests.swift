@@ -388,7 +388,8 @@ final class DropTests: XCTestCase {
         let log = lines.value.joined(separator: "\n")
         for expected in ["“Photos” to receiver at 127.0.0.1", "offer from sender at 127.0.0.1", "accepted, saving to", "waitingForAccept",
                          "transferring", #"failed("Stopped by the test")"#, "lost the control connection", "superseded", "already here:",
-                         "completed", "saved as"] {
+                         "completed", "saved as", "opened 4 data connections", "round 1 over:", "chunks sent", "the sender says it is done",
+                         "summary:", "retransmitted", "chunks received"] {
             XCTAssertTrue(log.contains(expected), "the log does not mention: \(expected)\n\(log)")
         }
         XCTAssertTrue(lines.value.allSatisfy { $0.hasPrefix("[") }, "every line says which drop it is about")

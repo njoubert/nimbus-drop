@@ -619,6 +619,55 @@ final class AppModel: ObservableObject {
         history = historyStore?.entries ?? []
     }
 
+    // MARK: Internals
+
+    /// Staged text for `--dump-internals`.
+    var demoInternals: String?
+
+    /// The live status at the top of the Internals panel: this Mac, who it can see, and every
+    /// drop with each of its connections. Plain text, so it copies into a bug report as it is.
+    func internalsStatus() -> String {
+        if let demoInternals { return demoInternals }
+        let now = Date()
+        var out: [String] = []
+        func line(_ label: String, _ text: String) { out.append(label.padding(toLength: 13, withPad: " ", startingAt: 0) + text) }
+        line("This Mac", "\(identity.name) · \(addresses.isEmpty ? "no network" : addresses.map { "\($0.address) (\($0.interface))" }.joined(separator: ", ")) · Nimbus Drop \(identity.appVersion) · protocol \(protocolVersionText)")
+        line("Receiving", (receiving ? "on" + (listener.map { ", port \($0.port)" } ?? ", NOT LISTENING") : "off")
+             + " · open at login: \(LoginItem.statusDescription)" + (problem.map { " · PROBLEM: \($0)" } ?? ""))
+        line("Discovery", "\(browser?.problem.map { "PROBLEM: \($0)" } ?? "browsing") · \(destinations.count) \(destinations.count == 1 ? "destination" : "destinations")")
+        for p in destinations {
+            line("", p.name.padding(toLength: 22, withPad: " ", startingAt: 0) + " "
+                 + ("\(p.address ?? "address not known")\(p.port.map { ":\($0)" } ?? "")").padding(toLength: 22, withPad: " ", startingAt: 0)
+                 + " Nimbus Drop \(p.appVersion ?? "?") · protocol \(p.protocolText)"
+                 + (p.isManual ? " · added by address\(p.unreachable ? ", not answering" : "")" : "") + (p.isCompatible ? "" : " · INCOMPATIBLE"))
+        }
+        out.append("")
+        let moving = transfers.filter { !$0.state.isFinal }.count
+        line("Drops", transfers.isEmpty ? "none (finished drops are in History)" : "\(moving) moving, \(transfers.count - moving) ended in the last minute")
+        for t in transfers {
+            let p = t.progress, s = t.stats
+            let since = Format.duration(now.timeIntervalSince(t.transferStartedAt ?? t.startedAt))
+            line(String(t.id.uuidString.prefix(6)) + (t.direction == .send ? " send" : " recv"),
+                 "“\(t.title)” \(t.direction == .send ? "→" : "←") \(t.peerName) (\(t.peerAddress))   \(t.state) for \(since)")
+            let rate = meters[t.id]?.current ?? 0
+            line("", "\(Format.bytes(p.doneBytes)) of \(Format.bytes(p.totalBytes)) (\(Int(p.fraction * 100)) %) · \(Format.bitRate(rate)) · \(Format.files(p.totalFiles)), \(p.doneFiles) done"
+                 + (p.resumedBytes > 0 ? " · \(Format.bytes(p.resumedBytes)) were already there" : ""))
+            line("", "round \(max(1, s.rounds)) · \(s.chunks) chunks \(t.direction == .send ? "sent" : "received"), \(s.retransmittedChunks) retransmitted"
+                 + " · \(s.connectionFailures) connections dropped · \(s.damagedChunks) damaged chunks · \(s.reconnects) reconnects in \(s.reconnectAttempts) attempts")
+            let connections = t.dataConnections
+            for (i, c) in connections.enumerated() {
+                let idle = now.timeIntervalSince(c.lastActivity)
+                line(i == 0 ? "" : "", (i == 0 ? "connections  " : "             ") + "#\(c.id)".padding(toLength: 5, withPad: " ", startingAt: 0)
+                     + c.remote.padding(toLength: 18, withPad: " ", startingAt: 0)
+                     + "\(c.chunks) chunks".padding(toLength: 14, withPad: " ", startingAt: 0)
+                     + Format.bytes(c.bytes).padding(toLength: 10, withPad: " ", startingAt: 0)
+                     + (idle < 1 ? "active now" : "idle \(String(format: "%.0f", idle)) s"))
+            }
+            if connections.isEmpty, !t.state.isFinal { line("", "connections  none open") }
+        }
+        return out.joined(separator: "\n")
+    }
+
     func clearHistory() {
         historyStore?.clear()
         history = []
@@ -722,10 +771,14 @@ private final class Located: @unchecked Sendable {
 private final class RateMeter {
     private var samples: [(time: Date, bytes: Int64)] = []
 
+    /// The last figure worked out, for anything else that wants to show it.
+    private(set) var current: Double = 0
+
     func rate(bytes: Int64, now: Date) -> Double {
         samples.append((now, bytes))
         samples.removeAll { now.timeIntervalSince($0.time) > 4 }
         guard let first = samples.first, now.timeIntervalSince(first.time) >= 0.5 else { return 0 }
-        return Double(bytes - first.bytes) / now.timeIntervalSince(first.time)
+        current = Double(bytes - first.bytes) / now.timeIntervalSince(first.time)
+        return current
     }
 }

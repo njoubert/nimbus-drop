@@ -83,7 +83,7 @@ final class MainMenu: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         add("History…", #selector(AppDelegate.showHistory), key: "y", target: AppDelegate.shared)
-        add("Show Log", #selector(AppDelegate.showLog), target: AppDelegate.shared)
+        add("Internals…", #selector(AppDelegate.showInternals), key: "i", target: AppDelegate.shared)
         add("Settings…", #selector(AppDelegate.showSettings), key: ",", target: AppDelegate.shared)
         menu.addItem(.separator())
 

@@ -713,7 +713,10 @@ from the git-ignored `.signing` (copied from a sibling on this machine).
 Mac to 0.3 without asking whether the others are ready, and from then on it and a 0.2 Mac
 show each other as "Needs an update".
 
-Releases: **0.3.0 on 2026-11-23** (protocol 3: encrypted and authenticated, pairing, key
+Releases: **0.3.1 on 2026-11-23** (protocol 3.1: the speed test, asked about at the other
+Mac; Forget tells the other Mac; Uninstall and the Services switch in Settings; a Mac on
+several interfaces is reached by the service order; a pairing that works pulses on the tile),
+**0.3.0 on 2026-11-23** (protocol 3: encrypted and authenticated, pairing, key
 expiry; reviewed against its plan the same day and the findings fixed before release; the
 first release the auto-updater carries anyone to), **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
 **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows

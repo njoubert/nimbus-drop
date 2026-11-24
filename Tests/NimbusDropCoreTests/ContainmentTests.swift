@@ -1188,3 +1188,105 @@ extension ContainmentTests {
         }
     }
 }
+
+// MARK: - Two entries of a manifest are never one thing on disk
+
+extension ContainmentTests {
+    /// Pairs of names that are two as text, and to `Manifest.validate` (which folds case and
+    /// how accents are composed), and that this Mac's APFS takes for one: it folds case in
+    /// full (ß is ss, the long s is s, a ligature is its letters, final sigma is sigma).
+    static let alike = [("Maße", "Masse"), ("Wei\u{17F}", "Weis"), ("o\u{FB01}ce", "ofice"), ("\u{3C2}", "\u{3C3}"), ("\u{B5}", "\u{3BC}"), ("\u{3D1}", "\u{3B8}")]
+
+    /// Whether the volume the tests run on takes `a` and `b` for one name.
+    func folds(_ a: String, _ b: String) -> Bool {
+        let probe = src.appendingPathComponent("fold-probe")
+        try? FileManager.default.createDirectory(at: probe, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: probe) }
+        FileManager.default.createFile(atPath: probe.appendingPathComponent(a).path, contents: nil)
+        var st = stat()
+        return lstat(probe.appendingPathComponent(b).path, &st) == 0
+    }
+
+    /// A drop holding `d/Maße.txt` and `d/Masse.txt`: two files where it came from, two
+    /// entries in its manifest, two names to `validate`, and one name on this disk. As found,
+    /// the second was opened as the first (an ordinary file that was already there), the
+    /// chunks of both were written into it, the ledger called both complete, and the drop was
+    /// put in place and reported complete with one file holding the wrong bytes: nobody
+    /// attacking, just a folder from a volume that tells the two apart. The text of a manifest
+    /// cannot be made to match every disk, so the disk is what refuses it.
+    func testTwoNamesThatAreOneOnThisDiskDoNotBecomeOneFile() throws {
+        try XCTSkipUnless(folds("Maße", "Masse"), "needs a volume that takes ß and ss for one name (a Mac's own does); this one keeps them apart, and both files would rightly arrive")
+        let contents = ["d/Maße.txt": bytes(chunk * 2, seed: 1), "d/Masse.txt": bytes(chunk * 2, seed: 2)]
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "d", kind: .directory), .init(path: "d/Maße.txt", kind: .file, size: Int64(chunk * 2)),
+                                                            .init(path: "d/Masse.txt", kind: .file, size: Int64(chunk * 2))])
+        XCTAssertNoThrow(try manifest.validate(), "(if the text refuses it now, this test is about the disk and needs another pair)")
+        let before = snapshot()
+        let hand = try Hand(manifest, from: mallory, to: victim)
+        XCTAssertTrue(hand.planned, hand.refusal ?? "")
+        let reply = try? deliver(hand, contents)
+        XCTAssertNotEqual(reply?.type, FrameType.complete.rawValue, "the drop was put in place")
+        let session = try ended()
+        guard case .failed(let why) = session.state else { XCTFail("the drop ended \(session.state)"); return assertContained(before, snapshot(), allowing: [allowed(manifest, from: mallory, contents: contents)]) }
+        XCTAssertTrue(why.contains("one name on this disk"), why)
+        let after = snapshot()
+        assertContained(before, after, allowing: [allowed(manifest, from: mallory, contents: contents)])
+        XCTAssertNil(after["\(Self.inside)/d"], "nothing of it is in place")
+        // And the one file there is in the partial folder holds the first one's bytes, not a mixture.
+        let partial = dst.appendingPathComponent(allowed(manifest, from: mallory).partial)
+        XCTAssertEqual(try Data(contentsOf: partial.appendingPathComponent("items/d/Maße.txt")), contents["d/Maße.txt"])
+        hand.hangUp()
+    }
+
+    /// The same for folders (two that are one would pour their files together), and for a
+    /// folder and a file. Refused before any data is asked for.
+    func testTwoFoldersThatAreOneOnThisDiskAreRefused() throws {
+        try XCTSkipUnless(folds("Maße", "Masse"), "needs a volume that takes ß and ss for one name (a Mac's own does)")
+        let before = snapshot()
+        var allowing: [Allowed] = []
+        for (i, second) in [Manifest.Entry(path: "t/Strasse", kind: .directory), .init(path: "t/Strasse", kind: .file, size: 0)].enumerated() {
+            var entries: [Manifest.Entry] = [.init(path: "t", kind: .directory), .init(path: "t/Straße", kind: .directory), .init(path: "t/Straße/x.txt", kind: .file, size: 10), second]
+            if second.kind == .directory { entries.append(.init(path: "t/Strasse/x.txt", kind: .file, size: 10)) }
+            entries = entries.map { var e = $0; e.path = "T\(i)" + e.path.dropFirst(1); return e }
+            let manifest = Manifest(chunkSize: chunk, entries: entries)
+            XCTAssertNoThrow(try manifest.validate())
+            allowing.append(allowed(manifest, from: mallory))
+            let hand = try Hand(manifest, from: mallory, to: victim)
+            XCTAssertNotNil(hand.refusal, "two entries that are one name were taken")
+            try ended()
+            assertContained(before, snapshot(), allowing: allowing)
+            hand.hangUp()
+        }
+    }
+
+    /// `SafeTree` by itself, with no `validate` before it: every pair this disk takes for one
+    /// name, in case, in composition and beyond, as files, folders and links; and at the end
+    /// of a drop whose files were never opened in this run (a resume the ledger called complete).
+    func testTheTreeRefusesASecondEntryForOneThingOnDisk() throws {
+        try XCTSkipUnless(foldsCase, "needs a volume that takes names differing in case for one (a Mac's own does); on this one each pair is two files, rightly")
+        let pairs = ([("readme", "README"), ("Caf\u{E9}", "Cafe\u{301}")] + Self.alike).filter { folds($0.0, $0.1) }
+        XCTAssertGreaterThanOrEqual(pairs.count, 2)
+        if pairs.count < 2 + Self.alike.count { print("ContainmentTests: this volume keeps \(2 + Self.alike.count - pairs.count) of the pairs apart; those were not tried") }
+        let root = dst.appendingPathComponent("T.partial/items")
+        let tree = try SafeTree(root: root)
+        for (a, b) in pairs {
+            close(try tree.openFile("f-" + a))
+            XCTAssertNoThrow(close(try tree.openFile("f-" + a)), "the same entry again is the same entry")
+            XCTAssertThrowsError(try tree.openFile("f-" + b), "\(a) / \(b) as files")
+            try tree.makeDirectory("d-" + a)
+            XCTAssertNoThrow(try tree.makeDirectory("d-" + a))
+            XCTAssertThrowsError(try tree.makeDirectory("d-" + b), "\(a) / \(b) as folders")
+            try tree.makeSymlink("l-" + a, to: "f-" + a)
+            XCTAssertNoThrow(try tree.makeSymlink("l-" + a, to: "f-" + a))
+            XCTAssertThrowsError(try tree.makeSymlink("l-" + b, to: "f-" + a), "\(a) / \(b) as links")
+        }
+        // A new run over the same tree, as a resume is: nothing is opened, everything is finished.
+        let again = try SafeTree(root: root)
+        for (a, b) in pairs {
+            XCTAssertNoThrow(try again.finish("f-" + a, mtime: 0, mode: 0o644))
+            XCTAssertThrowsError(try again.finish("f-" + b, mtime: 0, mode: 0o644), "\(a) / \(b) at the end of a drop")
+            XCTAssertNoThrow(try again.finish("d-" + a, directory: true, mtime: 0, mode: 0o755))
+            XCTAssertThrowsError(try again.finish("d-" + b, directory: true, mtime: 0, mode: 0o755))
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, pairs.count * 3, "one thing for each first name and nothing for the second")
+    }
+}

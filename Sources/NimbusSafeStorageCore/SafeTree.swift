@@ -91,28 +91,61 @@ package final class SafeTree {
         return fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0 ? st.st_mode & S_IFMT : nil
     }
 
-    /// Makes a folder. One already there must be a folder, not something else under that name.
+    /// One thing on a disk, whatever it is called.
+    private struct Identity: Hashable { let device: dev_t, inode: ino_t }
+    /// Which entry of the manifest each thing in the tree has been taken for.
+    private var claimed: [Identity: String] = [:]
+
+    /// Notes that the thing `st` describes is the manifest's entry `path`. Two entries are
+    /// never one thing: a second path arriving at something an earlier one was taken for ends
+    /// the drop.
+    ///
+    /// This is the disk's answer to "are these two names one name?", which the text of a
+    /// manifest cannot give for every disk. `Manifest.validate` folds case and how accents are
+    /// composed; a Mac's own volume folds case in full, so that `Maße.txt` and `Masse.txt` are
+    /// two entries that pass and one file here. The second used to be opened as the first (it
+    /// was there, and an ordinary file), the chunks of both went into it, the ledger called
+    /// both complete, and the drop was put in place and reported complete with the wrong bytes.
+    private func claim(_ st: stat, for path: String) throws {
+        let id = Identity(device: st.st_dev, inode: st.st_ino)
+        guard let other = claimed[id] else { claimed[id] = path; return }
+        // (Compared as bytes: two spellings that are one text to Swift are still two entries.)
+        guard other.utf8.elementsEqual(path.utf8) else {
+            throw DropError("\(Sanitize.label(path, limit: 120)) and \(Sanitize.label(other, limit: 120)) are one name on this disk; the drop was refused")
+        }
+    }
+
+    /// Makes a folder. One already there must be a folder, not something else under that
+    /// name, and not the folder of another entry.
     package func makeDirectory(_ path: String) throws {
         let (fd, name) = try parent(of: path)
-        if mkdirat(fd, name, 0o700) == 0 { return }
-        guard errno == EEXIST, kind(fd, name) == S_IFDIR else {
+        var st = stat()
+        guard mkdirat(fd, name, 0o700) == 0 || errno == EEXIST, fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0, st.st_mode & S_IFMT == S_IFDIR else {
             throw DropError("\(path) cannot be made a folder: something else has that name; the drop was refused")
         }
+        try claim(st, for: path)
     }
 
-    /// Makes a symlink. One already there must be the same link.
+    /// Makes a symlink. One already there must be the same link, and not another entry's.
     package func makeSymlink(_ path: String, to target: String) throws {
         let (fd, name) = try parent(of: path)
-        if symlinkat(target, fd, name) == 0 { return }
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-        let n = errno == EEXIST && kind(fd, name) == S_IFLNK ? readlinkat(fd, name, &buffer, Int(PATH_MAX)) : -1
-        guard n >= 0, String(decoding: buffer.prefix(n).map { UInt8(bitPattern: $0) }, as: UTF8.self) == target else {
+        if symlinkat(target, fd, name) != 0 {
+            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
+            let n = errno == EEXIST && kind(fd, name) == S_IFLNK ? readlinkat(fd, name, &buffer, Int(PATH_MAX)) : -1
+            guard n >= 0, String(decoding: buffer.prefix(n).map { UInt8(bitPattern: $0) }, as: UTF8.self) == target else {
+                throw DropError("\(path) cannot be made a link: something else has that name; the drop was refused")
+            }
+        }
+        var st = stat()
+        guard fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0, st.st_mode & S_IFMT == S_IFLNK else {
             throw DropError("\(path) cannot be made a link: something else has that name; the drop was refused")
         }
+        try claim(st, for: path)
     }
 
-    /// Opens a file for writing, creating it if need be. It is never a symlink and never
-    /// anything but an ordinary file. The caller closes the descriptor.
+    /// Opens a file for writing, creating it if need be. It is never a symlink, never anything
+    /// but an ordinary file with one name, and never the file of another entry. The caller
+    /// closes the descriptor.
     package func openFile(_ path: String) throws -> Int32 {
         let (dir, name) = try parent(of: path)
         let fd = openat(dir, name, O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)
@@ -121,6 +154,10 @@ package final class SafeTree {
         guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else {
             close(fd)
             throw DropError("\(path) is not an ordinary file; the drop was refused")
+        }
+        do { try claim(st, for: path) } catch {
+            close(fd)
+            throw error
         }
         return fd
     }
@@ -172,6 +209,9 @@ package final class SafeTree {
             throw DropError("\(Sanitize.label(path, limit: 120)) is not the \(directory ? "folder" : "file") the drop put there; the drop was refused")
         }
         defer { close(item) }
+        // Every file and folder of a drop comes through here, also one this run never opened
+        // because the ledger said it was all there: two entries that are one thing stop here at the latest.
+        try claim(st, for: path)
         if let quarantine { fsetxattr(item, Quarantine.attribute, quarantine, quarantine.count, 0, 0) }
         var times = [timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)),
                      timespec(tv_sec: Int(mtime), tv_nsec: Int((mtime - mtime.rounded(.down)) * 1e9))]

@@ -745,12 +745,18 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         // Everything received is marked as having come from elsewhere, as AirDrop marks it:
         // an app or a script in the drop then gets Gatekeeper's question the first time it is run.
         let quarantine = Quarantine.value()
+        // The tree's lock is taken for each use of it, as the stream threads take it. None of
+        // them should be left by now (`settle` closed them and waited, and no new one is let
+        // in); one that outlived the ten seconds `settle` waits must still not find the tree
+        // half way through a call.
         for e in manifest.entries.reversed() where e.kind != .symlink {
             // The owner keeps access to what they were just sent, whatever the mode was; and
             // nothing arrives set-uid (the mask drops every bit above the permissions).
-            tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
+            treeLock.withLock {
+                tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
+            }
         }
-        tree.release()
+        treeLock.withLock { tree.release() }
         var saved: [URL] = []
         let fm = FileManager.default
         for e in manifest.entries where !e.path.contains("/") {

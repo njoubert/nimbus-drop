@@ -255,7 +255,8 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 try control.send(.done, Done(streams: lock.withLock { opened }, resent: stats.retransmittedChunks))
 
             case .reconnect:
-                guard let lost = cause as? DropError else { break }
+                // Only ever said to a loss, which is what `cause` is then.
+                let lost = cause as? DropError ?? DropError("The connection to \(peerName) was lost", connection: true)
                 log("lost the control connection: \(lost.message)", .warn)
                 return try reconnect(after: lost)
 

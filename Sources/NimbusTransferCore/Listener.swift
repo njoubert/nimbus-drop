@@ -62,7 +62,7 @@ public final class DropListener: @unchecked Sendable {
     /// Tests only: decides which addresses are let in, in place of the subnet rule.
     var allows: ((String) -> Bool)?
     private var waiting: [(session: ReceiveSession?, key: PublicKey)] = []
-    private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Date)] = [:]
+    private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Date, rounds: RoundMachine.Receiver)] = [:]
     private var showing: PairingSession?
     /// Requests waiting behind the one on screen.
     private var waitingRequests: [PairingSession] = []
@@ -334,7 +334,9 @@ public final class DropListener: @unchecked Sendable {
             if let done = lock.withLock({ completed[resume.session] }), done.key == key,
                Crypto.same(resume.proof, DropKeys.resumeProof(done.resumeKey, "resume", h: channel.h)) {
                 try? channel.send(.resumed, Resumed(proof: DropKeys.resumeProof(done.resumeKey, "resumed", h: channel.h)))
-                try? channel.send(.complete, done.answer)
+                // What a sender that comes back is told is the finished drop's own machine's to say.
+                var rounds = done.rounds
+                if rounds.step(.senderBack) == [.send(.complete)] { try? channel.send(.complete, done.answer) }
                 return
             }
             guard let session = lock.withLock({ sessions[resume.session] }) as? ReceiveSession, session.peerKey == key, session.resume(on: channel, proof: resume.proof) else {
@@ -504,12 +506,13 @@ public final class DropListener: @unchecked Sendable {
 
     /// Keeps a finished drop's answer for a few minutes, for a sender whose connection was lost
     /// before it heard. With it, the one key of the drop that is still needed: the proof that
-    /// whoever asks is that sender.
-    func remember(completed session: Data, _ answer: Complete, resumeKey: Data, key: PublicKey) {
+    /// whoever asks is that sender. And the drop's conversation as it ended (`rounds`), which is
+    /// what says that a finished drop answers "complete" again.
+    func remember(completed session: Data, _ answer: Complete, resumeKey: Data, key: PublicKey, rounds: RoundMachine.Receiver) {
         lock.withLock {
             let now = Date()
             completed = completed.filter { now.timeIntervalSince($0.value.at) < 300 }
-            completed[session] = (answer, resumeKey, key, now)
+            completed[session] = (answer, resumeKey, key, now, rounds)
         }
     }
 

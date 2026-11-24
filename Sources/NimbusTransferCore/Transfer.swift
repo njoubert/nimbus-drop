@@ -108,8 +108,6 @@ public class Transfer: @unchecked Sendable, Identifiable, TrustedSession {
     private var nextStream = 0
     private var lastActivity = Date()
     var cancelRequested = false
-    /// Says a last word on the control channel as it stands now (set by the sessions).
-    var farewell: ((String) -> Void)?
     /// Who the other Mac proved to be, once it has.
     private var _peerKey: PublicKey?
     public var peerKey: PublicKey? { lock.withLock { _peerKey } }
@@ -298,8 +296,15 @@ public class Transfer: @unchecked Sendable, Identifiable, TrustedSession {
     /// It failed because the Mac that answered was not the one meant.
     public var wrongIdentity: Bool { lock.withLock { _wrongIdentity } }
 
-    func fail(_ error: Error) {
+    /// What kind of trouble the latest one was. Noted also of a transfer that has already
+    /// ended: a drop cut short by a Forget at the other Mac ends when trust is withdrawn, and
+    /// learns a moment later, from the reconnect that was under way, that it needs a pairing.
+    func noteKind(of error: Error) {
         if let e = error as? DropError { lock.withLock { _needsPairing = e.needsPairing; _wrongIdentity = e.identity } }
+    }
+
+    func fail(_ error: Error) {
+        noteKind(of: error)
         let cancelled = lock.withLock { cancelRequested }
         finish(cancelled ? .cancelled : .failed((error as? DropError)?.message ?? error.localizedDescription))
     }
@@ -311,19 +316,11 @@ public class Transfer: @unchecked Sendable, Identifiable, TrustedSession {
     /// their keys, so that nothing authenticated earlier can attach, resume or deliver.
     package func withdrawn(_ error: DropError) { fail(error) }
 
-    /// Stops the transfer. What has arrived stays in the receiver's partial folder, so sending
-    /// the same drop again continues it.
+    /// Stops the transfer. A drop has a conversation to say a last word on, and its sessions
+    /// stop it their own way (what is said, and whether, is their machine's: `SendSession.cancel`,
+    /// `ReceiveSession.cancel`); this is what is left for a transfer that has none.
     public func cancel() {
-        lock.lock()
-        cancelRequested = true
-        let say = farewell
-        lock.unlock()
-        // Best effort, so the other side can say who stopped it rather than "connection lost".
-        if let say, !state.isFinal {
-            DispatchQueue.global().async { say("Cancelled on the other Mac") }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { self.finish(.cancelled) }
-        } else {
-            finish(.cancelled)
-        }
+        lock.withLock { cancelRequested = true }
+        finish(.cancelled)
     }
 }

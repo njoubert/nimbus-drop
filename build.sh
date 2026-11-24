@@ -300,6 +300,8 @@ case "$cmd" in
       python3 formal/check.py "$@"
       # The tests include those that hold formal/tla/*Impl.tla to what the code does.
       swift test
+      # And what must not compile, does not: the access control the secrets sit behind.
+      python3 scripts/test-capabilities.py | tail -1
       say "verified: the layers, the models and their mutants, the tests"
     fi
     ;;

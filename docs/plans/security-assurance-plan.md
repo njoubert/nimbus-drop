@@ -3,7 +3,8 @@
 Plan of 2026-11-24, on the branch `security-assurance` (stacked on `modular-verified-core`).
 Status and results are at the end and are kept true as the work lands.
 
-Three inputs:
+Four inputs (the fourth arrived while the work was under way, and controls where it and the
+second disagree):
 
 1. The four next steps the first round left open
    (`docs/plans/modular-core-and-verification-plan.md`): a pure decision core for `Trust` held
@@ -15,6 +16,11 @@ Three inputs:
    Verification to Large Codebases*): prove a small Core against the protocol model, and
    discharge the rest of the codebase with cheap analyses that show it cannot leak the Core's
    secrets or break the Core's invariants.
+
+4. A second outside review, of the first round's branch: a work order of six findings and one
+   machine (below, "The work order"). It rules two things OUT: making the Tamarin proofs a
+   gate in CI, and any cryptographic checking of file contents or change to what a resume
+   believes.
 
 Standing rules, unchanged: this machine only; nothing merged or installed for the owner; no
 change to the wire or to what trust means without the owner; the tools are the arbiters, and
@@ -62,9 +68,22 @@ models assume. That stays "by reading, with a mutant on each side" (`formal/READ
 | 6 Model to code | **Adapted, and stronger where it applies:** equality of transition relations rather than replay of sampled traces, for every pure machine. The shells: reading and mutants. Every counterexample a model produces becomes a test. |
 | 7 Independent implementation | **Mostly there:** `scripts/vectors.py` is the second implementation and the published Noise vector pins the handshake. **Added:** Wycheproof's X25519 vectors against `KeyPair.agree` (low-order and non-canonical inputs are ours to refuse). **Declined:** live interop with Snow (a Rust toolchain on the owner's Mac for what the published vector already fixes byte for byte). |
 | 8 Fuzzing | **Adapted.** This toolchain has no libFuzzer (`-sanitize=fuzzer` is refused for macOS; checked). So: seeded fuzzers inside the tests, extended to the manifest, the plan, the ledger file and the trust file; and the whole suite under ThreadSanitizer and AddressSanitizer. |
-| 9 Filesystem and stored bytes | **Taken where it is a fix, reported where it is a feature.** Fix: a resume ledger is believed only within the boot it was written in (after a power cut the ledger can be ahead of the data it speaks for). Reported for the owner: an authenticated content manifest (a hash per file) changes the wire and costs speed; the cost is measured and written down. |
+| 9 Filesystem and stored bytes | **Containment taken; stored bytes reported, not changed** (the work order below rules out changing what a resume believes). Reported for the owner: after a power cut the resume ledger can be ahead of the data it speaks for; and an authenticated content manifest (a hash per file) would change the wire and cost speed. |
 | 10 Mutation and criticism | **Taken.** A mutant for every new guard in model and code. One independent critic pass over code and models, given the code and not the conclusions. |
 | 11 Reproducibility, CI, supply chain | **Taken:** `./build.sh verify` gains a quick mode; tool versions printed; GitHub actions pinned by commit; `SECURITY.md`. **Left to the owner:** signed tags and release provenance (releases are built on his Mac with his keys). |
+
+## The work order (the second outside review)
+
+| Finding | What it asks | What is done about it |
+|---|---|---|
+| 1 Pairing correspondence | The abstraction written down; many concrete representatives per abstract state; payloads checked, not effect names; mutants that change a payload or add hidden state | Taken, and applied to every machine, not only pairing. |
+| 2 Capabilities and narrow APIs | An inventory of what grants authority; opaque types that cannot be made without proof; what happens to authority already granted when trust goes; tests that an ordinary caller cannot make one | Taken as: secret bytes unreadable outside the Core (compiler), the types that carry authority constructible only by the code that proves it, a compile-negative fixture, and `docs/security/authority.md`. Authority is revoked through the trust store's registry of sessions (`Trust.track`), not a generation number: one mechanism, already modelled. |
+| 3 Purity and dependencies | The pure core's whole dependency graph; runtime services out of what it can reach; the checker tested | Taken: the checker follows dependencies through and has its own tests; the log, the lock and the last-system-error leave the module under the pure one. Not SwiftSyntax: a third dependency for what the compiler's module graph already enforces. |
+| 4 A runner that fails closed | A register of every required lemma; exact coverage; exit codes; fixtures | Taken (`formal/tamarin/lemmas.json`, `formal/test_check.py`). |
+| 7 Trust lifetime | A policy table; tombstone eviction against "for good"; the points of decision; persistence and rollback said plainly | Taken (`docs/security/trust-lifetime.md`; eviction modelled). One decision left to the owner there. |
+| The trust machine | `TrustCore`, in production, tied to an independent specification | Taken (the first of the four next steps). |
+| 8 Filesystem containment | An adversarial harness that looks at the disk, with sentinels outside the destination | Taken (`ContainmentTests`, `docs/security/filesystem-containment.md`). |
+| 5, 6 (out of scope) | Tamarin as a CI gate; content hashing | Not done. The first plan's phase 9 fix (a resume ledger believed only within its boot) changed what a resume believes, so it is NOT made: it is reported, with the evidence, for the owner. |
 
 ## Order of work
 

@@ -102,7 +102,7 @@ def main():
 
         print("== a drop, accepted on the terminal")
         s = Process(["--name", A, "--send", f"127.0.0.1:{PORT}", src])
-        receiver.wait(r"accept into .*\[y/N\]")
+        receiver.wait(r"accept “.*” \(.*\) from .* into .*\[y/N\]")
         receiver.say("y")
         print(s.wait(r"done: .*").group(0))
         receiver.wait("saved ")

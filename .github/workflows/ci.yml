@@ -22,6 +22,10 @@ jobs:
         # A real listener and a real sender on 127.0.0.1: a folder arriving identical, a
         # declined drop, name collisions, an interrupted drop continuing, a hostile manifest.
         run: swift test
+      - name: What must not compile, does not
+        # The access control the secrets and the authority sit behind: each of these small
+        # programs is refused by the compiler, for the reason it must give.
+        run: python3 scripts/test-capabilities.py
       - name: Smoke-run the command line
         # The runner has no second Mac and no window server; the engine still has to pair two
         # identities and move a folder from one process to another, and every command has to

@@ -2,122 +2,158 @@
 (***************************************************************************)
 (* Withdrawing trust in a key, against everything else that is going on:   *)
 (* sessions that key authenticated, a session that is just being opened,   *)
-(* a disk that may refuse a write, and the app dying at any moment.        *)
+(* a disk that may refuse a write, two people pairing the key again, and   *)
+(* the app dying at any moment.                                            *)
 (*                                                                         *)
-(* The code: Trust.withdrawLocked, Trust.locked (the `afterwards` list),   *)
-(* Trust.track, Trust.commit (Sources/NimbusSecurityCore/Trust.swift), and *)
-(* the `retire` case of DropListener.serve, which acknowledges a retire    *)
-(* notice only after all of it.                                            *)
+(* Every DECISION here is TrustCore.tla's Step, which TLC holds equal to   *)
+(* the Swift (TrustRefinement.tla). What this module adds is what a        *)
+(* decision is not a function of, and what Trust (the class in             *)
+(* Sources/NimbusSecurityCore/Trust.swift) is for: the lock (`locked`),    *)
+(* the `afterwards` list, the disk, the order in which what was decided is *)
+(* carried out (`perform`), and Trust.commit before a retire notice is     *)
+(* acknowledged (the `retire` case of DropListener.serve). That part is    *)
+(* tied to the code by reading and by mutants, here and in                 *)
+(* scripts/mutate.py.                                                      *)
 (*                                                                         *)
-(* One key is modelled: the one being withdrawn (a retire notice from the  *)
-(* other Mac, which is answered `retired`; Forget is the same without the  *)
-(* answer). A session is a drop or a speed test that key authenticated.    *)
-(* Opening one is two steps with the network in between, as in             *)
-(* SendSession.open and DropListener.serve: ask the store whether the key  *)
-(* is paired, and later tell the store to track the session.               *)
+(* One key is modelled. ForGood: the withdrawal is a retire notice from    *)
+(* the other Mac, answered `retired`; otherwise it is a Forget. A session  *)
+(* is a drop or a speed test that key authenticated. Opening one is two    *)
+(* steps with the network in between, as in SendSession.open and           *)
+(* DropListener.serve: ask the store whether the key is paired, and later  *)
+(* tell the store to track the session.                                    *)
 (***************************************************************************)
-EXTENDS Naturals, FiniteSets
+EXTENDS TrustCore
 
-CONSTANTS Sessions,         \* sessions the key may open
-          TrackChecks       \* Trust.track refuses a key that is no longer paired (TRUE in the code)
+CONSTANT ForGood
 
-VARIABLES trusted,      \* in memory: the key is paired
-          tomb,         \* in memory: the key is refused for good
-          disk,         \* what the trust file says: [trusted, tomb]
+VARIABLES core,         \* the trust core's state in memory (TrustCore.tla)
+          disk,         \* what the trust file says of the key: [known, again, tomb]
           lock,         \* who holds the store's lock: "none", "W"
           sess,         \* each session: "none", "asked", "live", "ended", "refused"
-          tracked,      \* sessions the store knows of
           toEnd,        \* the `afterwards` list: sessions to end once the lock is free
           w,            \* where the withdrawing thread is
           acked,        \* `retired` has been said to the other Mac
           up            \* the app is running
 
-vars == << trusted, tomb, disk, lock, sess, tracked, toEnd, w, acked, up >>
+vars == << core, disk, lock, sess, toEnd, w, acked, up >>
 
-Init == /\ trusted = TRUE /\ tomb = FALSE
-        /\ disk = [trusted |-> TRUE, tomb |-> FALSE]
+Persist(c) == [known |-> c.known, again |-> c.again, tomb |-> c.tomb]
+Load(d)    == [known |-> d.known, again |-> d.again, tomb |-> d.tomb, tracked |-> {}, unsaved |-> FALSE]
+
+Has(effects, op) == \E i \in 1..Len(effects): effects[i].op = op
+Who(effects, op) == IF Has(effects, op) THEN (CHOOSE x \in {effects[i]: i \in 1..Len(effects)}: x.op = op).who ELSE {}
+
+(* The key starts paired, as two people left it. *)
+Paired == [Start EXCEPT !.known = "current"]
+
+Init == /\ core = Paired /\ disk = Persist(Paired)
         /\ lock = "none"
-        /\ sess = [s \in Sessions |-> "none"]
-        /\ tracked = {} /\ toEnd = {}
+        /\ sess = [x \in Sessions |-> "none"]
+        /\ toEnd = {}
         /\ w = "idle" /\ acked = FALSE /\ up = TRUE
+
+(* What a step of the core leaves on the disk: the write it asked for, if  *)
+(* it asked for one and the disk took it.                                  *)
+Written(result, d) == IF Has(result[2], "save") /\ d = "ok" THEN Persist(result[1]) ELSE disk
 
 (* ---- A session being opened ------------------------------------------- *)
 
 \* "Is this key paired?" A moment with the lock, then the handshake and the hellos go on.
-Ask(s) == /\ up /\ lock = "none" /\ sess[s] = "none"
-          /\ sess' = [sess EXCEPT ![s] = IF trusted THEN "asked" ELSE "refused"]
-          /\ UNCHANGED << trusted, tomb, disk, lock, tracked, toEnd, w, acked, up >>
+Ask(x) == /\ up /\ lock = "none" /\ sess[x] = "none"
+          /\ LET r == Step(core, Ev("standing", {}, FALSE, "ok"))
+             IN sess' = [sess EXCEPT ![x] = IF r[2][1].op = "paired" THEN "asked" ELSE "refused"]
+          /\ UNCHANGED << core, disk, lock, toEnd, w, acked, up >>
 
-\* "Track this session." With the lock: a key that has stopped being paired since it was asked
-\* about gets no session; the session ends there. Without that check (as the code was until
-\* this model was run against it) the session lives on, known to a store that will never be
-\* asked to end it again.
-Track(s) == /\ up /\ lock = "none" /\ sess[s] = "asked"
-            /\ IF trusted \/ ~TrackChecks
-                  THEN /\ sess' = [sess EXCEPT ![s] = "live"]
-                       /\ tracked' = tracked \cup {s}
-                  ELSE /\ sess' = [sess EXCEPT ![s] = "ended"]
-                       /\ UNCHANGED tracked
-            /\ UNCHANGED << trusted, tomb, disk, lock, toEnd, w, acked, up >>
+\* "Track this session." With the lock. The core decides: on the list, or ended here and now.
+Track(x) == /\ up /\ lock = "none" /\ sess[x] = "asked" /\ x \notin core.tracked
+            /\ LET r == Step(core, Ev("track", {x}, FALSE, "ok"))
+               IN /\ core' = r[1]
+                  /\ sess' = [sess EXCEPT ![x] = IF Has(r[2], "endNew") THEN "ended" ELSE "live"]
+            /\ UNCHANGED << disk, lock, toEnd, w, acked, up >>
 
-\* A session ends by itself (finished, failed, cancelled).
-Finish(s) == /\ up /\ sess[s] = "live"
-             /\ sess' = [sess EXCEPT ![s] = "ended"]
-             /\ UNCHANGED << trusted, tomb, disk, lock, tracked, toEnd, w, acked, up >>
+\* A session ends by itself (finished, failed, cancelled), and the store drops it at its next tick.
+Finish(x) == /\ up /\ sess[x] = "live"
+             /\ sess' = [sess EXCEPT ![x] = "ended"]
+             /\ UNCHANGED << core, disk, lock, toEnd, w, acked, up >>
+
+Prune(x) == /\ up /\ lock = "none" /\ x \in core.tracked /\ sess[x] = "ended"
+            /\ core' = Step(core, Ev("prune", {x}, FALSE, "ok"))[1]
+            /\ UNCHANGED << disk, lock, sess, toEnd, w, acked, up >>
 
 (* ---- Withdrawing ------------------------------------------------------ *)
 
-\* Takes the lock. In memory the key is refused from here; the write may or may not reach the
-\* disk; the sessions it authenticated leave the list and are set down to be ended.
+\* Takes the lock. The core decides; the file is written with the lock held, and may not
+\* reach the disk; the sessions the core named are set down to be ended.
 Withdraw == /\ up /\ w = "idle" /\ lock = "none"
-            /\ lock' = "W"
-            /\ trusted' = FALSE /\ tomb' = TRUE
-            /\ \/ disk' = [trusted |-> FALSE, tomb |-> TRUE]
-               \/ UNCHANGED disk                              \* the disk is full
-            /\ toEnd' = tracked /\ tracked' = {}
-            /\ w' = "locked"
+            /\ \E d \in Disk:
+                 LET r == Step(core, Ev(IF ForGood THEN "retire" ELSE "forget", {}, FALSE, d))
+                 IN /\ core' = r[1]
+                    /\ disk' = Written(r, d)
+                    /\ toEnd' = Who(r[2], "end")
+            /\ lock' = "W" /\ w' = "locked"
             /\ UNCHANGED << sess, acked, up >>
 
 \* The outermost `locked` call lets go; only then is anything that touches a socket done.
 Unlock == /\ up /\ w = "locked"
           /\ lock' = "none" /\ w' = "ending"
-          /\ UNCHANGED << trusted, tomb, disk, sess, tracked, toEnd, acked, up >>
+          /\ UNCHANGED << core, disk, sess, toEnd, acked, up >>
 
 \* Ending the sessions: closing sockets. Done on the withdrawing thread before its call returns.
 EndSessions == /\ up /\ w = "ending"
-               /\ sess' = [s \in Sessions |-> IF s \in toEnd /\ sess[s] = "live" THEN "ended" ELSE sess[s]]
+               /\ sess' = [x \in Sessions |-> IF x \in toEnd /\ sess[x] = "live" THEN "ended" ELSE sess[x]]
                /\ toEnd' = {} /\ w' = "returned"
-               /\ UNCHANGED << trusted, tomb, disk, lock, tracked, acked, up >>
+               /\ UNCHANGED << core, disk, lock, acked, up >>
 
 \* Trust.commit: written now, or the notice is not acknowledged.
 Commit == /\ up /\ w = "returned" /\ lock = "none"
-          /\ \/ disk' = [trusted |-> trusted, tomb |-> tomb] /\ w' = "committed"
-             \/ UNCHANGED disk /\ w' = "silent"               \* could not be written: say nothing
-          /\ UNCHANGED << trusted, tomb, lock, sess, tracked, toEnd, acked, up >>
+          /\ \E d \in Disk:
+               LET r == Step(core, Ev("commit", {}, FALSE, d))
+               IN /\ core' = r[1]
+                  /\ disk' = Written(r, d)
+                  /\ w' = IF d = "ok" THEN "committed" ELSE "silent"
+          /\ UNCHANGED << lock, sess, toEnd, acked, up >>
 
-Ack == /\ up /\ w = "committed"
+Ack == /\ up /\ w = "committed" /\ ForGood
        /\ acked' = TRUE /\ w' = "done"
-       /\ UNCHANGED << trusted, tomb, disk, lock, sess, tracked, toEnd, up >>
+       /\ UNCHANGED << core, disk, lock, sess, toEnd, up >>
+
+(* ---- Meanwhile -------------------------------------------------------- *)
+
+\* A write that failed is tried again when the timer says so (Trust.tick).
+Retry == /\ up /\ lock = "none" /\ core.unsaved
+         /\ \E d \in Disk:
+              LET r == Step(core, Ev("quiet", {}, TRUE, d))
+              IN core' = r[1] /\ disk' = Written(r, d)
+         /\ UNCHANGED << lock, sess, toEnd, w, acked, up >>
+
+\* Two people pair the key again. The core says whether that is possible at all.
+PairAgain == /\ up /\ lock = "none"
+             /\ \E d \in Disk:
+                  LET r == Step(core, Ev("store", {}, FALSE, d))
+                  IN core' = r[1] /\ disk' = Written(r, d)
+             /\ UNCHANGED << lock, sess, toEnd, w, acked, up >>
 
 (* ---- The app dies, and is started again ------------------------------- *)
 
 Crash == /\ up
          /\ up' = FALSE /\ lock' = "none" /\ w' = "dead"
-         /\ sess' = [s \in Sessions |-> IF sess[s] \in {"asked", "live"} THEN "ended" ELSE sess[s]]
-         /\ tracked' = {} /\ toEnd' = {}
-         /\ UNCHANGED << trusted, tomb, disk, acked >>
+         /\ sess' = [x \in Sessions |-> IF sess[x] \in {"asked", "live"} THEN "ended" ELSE sess[x]]
+         /\ toEnd' = {}
+         /\ UNCHANGED << core, disk, acked >>
 
 Restart == /\ ~up
            /\ up' = TRUE
-           /\ trusted' = disk.trusted /\ tomb' = disk.tomb
-           /\ UNCHANGED << disk, lock, sess, tracked, toEnd, w, acked >>
+           /\ core' = Load(disk)
+           /\ UNCHANGED << disk, lock, sess, toEnd, w, acked >>
 
-Next == Withdraw \/ Unlock \/ EndSessions \/ Commit \/ Ack \/ Crash \/ Restart
-        \/ \E s \in Sessions: Ask(s) \/ Track(s) \/ Finish(s)
+Next == Withdraw \/ Unlock \/ EndSessions \/ Commit \/ Ack \/ Retry \/ PairAgain \/ Crash \/ Restart
+        \/ \E x \in Sessions: Ask(x) \/ Track(x) \/ Finish(x) \/ Prune(x)
 
 Spec == Init /\ [][Next]_vars
 
-TypeOK == /\ trusted \in BOOLEAN /\ tomb \in BOOLEAN /\ acked \in BOOLEAN /\ up \in BOOLEAN
+TypeOK == /\ core.known \in {"no", "current", "ranOut"} /\ core.again \in {"no", "waiting", "pairedAgain"}
+          /\ core.tomb \in {"none", "expired", "forGood"} /\ core.tracked \subseteq Sessions /\ core.unsaved \in BOOLEAN
+          /\ acked \in BOOLEAN /\ up \in BOOLEAN /\ toEnd \subseteq Sessions
           /\ lock \in {"none", "W"}
           /\ w \in {"idle", "locked", "ending", "returned", "committed", "silent", "done", "dead"}
           /\ sess \in [Sessions -> {"none", "asked", "live", "ended", "refused"}]
@@ -127,19 +163,32 @@ TypeOK == /\ trusted \in BOOLEAN /\ tomb \in BOOLEAN /\ acked \in BOOLEAN /\ up 
 (***************************************************************************)
 
 \* What the other Mac was told is true for good: the tombstone is on the disk before `retired`
-\* is said, so no crash and no restart brings the key back.
-AcknowledgedMeansRefusedForGood == acked => disk.tomb /\ ~disk.trusted /\ (up => tomb /\ ~trusted)
+\* is said, so no crash, no restart and no later pairing brings the key back.
+AcknowledgedMeansRefusedForGood ==
+    acked => disk.tomb = "forGood" /\ disk.known = "no" /\ (up => core.tomb = "forGood" /\ core.known = "no")
 
 \* When the call that withdrew the trust has returned, nothing that key authenticated is
 \* still running: not what was running before, and not what was being opened meanwhile.
+\* (Unless two people have paired the key again since, which is a new decision.)
 NothingOutlivesTheWithdrawal ==
-    w \in {"returned", "committed", "silent", "done"} => \A s \in Sessions: sess[s] # "live"
+    (w \in {"returned", "committed", "silent", "done"} /\ core.known = "no") => \A x \in Sessions: sess[x] # "live"
 
 \* A session is live only while the store counts the key as paired, or is on its way to ending it.
 LiveMeansTrustedOrBeingEnded ==
-    \A s \in Sessions: sess[s] = "live" => trusted \/ s \in toEnd
+    up => \A x \in Sessions: sess[x] = "live" => core.known # "no" \/ x \in toEnd
+
+\* And the store knows of every live session, which is what lets a later withdrawal end it.
+LiveIsOnTheList ==
+    up => \A x \in Sessions: sess[x] = "live" => x \in core.tracked \/ x \in toEnd
 
 \* Nothing that touches a socket is done with the store locked (the review's F7).
 NoSocketWorkUnderTheLock == lock = "W" => w = "locked"
+
+\* What the disk has refused for good it refuses for good.
+ForGoodOnDiskIsForGood == [][disk.tomb = "forGood" => disk'.tomb = "forGood" /\ disk'.known = "no"]_vars
+
+\* Reachability, to be VIOLATED: a session does go live, and a notice does get acknowledged.
+NeverLive  == \A x \in Sessions: sess[x] # "live"
+NeverAcked == ~acked
 
 =============================================================================

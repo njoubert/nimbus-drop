@@ -106,7 +106,7 @@ models assume. That stays "by reading, with a mutant on each side" (`formal/READ
 | Tests | 231 + 29 chaos + 74 in `NimbusCryptoTests` (168 + 29 + 9 before) |
 | Models | Tamarin: 43 lemmas in two theories, 15 mutants. TLC: four refinements and their system models, with mutants and reachability runs (`formal/README.md`). |
 | Mutation | 263 guards in `scripts/mutate.py` (85 before) |
-| Found | by the models and the tests written to hold them: nine (seven fixed, two stated as limits). By an independent review given the code and not the conclusions: twelve, one of them a crash on one accepted drop (all fixed, two in part). By the containment tests: ten, two of them the review's leads (all fixed). Listed in `formal/README.md`, `docs/security/filesystem-containment.md` and the commit messages. |
+| Found | 28 defects fixed, two of them in part, and five limits written down. From an independent review given the code and not the conclusions: twelve, one of them a crash on one accepted drop. From the containment tests: ten, two of them the review's leads. From building and checking the models: seven, one of them also the review's. From the fuzzers and from reading while fixing: two. Listed in `formal/README.md`, `docs/security/filesystem-containment.md` and the commit messages. |
 | Data path | loopback, before and after, within noise on every line (CLAUDE.md, Measured) |
 | Not done | a run between two Macs; the Tamarin job seen to pass in CI; CryptoVerif; a Linux build of the core; content hashing (ruled out); the decisions in `docs/security/claims.md`, "Open for the owner" |
 

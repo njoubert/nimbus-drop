@@ -651,7 +651,7 @@ compiler's, by reading, or not established). The plans for the work are
   lemma named for them. Four handshake flags did not settle either way and are not run;
   nothing is claimed of those guards from the lemmas.
 - **TLC** checks the system models at stated bounds: the largest are `Expiry` (5.5 million
-  states, a minute), `AdmissionSystem` (450,000) and `Drop` (231,000).
+  states, a minute), `AdmissionSystem` (450,000) and `Drop` (179,000).
 - **The runner fails closed** (`formal/check.py`, `formal/test_check.py`): a lemma missing,
   unregistered, twice, incomplete or falsified; a summary cut short; an exit code that does
   not match what was printed; a request that matches nothing. Each is a failure, never a

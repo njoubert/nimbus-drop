@@ -105,6 +105,7 @@ M=[
  ('characters that cannot be seen tell two names apart', 'Sources/NimbusCrypto/TrustCore.swift', 'var s = Sanitize.comparable(name).precomposedStringWithCompatibilityMapping', 'var s = name.precomposedStringWithCompatibilityMapping', 'IndependentReviewTests/testCharactersThatCannotBeSeenAreLeftOutOfWhatIsShownAndCompared'),
  ('a public key at or above the field prime is taken', 'Sources/NimbusCrypto/Crypto.swift', 'if b[31] == 0x7f, b[1..<31].allSatisfy({ $0 == 0xff }), b[0] >= 0xed { return nil }', '', 'WycheproofTests/testKeyAgreementAgainstWycheproof'),
  ('a time or a rate that no integer holds is turned into one to be shown (a trap)', 'Sources/NimbusBase/Format.swift', 'x.isNaN ? 0 : Int(min(max(0, x.rounded()), atMost))', 'Int(max(0, x.rounded()))', 'FuzzTests/testNumbersThatAreShownNeverTrap'),
+ ("a private key is written to the log", 'Sources/NimbusCrypto/TrustCore.swift', 'was replaced by \\(k.publicKey.tag) (\\(reason))', 'was replaced by \\(k.raw.base64EncodedString()) (\\(reason))', 'SecretsTests/testNothingSecretIsEverLogged'),
  ("a manifest's sizes are not bounded in all (the sum overflows)", 'Sources/NimbusSafeStorageCore/Manifest.swift', 'guard e.size <= Self.maxTotalBytes - total else { throw DropError("The drop is larger than can be accepted") }', 'guard e.size <= Self.maxFileSize else { throw DropError("The drop is larger than can be accepted") }', 'SecurityTests/testHostileNumbersAreRefusedNotCrashedOn'),
 ]
 only=sys.argv[1:] 

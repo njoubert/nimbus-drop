@@ -146,6 +146,8 @@ class Layers(unittest.TestCase):
         self.refuses("NimbusTransferCore", 'log("the drop\'s master is \\(keys.master.count) bytes")', "says something and names a secret")
         self.refuses("NimbusSecurityCore", 'DropLog.write("resuming with \\(resumeKey)")', "says something and names a secret")
         self.refuses("NimbusSecurityCore", 'throw DropError("bad key \\(pair.raw)")', "says something and names a secret")
+        # In the pure module what is to be logged is handed back as an effect, and is still said.
+        self.refuses("NimbusSecurityCore", 'return [.log("replaced by \\(k.raw.base64EncodedString())", .warn)]', "says something and names a secret")
 
     def test_a_line_that_says_a_public_key_or_a_tag_passes(self):
         self.accepts("NimbusSecurityCore", 'func f(key: PublicKey) { DropLog.write("proved \\(key.tag) \\(key.raw.count) and the master plan") }')

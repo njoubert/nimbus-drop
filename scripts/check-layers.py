@@ -80,7 +80,7 @@ PLAINTEXT_CALL = r"\bcore\.encoded\(\)"
 PLAINTEXT_FILES = ["Sources/NimbusSecurityCore/Trust.swift"]
 
 # A line that writes to the log, the terminal or the other Mac may not name a secret.
-SAYS = r"\bDropLog\.write\(|(?<![.\w])log\(|\bprint\(|\bfputs\(|\bReason\(message:|\bDropError\("
+SAYS = r"\bDropLog\.write\(|(?<![.\w])log\(|\.log\(\"|\bprint\(|\bfputs\(|\bReason\(message:|\bDropError\("
 SECRET_IN_TEXT = r"\\\((?:[^()]|\([^()]*\))*\b(master|secret|resumeKey|attachKey|keyPair|\.raw\b(?<!publicKey\.raw)(?<!remote\.raw)(?<!key\.raw))"
 
 

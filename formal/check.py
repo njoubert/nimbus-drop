@@ -147,6 +147,19 @@ TLA_RUNS = [
     ("Drop / mutant: the sender does not come back after losing the conversation", "Drop", drop(), [], ["ItArrives"], "deadlock",
      ("Drop.tla", "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Reconnect \\/ Refused",
       "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Refused")),
+
+    # ---- Admission: which connection gets a place, and which gives way (one block; see ADMISSION below) ----
+    # The Swift machine is the specification's machine, at the two sets of limits it was walked at.
+    ("AdmissionRefinement (the Swift code is Step: three places and two an address, two keys)", "AdmissionRefinement",
+     {"Walk": '"Pools"'}, ["SpecIsImpl"], [], HOLDS, None),
+    ("AdmissionRefinement (the Swift code is Step: three arrivals a window and two an address, a clock that moves)", "AdmissionRefinement",
+     {"Walk": '"Rate"'}, ["SpecIsImpl"], [], HOLDS, None),
+    ("AdmissionRefinement / mutant: the specification differs from the code (an address at its limit pushes out the oldest of all)",
+     "AdmissionRefinement", {"Walk": '"Pools"'}, ["SpecIsImpl"], [], "ImplIsSpec",
+     ("Admission.tla", "THEN CHOOSE i \\in 1..Len(pool): pool[i] = a /\\ \\A j \\in 1..(i - 1): pool[j] # a", "THEN 1")),
+    ("AdmissionRefinement / mutant: the specification differs from the code (an arrival counts for a tick longer)",
+     "AdmissionRefinement", {"Walk": '"Rate"'}, ["SpecIsImpl"], [], "ImplIsSpec",
+     ("Admission.tla", "StillCounts(x) == x.age <= Window", "StillCounts(x) == x.age <= Window + 1")),
 ]
 
 

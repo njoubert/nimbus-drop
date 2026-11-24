@@ -16,6 +16,11 @@ import NimbusSecurityCore
 /// table): a slot is taken before any work is done for it and kept until its class changes.
 /// Completing a handshake proves possession of some key, not a place among the Known Macs, and
 /// raises no limit by itself.
+///
+/// Which connection has a place and which gives way is not decided here. `Admission` (in the
+/// crypto module, which has no I/O in it) decides; this class keeps the sockets, the lock and
+/// the clock, tells it each thing that happens to a connection (`ask`), and does what it
+/// answers. `formal/tla/Admission.tla` is that machine as a specification, held equal to it.
 public final class DropListener: @unchecked Sendable {
     public let port: UInt16
     public let identity: Identity
@@ -42,16 +47,14 @@ public final class DropListener: @unchecked Sendable {
     /// When each key last had a speed test answered, allowed or not: a pause before its next.
     private var speedAsked: [PublicKey: Date] = [:]
     private var holders: [String: ReceiveSession] = [:]
-    /// A connection that has proved nothing yet, and where it came from. Each pool is in order
-    /// of arrival: when it is full, the first (the one that has waited longest without proving
-    /// anything) gives way.
-    private struct Unproved { let socket: Socket; let address: String }
-    private var strangers: [Unproved] = []
-    private var unattached: [Unproved] = []
-    private var unpaired = 0
-    private var arrivals: [(at: Date, address: String)] = []
-    /// Connections from each paired key that have not yet said what they came for.
-    private var pairedWaiting: [PublicKey: Int] = [:]
+    /// Who has a place: the connections that have proved nothing (in order of arrival: the one
+    /// that has waited longest gives way), the ones that proved a key nobody paired, the ones
+    /// from a paired key that have not yet said what they came for, and the arrivals of the
+    /// last second. Asked with the lock held, and only through `ask`.
+    private var admission = Admission(limits: DropListener.limits)
+    /// Each connection `admission` knows, by the number it gave it, from its arrival until it
+    /// is done with: to close the one that is told to give way.
+    private var connections: [UInt64: Socket] = [:]
     private var turnedAway = Set<String>()
     private var _localOnly = true
     /// Take connections only from the local network (the default). Off: from anything that can reach the port.
@@ -95,8 +98,8 @@ public final class DropListener: @unchecked Sendable {
                 guard client >= 0 else { continue }
                 let socket = Socket(fd: client)
                 // Admission before a thread: the address, the rate, and a stranger's slot.
-                guard admit(socket) else { socket.shutdown(); continue }
-                Thread.detachNewThread { [self] in serve(socket) }
+                guard let ticket = admit(socket) else { socket.shutdown(); continue }
+                Thread.detachNewThread { [self] in serve(socket, ticket) }
             }
         }
     }
@@ -120,61 +123,60 @@ public final class DropListener: @unchecked Sendable {
         DropLog.write(message() + (say > 0 ? " (and \(say) more like it in the last minute)" : ""), level)
     }
 
+    /// The limits `admission` works to: `Tuning`'s, as they are now (the tests change them).
+    private static var limits: Admission.Limits {
+        Admission.Limits(strangers: Tuning.strangers, strangersPerAddress: Tuning.strangersPerAddress,
+                         arrivals: Tuning.arrivalsPerSecond, arrivalsPerAddress: Tuning.arrivalsPerAddress, window: 1,
+                         unattachedPerDrop: Tuning.unattachedPerDrop, unattachedPerAddress: Tuning.unattachedPerAddress,
+                         unpaired: Tuning.unpaired, pairedWaiting: Tuning.pairedWaiting)
+    }
+
+    /// With the lock held. Tells `admission` what has happened to a connection; returns what it
+    /// says to do, and the connection that is to give way (for the caller to close, once the
+    /// lock is let go). Nothing else in this class decides who has a place.
+    private func ask(_ event: Admission.Event) -> (answer: Admission.Answer, displaced: Socket?) {
+        admission.limits = Self.limits
+        let answer = admission.step(event)
+        switch answer {
+        case .admitted(_, let out?), .moved(let out?): return (answer, connections[out])
+        default: return (answer, nil)
+        }
+    }
+
     /// Whether a connection is taken at all: from the local network (unless Settings says
     /// otherwise), within the rate at which new connections are taken, and with a stranger's
-    /// slot free. The slot is held from here.
-    private func admit(_ socket: Socket) -> Bool {
+    /// slot, which is held from here. Returns the number it is known by from now on.
+    private func admit(_ socket: Socket) -> UInt64? {
         let from = socket.peerAddress
         let local = allows.map { $0(from) } ?? (!localOnly || LocalNetwork.isLocal(from, among: LocalNetwork.current()))
-        guard local else {
+        let (answer, displaced) = lock.withLock { () -> (Admission.Answer, Socket?) in
+            let said = ask(.arrive(from: from, local: local, now: Date().timeIntervalSinceReferenceDate))
+            if case .admitted(let ticket, _) = said.answer { connections[ticket] = socket }
+            return said
+        }
+        switch answer {
+        case .admitted(let ticket, _):
+            if let displaced {
+                logCounted("displaced", "closed a connection that had proved nothing, to make room for one from \(from)", .debug)
+                displaced.shutdown()
+            }
+            return ticket
+        case .close(.elsewhere):
             // Said once per address: a scanner knocking every second should not fill the log.
             if lock.withLock({ turnedAway.count < 1000 && turnedAway.insert(from).inserted }) {
                 DropLog.write("turned away a connection from \(from): not on the local network (Settings › Receiving)", .warn)
             }
-            return false
+            return nil
+        default:
+            logCounted("full", "turned away a connection from \(from): too many in a second")
+            return nil
         }
-        var displaced: Socket?
-        let taken = lock.withLock { () -> Bool in
-            let now = Date()
-            arrivals.removeAll { now.timeIntervalSince($0.at) > 1 }
-            // The rate cannot be met by anyone giving way: over it, the newcomer is closed.
-            guard arrivals.count < Tuning.arrivalsPerSecond,
-                  arrivals.filter({ $0.address == from }).count < Tuning.arrivalsPerAddress else { return false }
-            arrivals.append((now, from))
-            displaced = place(socket, from: from, in: &strangers, limit: Tuning.strangers, perAddress: Tuning.strangersPerAddress)
-            return true
-        }
-        if !taken { logCounted("full", "turned away a connection from \(from): too many in a second") }
-        if let displaced {
-            logCounted("displaced", "closed a connection that had proved nothing, to make room for one from \(from)", .debug)
-            displaced.shutdown()
-        }
-        return taken
     }
 
-    /// With the lock held. Puts `socket` in a pool of connections that have proved nothing
-    /// yet; returns the one that gives way for it, to be closed. At its address's own limit
-    /// that is the oldest from the same address, so one address can only ever push out its own;
-    /// with the whole pool full it is the oldest of all. An honest Mac proves itself within
-    /// milliseconds of arriving and what an attacker's connection does is wait, so the longest
-    /// wait is what loses the place. Refusing the newcomer instead let 64 silent connections
-    /// from one host keep every paired Mac out (the review of the code, F1).
-    private func place(_ socket: Socket, from: String, in pool: inout [Unproved], limit: Int, perAddress: Int) -> Socket? {
-        var out: Unproved?
-        if let own = pool.indices.filter({ pool[$0].address == from }).first, pool.filter({ $0.address == from }).count >= perAddress {
-            out = pool.remove(at: own)
-        } else if pool.count >= limit, !pool.isEmpty {
-            out = pool.removeFirst()
-        }
-        pool.append(Unproved(socket: socket, address: from))
-        return out?.socket
-    }
-
-    private func serve(_ socket: Socket) {
+    private func serve(_ socket: Socket, _ ticket: UInt64) {
         let from = socket.peerAddress
-        var stranger = true
-        func noLongerAStranger() { if stranger { stranger = false; lock.withLock { strangers.removeAll { $0.socket === socket } } } }
-        defer { noLongerAStranger() }
+        // Whatever place it holds is given back when it is done with, however that comes about.
+        defer { lock.withLock { _ = ask(.closed(ticket)); connections[ticket] = nil } }
         // Ten seconds in all (not ten per byte) to get as far as proving a key.
         let deadline = Deadline(socket, seconds: Tuning.strangerSeconds)
         defer { deadline.cancel() }
@@ -183,18 +185,9 @@ public final class DropListener: @unchecked Sendable {
 
         if kind == Opening.data {
             // A data connection: nothing until it proves it belongs to a drop in progress.
-            var displaced: Socket?
-            let room = lock.withLock { () -> Bool in
-                guard !sessions.isEmpty else { return false }
-                displaced = place(socket, from: from, in: &unattached, limit: Tuning.unattachedPerDrop * sessions.count, perAddress: Tuning.unattachedPerAddress)
-                return true
-            }
-            noLongerAStranger()
+            let (answer, displaced) = lock.withLock { ask(.data(ticket, drops: sessions.count)) }
             displaced?.shutdown()
-            guard room else { socket.shutdown(); return }
-            var released = false
-            func release() { if !released { released = true; lock.withLock { unattached.removeAll { $0.socket === socket } } } }
-            defer { release() }
+            guard case .moved = answer else { socket.shutdown(); return }
             deadline.arm(Tuning.attachSeconds)
             let challenge = Crypto.random(16)
             var message = Data(count: 40)
@@ -208,7 +201,7 @@ public final class DropListener: @unchecked Sendable {
                 return
             }
             deadline.cancel()
-            release()
+            lock.withLock { _ = ask(.attached(ticket)) }
             socket.setReadTimeout(0)
             session.runStream(socket, conn: conn)
             return
@@ -219,52 +212,44 @@ public final class DropListener: @unchecked Sendable {
             socket.shutdown()
             return
         }
-        // A key has been proved. What it is to this Mac decides everything from here.
+        // A key has been proved. What it is to this Mac decides everything from here. It is no
+        // longer one of the connections that have proved nothing: it is counted with the keys
+        // nobody has paired, or with the connections of its own key that have not yet said what
+        // they came for (a paired key is counted too: a paired Mac that means harm could
+        // otherwise hold any number of connections here for ten seconds each).
         let key = channel.remote
         var standing = trust.standing(of: key)
-        noLongerAStranger()
+        let proved: Admission.Proved
         switch standing {
-        case .mine: socket.shutdown(); return
-        case .retired(let t):
-            logCounted("retired", "refused \(from): it proved an identity (\(key.tag)) that \(t.name) gave up or that was replaced", .error)
-            if trust.noteRefused(key) { onRefusedIdentity?(t.name, from) }
+        case .mine: proved = .mine
+        case .retired: proved = .retired
+        default: proved = standing.isPaired ? .paired(key) : .unpaired
+        }
+        switch lock.withLock({ ask(.proved(ticket, proved)) }).answer {
+        case .moved: break
+        case .close(.retired):
+            if case .retired(let t) = standing {
+                logCounted("retired", "refused \(from): it proved an identity (\(key.tag)) that \(t.name) gave up or that was replaced", .error)
+                if trust.noteRefused(key) { onRefusedIdentity?(t.name, from) }
+            }
             socket.shutdown()
             return
-        default: break
+        case .close(.tooManyUnpaired):
+            logCounted("unpaired", "turned away \(from) (\(key.tag)): too many connections from Macs that are not paired")
+            socket.shutdown()
+            return
+        case .close(.tooManyWaiting):
+            logCounted("pairedwaiting", "turned away \(from) (\(key.tag)): too many connections from that Mac that have not said what they want")
+            socket.shutdown()
+            return
+        default:
+            // This Mac's own key; or it had already given way to a newcomer.
+            socket.shutdown()
+            return
         }
-        var holdsUnpaired = false
-        if !standing.isPaired {
-            guard lock.withLock({ () -> Bool in
-                guard unpaired < Tuning.unpaired else { return false }
-                unpaired += 1
-                return true
-            }) else {
-                logCounted("unpaired", "turned away \(from) (\(key.tag)): too many connections from Macs that are not paired")
-                socket.shutdown()
-                return
-            }
-            holdsUnpaired = true
-            // Sixteen kilobytes in all, which the one-fragment limit already holds it under per message.
-            channel.limit = 16 << 10
-        }
-        defer { if holdsUnpaired { lock.withLock { unpaired -= 1 } } }
-        // A paired key is counted too until it has said what it came for: a paired Mac that
-        // means harm could otherwise hold any number of connections here for ten seconds each.
-        var waitsPaired = false
-        func saidWhatItCameFor() { if waitsPaired { waitsPaired = false; lock.withLock { pairedWaiting[key] = (pairedWaiting[key] ?? 1) - 1; if pairedWaiting[key] == 0 { pairedWaiting[key] = nil } } } }
-        if standing.isPaired {
-            guard lock.withLock({ () -> Bool in
-                guard pairedWaiting[key, default: 0] < Tuning.pairedWaiting else { return false }
-                pairedWaiting[key, default: 0] += 1
-                return true
-            }) else {
-                logCounted("pairedwaiting", "turned away \(from) (\(key.tag)): too many connections from that Mac that have not said what they want")
-                socket.shutdown()
-                return
-            }
-            waitsPaired = true
-        }
-        defer { saidWhatItCameFor() }
+        // Sixteen kilobytes in all, which the one-fragment limit already holds it under per message.
+        if !standing.isPaired { channel.limit = 16 << 10 }
+        func saidWhatItCameFor() { lock.withLock { _ = ask(.purpose(ticket)) } }
 
         guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body) else { socket.shutdown(); return }
         // A Mac this one has paired proves its key and says it no longer has this Mac paired:

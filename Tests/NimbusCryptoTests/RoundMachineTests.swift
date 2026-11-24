@@ -364,7 +364,7 @@ final class RoundMachineTests: XCTestCase {
         XCTAssertEqual(Set(r.steps.map(\.event)), Set(Self.receiverEvents))
     }
 
-    /// A generator that can be run again: its seed is printed, and `NIMBUS_SEED` sets it.
+    /// A generator that gives the same numbers for the same seed.
     struct Seeded: RandomNumberGenerator {
         var state: UInt64
         mutating func next() -> UInt64 {
@@ -378,7 +378,7 @@ final class RoundMachineTests: XCTestCase {
 
     /// From every state of each relation: this many machines, each made afresh with numbers of
     /// its own, each then walked this many steps at random.
-    static let machinesAState = 12, stepsAWalk = 50
+    static let machinesAState = 6, stepsAWalk = 50
 
     /// A Swift event that the numbers make a `label`, with whatever the label leaves open
     /// chosen at random. Nil when no such event exists for THIS machine: a plan cannot name
@@ -455,12 +455,28 @@ final class RoundMachineTests: XCTestCase {
     /// numbers of their own (brought there by the same events, made with other numbers), each
     /// then given every event once and walked on at random; every step is given the name the
     /// numbers give it BEFORE it is taken, and must be in the relation under that name. An
-    /// event the specification has that could not be made to happen is a failure too. A
-    /// failure prints the seed and the whole walk.
+    /// event the specification has that could not be made to happen is a failure too.
+    ///
+    /// Fixed seeds, so that a failure can be had again, and one from the clock, so that every
+    /// run also looks somewhere new. A failure prints its seed and its whole walk;
+    /// `NIMBUS_SEED=n` runs that seed alone, `NIMBUS_WALK_SEEDS=200` is a longer hunt.
     func testRandomWalksStayInsideTheRelations() {
-        let seed = ProcessInfo.processInfo.environment["NIMBUS_SEED"].flatMap { UInt64($0) } ?? UInt64.random(in: 0 ... .max)
-        var rng = Seeded(state: seed)
+        let environment = ProcessInfo.processInfo.environment
+        let extra = Int(environment["NIMBUS_WALK_SEEDS"] ?? "") ?? 1
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        let seeds = environment["NIMBUS_SEED"].flatMap { UInt64($0) }.map { [$0] } ?? [1, 2, 3, 0x5EED] + (0..<extra).map { now &+ UInt64($0) &* 7919 }
         var steps = 0
+        for seed in seeds {
+            guard walk(seed: seed, steps: &steps) else { return }
+        }
+        print("RoundMachineTests: \(steps) random steps over \(seeds.count) seeds (the last: \(seeds.last!)), from every state of both relations, every one in its relation")
+        XCTAssertGreaterThan(steps, 60000 * seeds.count)
+    }
+
+    /// One seed's walks, from every state of both relations. False when a step was not in its
+    /// relation (the test has failed and said so).
+    func walk(seed: UInt64, steps: inout Int) -> Bool {
+        var rng = Seeded(state: seed)
 
         let s = Self.senderRelation()
         for (state, reached) in s.paths.sorted(by: { $0.key < $1.key }) {
@@ -468,7 +484,7 @@ final class RoundMachineTests: XCTestCase {
                 var m = Sender(patience: reached.patience)
                 var trace: [String] = []
                 /// Takes one step by its label; false (and the test has failed) when it is not in the relation.
-                func take(_ label: String, on m: inout Sender, required: Bool) -> Bool {
+                func take(_ label: String, on m: inout Sender, required: Bool, _ steps: inout Int) -> Bool {
                     guard let event = Self.senderEvent(label, &rng, m) else {
                         if required { XCTFail("NIMBUS_SEED=\(seed): “\(label)” could not be made to happen in \(Self.state(m)) (best \(m.best))") }
                         return !required
@@ -483,17 +499,17 @@ final class RoundMachineTests: XCTestCase {
                     }
                     return true
                 }
-                for label in reached.events { guard take(label, on: &m, required: true) else { return } }
-                guard Self.state(m) == state else { return XCTFail("NIMBUS_SEED=\(seed): \(reached.events) leads to \(Self.state(m)), not \(state)") }
+                for label in reached.events { guard take(label, on: &m, required: true, &steps) else { return false } }
+                guard Self.state(m) == state else { XCTFail("NIMBUS_SEED=\(seed): \(reached.events) leads to \(Self.state(m)), not \(state)"); return false }
                 // Every event of the specification, here, on a machine with numbers of its own.
                 // (The one that cannot always be made: a plan naming more than the largest number.)
                 for label in Self.senderEvents {
                     var copy = m
                     let kept = trace
-                    guard take(label, on: &copy, required: label != "planMore" || m.best < .max) else { return }
+                    guard take(label, on: &copy, required: label != "planMore" || m.best < .max, &steps) else { return false }
                     trace = kept
                 }
-                for _ in 0..<Self.stepsAWalk { guard take(Self.senderLabel(&rng, m), on: &m, required: false) else { return } }
+                for _ in 0..<Self.stepsAWalk { guard take(Self.senderLabel(&rng, m), on: &m, required: false, &steps) else { return false } }
             }
         }
 
@@ -503,7 +519,7 @@ final class RoundMachineTests: XCTestCase {
                 let offered = Self.description(&rng)
                 var m = Receiver(offered: offered, patience: reached.patience)
                 var trace = ["  offered \(offered)"]
-                func take(_ label: String, on m: inout Receiver) -> Bool {
+                func take(_ label: String, on m: inout Receiver, _ steps: inout Int) -> Bool {
                     guard let event = Self.receiverEvent(label, &rng, offered: offered) else { return true }   // a random description that happened to be the offer
                     let before = Self.state(m), named = Self.label(event, offered: offered)
                     let effects = m.step(event).map(Self.name)
@@ -515,18 +531,18 @@ final class RoundMachineTests: XCTestCase {
                     }
                     return true
                 }
-                for label in reached.events { guard take(label, on: &m) else { return } }
-                guard Self.state(m) == state else { return XCTFail("NIMBUS_SEED=\(seed): \(reached.events) leads to \(Self.state(m)), not \(state)") }
+                for label in reached.events { guard take(label, on: &m, &steps) else { return false } }
+                guard Self.state(m) == state else { XCTFail("NIMBUS_SEED=\(seed): \(reached.events) leads to \(Self.state(m)), not \(state)"); return false }
                 for label in Self.receiverEvents {
                     var copy = m
                     let kept = trace
-                    guard take(label, on: &copy) else { return }
+                    guard take(label, on: &copy, &steps) else { return false }
                     trace = kept
                 }
-                for _ in 0..<Self.stepsAWalk { guard take(Self.receiverLabel(&rng, m), on: &m) else { return } }
+                for _ in 0..<Self.stepsAWalk { guard take(Self.receiverLabel(&rng, m), on: &m, &steps) else { return false } }
             }
         }
-        print("RoundMachineTests: NIMBUS_SEED=\(seed); \(steps) random steps from all \(s.paths.count) + \(r.paths.count) states, every one in the relation")
+        return true
     }
 
     /// The relations are written out for a few patiences (the app's, and smaller). For any

@@ -217,7 +217,7 @@ private struct PeerTile: View {
 
     private var caption: String {
         switch standing {
-        case .needsUpdate: return "Runs a version from before drops were encrypted"
+        case .needsUpdate: return ""   // the badge says it; the rest is in the tooltip"
         case .checking: return "Finding out who this is…"
         case .unproved: return "Could not prove who it is"
         case .refused(let why): return why
@@ -286,7 +286,7 @@ private struct PeerMenu: View {
             Button("Pair by Identity Number…") { model.pair(with: peer, byNumber: true) }
         }
         if case .paired(let mac) = standing {
-            Button("Test Speed") { model.testSpeed(to: peer) }.disabled(peer.address == nil)
+            Button("Request Speed Test…") { model.testSpeed(to: peer) }.disabled(peer.address == nil)
             Divider()
             Button("Rename…") { model.rename(mac) }
             Button("Forget \(mac.name)…") { model.forget(mac) }

@@ -317,11 +317,12 @@ leave your network.
 
 ## How fast can two Macs go?
 
-Right-click a paired Mac and choose **Test Speed**. For five seconds each way the two Macs send
+Right-click a paired Mac and choose **Request Speed Test…**. The person at that Mac is asked
+whether to allow it, as they are for a drop. Then, for five seconds each way, the two Macs send
 each other what a drop would send, encrypted as a drop is, with nothing read from a disk and
 nothing written to one; the row then shows both rates. It answers "is it the network or the
-disks?": a real drop can be no faster than this, and is slower when a disk is. Nobody is asked
-at the other Mac, because nothing is saved there; it shows that a test is running. Over
+disks?": a real drop can be no faster than this, and is slower when a disk is. Both Macs show
+the result. Over
 Thunderbolt 4 between two Apple silicon laptops it measures 36 to 38 Gbit/s, which is all the
 cable carries.
 

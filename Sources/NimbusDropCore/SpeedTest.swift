@@ -158,7 +158,14 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         }
         trust.track(self, key: control.remote)
         try control.send(.speed, SpeedAsk(seconds: seconds, streams: streams))
+        // The person at the other Mac is asked, and takes as long as they take.
+        setState(.waitingForAccept)
+        socket.setReadTimeout(0)
         let answer = try control.read()
+        if answer.type == .decline {
+            finish(.declined(Sanitize.label((try? decode(Reason.self, from: answer.body).message) ?? "\(peerName) declined", limit: 200)))
+            return
+        }
         if answer.type == .busy { throw DropError(Sanitize.label((try? decode(Reason.self, from: answer.body).message) ?? "\(peerName) is busy", limit: 200)) }
         guard answer.type == .speedGo else { throw DropError("Unexpected answer from \(peerName)") }
         let granted = try decode(SpeedAsk.self, from: answer.body)
@@ -256,9 +263,23 @@ protocol DataSession: AnyObject {
     func runStream(_ socket: Socket, conn: UInt64)
 }
 
-/// A speed test, at the Mac that was asked. It takes what the tester sends and throws it
-/// away, then sends for as long as it granted. Nothing is written and nobody is asked.
-final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
+/// A speed test, at the Mac that was asked. First a question for the person here (`accept`
+/// or `decline`): nothing runs before a yes, because nothing one Mac has another do happens
+/// without one. Then it takes what the tester sends and throws it away, and sends for as long
+/// as it granted. Nothing is written.
+public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
+    /// What was asked for, held to what a Mac gives: for the question.
+    public var secondsEachWay: Double { seconds }
+    public var connections: Int { streams }
+    /// When this Mac paired with the Mac that is asking.
+    public let pairedAt: Date
+    /// Called once if the other Mac gives up while this one is still deciding.
+    public var onWithdrawn: (@Sendable () -> Void)?
+    private var decision: Bool?
+
+    public func accept() { lock.withLock { if decision == nil { decision = true } } }
+    public func decline() { lock.withLock { if decision == nil { decision = false } } }
+
     private let control: Channel
     private weak var listener: DropListener?
     private var keys: DropKeys?
@@ -280,7 +301,8 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
         seconds = max(1, min(SpeedWire.longest, ask.seconds.isFinite ? ask.seconds : 1))
         streams = max(1, min(SpeedWire.mostStreams, ask.streams))
         keys = DropKeys(master: channel.master)
-        super.init(direction: .receive, state: .transferring, peerName: mac.name, peerAddress: channel.socket.peerAddress)
+        pairedAt = mac.pairedAt
+        super.init(direction: .receive, state: .waitingForAccept, peerName: mac.name, peerAddress: channel.socket.peerAddress)
         setPeerKey(channel.remote)
         setItems(["Speed test"])
         isSpeedTest = true
@@ -305,7 +327,9 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
 
     /// One data connection, on the listener's thread for it. The first `streams` numbers are
     /// read from; the rest wait for the tester's word and are then written to.
-    func runStream(_ socket: Socket, conn: UInt64) {
+    func runStream(_ socket: Socket, conn: UInt64) { carry(socket, conn: conn) }
+
+    private func carry(_ socket: Socket, conn: UInt64) {
         track(socket)
         defer { socket.shutdown(); untrack(socket) }
         guard var cipher = lock.withLock({ keys })?.stream(conn) else { return }
@@ -333,6 +357,33 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
     func run() {
         guard let listener, let keys = lock.withLock({ keys }) else { return }
         log("speed test asked for by \(peerName) at \(peerAddress): \(Int(seconds)) s each way, \(streams) connections")
+        // The question, and nothing else, until it is answered: no data connection can attach
+        // (the test is not registered), and nothing is sent or read but the answer.
+        guard let ask = listener.onSpeedTest else {
+            try? control.send(.decline, Reason(message: "\(listener.identity.name) is not taking speed tests"))
+            finish(.declined("Not taking speed tests"))
+            return
+        }
+        ask(self)
+        var allowed: Bool?
+        while allowed == nil {
+            if isOver { onWithdrawn?(); return }
+            if control.socket.waitReadable(milliseconds: 200) {
+                // Nothing is expected from the tester while it waits: it has gone, or it is not waiting.
+                finish(.failed("\(peerName) gave up"))
+                onWithdrawn?()
+                return
+            }
+            allowed = lock.withLock { decision }
+        }
+        guard allowed == true else {
+            try? control.send(.decline, Reason(message: "\(listener.identity.name) declined the speed test"))
+            log("declined")
+            finish(.declined("Declined"))
+            return
+        }
+        log("allowed")
+        setState(.transferring)
         listener.register(self, id: keys.sessionID)
         defer { listener.unregister(id: keys.sessionID) }
         // An absolute limit on the whole, whatever the tester does or stops doing.

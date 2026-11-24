@@ -15,6 +15,17 @@ rest: how to work here, how the engine is put together, and what was measured.
   `ReceiveSession.receive`, `Socket`, `Ledger.record`) gets measured before and after, over
   loopback and over the LAN (below). Do not add a copy, a lock per byte or a syscall per small
   write there without a number.
+- **Nothing one Mac has another Mac do happens without a yes from the person at that Mac**
+  (the owner, 2026-11-23, as a core tenet: "interactions between machines need consent").
+  Being paired is who a Mac is, not permission for what it asks: a drop is asked about, a
+  pairing is asked about, and a speed test is asked about (as first built it was not: a
+  paired Mac could start one on another with nobody approving, and the owner called that
+  "no good"). A new kind of request between Macs gets its question, with no Return key on the
+  yes, taken away if the asker gives up, and declined when there is nobody to ask. The
+  argument "it writes nothing and its cost is bounded" is not a substitute for asking. What
+  needs no yes is only what a Mac says about itself: proving its key to a probe, and
+  withdrawing its own trust (retire, Forget). The one standing grant is the command line's
+  `--unattended-from`, which a person types for one key.
 - **Nothing is sent to, or shown from, a key that is not paired**, and nothing decides who a
   Mac is but the key it proved. Names, addresses and Bonjour records are labels. A change that
   lets a name, an address or a record affect what a paired key may do, or where its tile
@@ -164,7 +175,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  154 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  157 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -389,9 +400,11 @@ speed (3.1)           speed {seconds, streams} -> speed-go (as granted) | busy; 
   kept); one session per partial folder. The drop's key is SHA-256 over the sender's static
   key, the chunk size and every entry, so a resume needs the same sender key: after a key is
   replaced, an interrupted drop starts over.
-- **The speed test** (`--speed TARGET`, a paired tile's right-click › Test Speed): a paired
-  key only, nobody asked (nothing is written, and it is bounded: one at a time on a Mac, 30 s
-  each way and 32 connections at most, an absolute deadline). Each rate is counted by the end
+- **The speed test** (`--speed TARGET`, a paired tile's right-click › Request Speed Test…): a
+  paired key only, and the person at the other Mac is asked (`SpeedResponder.accept` /
+  `decline`; the Allow / Decline panel is `OfferPanel(speed:)`; nothing attaches, is sent or
+  is counted before the yes). Bounded as well: one question or test at a time on a Mac, 30 s
+  each way and 32 connections at most, an absolute deadline once allowed. Each rate is counted by the end
   that receives. It is the drop's data path with the files taken out, so the difference
   between it and a real drop is the two disks. A 3.0 copy does not know the purpose and hangs
   up; the tester says it may need a newer Nimbus Drop. Its first version deadlocked on itself

@@ -68,6 +68,8 @@ M=[
  ('a speed test takes any number of connections','Sources/NimbusDropCore/SpeedTest.swift','conn >= 1, conn <= UInt64(2 * streams),\n','\n','SpeedTests/testConnectionsAndRecordsAreHeldToWhatASpeedTestIs'),
  ('a speed test takes a record for a file','Sources/NimbusDropCore/SpeedTest.swift','guard header.file == 0, length > 0, length <= chunk else','guard length > 0, length <= chunk else','SpeedTests/testConnectionsAndRecordsAreHeldToWhatASpeedTestIs'),
  ('a speed test outlives the trust it was asked under','Sources/NimbusDropCore/SpeedTest.swift','        listener.trust.track(self, key: channel.remote)\n','','SpeedTests/testWithdrawingTrustEndsASpeedTest'),
+ ('a speed test starts without a yes from the person there','Sources/NimbusDropCore/SpeedTest.swift','            allowed = lock.withLock { decision }\n','            allowed = true\n','SpeedTests/testNothingRunsUntilThePersonAtTheOtherMacSaysYes'),
+ ('a speed test declined goes ahead','Sources/NimbusDropCore/SpeedTest.swift','guard allowed == true else {','guard allowed != nil else {','SpeedTests/testNoMeansNoAndNobodyToAskMeansNo'),
  # Not here: removing the all-zero check in KeyPair.agree. CryptoKit refuses that agreement
  # before the check is reached, so no test can tell (the review of 2026-11-23).
 ]

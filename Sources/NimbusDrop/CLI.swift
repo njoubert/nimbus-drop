@@ -255,6 +255,19 @@ enum CLI {
             let trust = trust
             let advertiser = advertise ? try? Advertiser(identity: identity, port: listener.port) : nil
             let finished = DispatchSemaphore(value: 0)
+            listener.onSpeedTest = { test in
+                // The standing grant covers the Mac it names for this too; anyone else is asked about.
+                let tag = test.peerKey?.tag.replacingOccurrences(of: "-", with: "") ?? ""
+                if let grant = unattended, tag == grant {
+                    Swift.print("speed test from \(test.peerName): allowed unattended")
+                    test.accept()
+                    return
+                }
+                Thread.detachNewThread {
+                    let yes = ["y", "yes"].contains(ask("\(test.peerName) (\(test.peerAddress)) asks to test the speed between the two Macs (\(Int(test.secondsEachWay)) s each way). allow? [y/N]").lowercased())
+                    if yes { test.accept() } else { test.decline() }
+                }
+            }
             listener.onOffer = { session in
                 Swift.print("\(session.peerName) [\(session.sender.key.tag)] (\(session.peerAddress)) wants to send \(session.title): \(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))")
                 if let grant = unattended {
@@ -324,14 +337,17 @@ enum CLI {
             let test = SpeedTest(host: host, port: hostPort, peerName: peerName, identity: identity, trust: trust, expect: expect,
                                  seconds: speedSeconds, streams: streams ?? Settings.streams)
             test.start()
-            var said = ""
+            var said = "", waiting = false
             while !test.state.isFinal {
                 Thread.sleep(forTimeInterval: 0.25)
+                if test.state == .waitingForAccept, !waiting { waiting = true; Swift.print("waiting for the person at \(peerName) to allow it…") }
                 let phase = test.phase
                 if phase != said, !phase.isEmpty { said = phase; Swift.print("measuring \(phase)…") }
             }
             guard test.state == .completed else {
-                if case .failed(let why) = test.state { Swift.print("failed: \(why)") } else { Swift.print("\(test.state)") }
+                if case .failed(let why) = test.state { Swift.print("failed: \(why)") }
+                else if case .declined(let why) = test.state { Swift.print("declined: \(why)") }
+                else { Swift.print("\(test.state)") }
                 if test.needsPairing { Swift.print("pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)") }
                 return 1
             }

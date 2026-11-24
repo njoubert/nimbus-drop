@@ -11,7 +11,7 @@ import SwiftUI
 @MainActor
 final class OfferPanel: NSObject, NSWindowDelegate {
     private let panel: NSPanel
-    enum Answer { case decline, downloads, choose }
+    enum Answer { case decline, downloads, choose, allow }
     private var answer: ((Answer) -> Void)?
 
     init(session: ReceiveSession, answer: @escaping (Answer) -> Void) {
@@ -23,6 +23,23 @@ final class OfferPanel: NSObject, NSWindowDelegate {
                              answer: { [weak self] in self?.finish($0) })
         panel.contentViewController = NSHostingController(rootView: view)
         panel.title = "Incoming Drop"
+        panel.level = .modalPanel
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.delegate = self
+    }
+
+    /// The other question a paired Mac can put: may it measure the link to this one? Nothing
+    /// one Mac has another do happens without a yes here, and this is where that yes is given.
+    init(speed test: SpeedResponder, answer: @escaping (Answer) -> Void) {
+        self.answer = answer
+        panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        super.init()
+        let view = SpeedAskView(asker: test.peerName, address: test.peerAddress, paired: test.pairedAt,
+                                detail: "\(Int(test.secondsEachWay)) seconds each way · \(Format.connections(test.connections))",
+                                answer: { [weak self] in self?.finish($0) })
+        panel.contentViewController = NSHostingController(rootView: view)
+        panel.title = "Speed Test"
         panel.level = .modalPanel
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
@@ -114,6 +131,39 @@ private struct OfferView: View {
                     Button("Save to…") { answer(.choose) }
                         .buttonStyle(AnswerButton(fill: Color.primary.opacity(0.14), text: .primary))
                 }
+            }
+        }
+        .padding(22)
+        .frame(width: 380)
+    }
+}
+
+private struct SpeedAskView: View {
+    let asker: String
+    let address: String
+    let paired: Date
+    let detail: String
+    let answer: (OfferPanel.Answer) -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "speedometer").font(.system(size: 44)).foregroundStyle(Palette.send)
+                .shadow(color: Palette.send.opacity(0.5), radius: 8)
+            VStack(spacing: 4) {
+                Text("\(asker) (\(address))").font(.headline).textSelection(.enabled)
+                Text("paired with this Mac on \(paired.formatted(date: .abbreviated, time: .omitted)) · wants to test how fast the two Macs can send to each other")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                Text(detail).font(.body.monospacedDigit()).padding(.top, 2)
+                Text("It uses this Mac's network and processor for that long. Nothing is saved.")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            // No Return key for Allow, as for accepting a drop: it takes a click. Escape declines.
+            HStack(spacing: 8) {
+                Button("Decline") { answer(.decline) }
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(AnswerButton(fill: Palette.failure, text: .white))
+                Button("Allow") { answer(.allow) }
+                    .buttonStyle(AnswerButton(fill: Palette.send, text: .white))
             }
         }
         .padding(22)

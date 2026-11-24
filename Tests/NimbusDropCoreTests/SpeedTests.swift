@@ -14,7 +14,80 @@ final class SpeedTests: XCTestCase {
 
     func pairedMacs() throws -> (TestMac, TestMac) {
         let (a, b) = Trust.paired("tester", "asked")
-        return (try TestMac("tester", trust: a), try TestMac("asked", trust: b))
+        let asked = try TestMac("asked", trust: b)
+        // The person at the Mac that is asked says yes, unless a test says otherwise.
+        asked.listener.onSpeedTest = { $0.accept() }
+        return (try TestMac("tester", trust: a), asked)
+    }
+
+    /// The tenet: nothing one Mac has another do happens without a yes from the person there.
+    /// A speed test asks, and until the answer is yes nothing runs: no data connection is
+    /// taken, nothing is sent, nothing is counted. (As first built it started at once.)
+    func testNothingRunsUntilThePersonAtTheOtherMacSaysYes() throws {
+        let (a, b) = try pairedMacs()
+        let asked = Locked<[SpeedResponder]>([])
+        b.listener.onSpeedTest = { r in asked.withLock { $0.append(r) } }
+        let t = test(a, b)
+        XCTAssertTrue(until(5) { asked.withLock { $0.count } == 1 })
+        Thread.sleep(forTimeInterval: 1.5)
+        XCTAssertEqual(t.state, .waitingForAccept, "the test went ahead with nobody having said yes")
+        XCTAssertEqual(t.progress.doneBytes, 0)
+        let question = asked.withLock { $0[0] }
+        XCTAssertEqual(question.state, .waitingForAccept)
+        XCTAssertEqual(question.secondsEachWay, 1)
+        // A data connection that tries its luck meanwhile finds nothing to attach to.
+        let s = try Socket.connect(host: "127.0.0.1", port: b.port)
+        try Opening.data.withUnsafeBytes { try s.writeAll($0.baseAddress!, 5) }
+        XCTAssertTrue(until(2) { s.waitReadable(milliseconds: 0) }, "a data connection was taken before the yes")
+        // Yes: now it runs.
+        question.accept()
+        XCTAssertTrue(until(15) { t.state.isFinal })
+        XCTAssertEqual(t.state, .completed)
+        XCTAssertGreaterThan(t.result.upBytes, 0)
+    }
+
+    func testNoMeansNoAndNobodyToAskMeansNo() throws {
+        let (a, b) = try pairedMacs()
+        b.listener.onSpeedTest = { $0.decline() }
+        var t = test(a, b)
+        XCTAssertTrue(until(5) { t.state.isFinal })
+        guard case .declined = t.state else { return XCTFail("\(t.state)") }
+        XCTAssertEqual(t.result.upBytes, 0)
+        // Nobody listening for the question (receiving from the command line with no terminal, say).
+        b.listener.onSpeedTest = nil
+        t = test(a, b)
+        XCTAssertTrue(until(5) { t.state.isFinal })
+        guard case .declined = t.state else { return XCTFail("\(t.state)") }
+        // And a no does not hold the Mac: the next question is put.
+        b.listener.onSpeedTest = { $0.accept() }
+        t = test(a, b)
+        XCTAssertTrue(until(15) { t.state.isFinal })
+        XCTAssertEqual(t.state, .completed)
+    }
+
+    func testAQuestionIsTakenAwayWhenTheAskerGivesUp() throws {
+        let (a, b) = try pairedMacs()
+        let asked = Locked<[SpeedResponder]>([]), withdrawn = Locked(0)
+        b.listener.onSpeedTest = { r in
+            r.onWithdrawn = { withdrawn.withLock { $0 += 1 } }
+            asked.withLock { $0.append(r) }
+        }
+        let t = test(a, b)
+        XCTAssertTrue(until(5) { asked.withLock { $0.count } == 1 })
+        t.cancel()
+        XCTAssertTrue(until(5) { withdrawn.withLock { $0 } == 1 }, "the question stayed up after the Mac that asked had gone")
+        let question = asked.withLock { $0[0] }
+        XCTAssertTrue(question.state.isFinal)
+        question.accept()   // a click that came too late does nothing
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertNotEqual(question.state, .transferring)
+        // Forgetting the Mac that asks takes its question away too.
+        let second = test(a, b)
+        XCTAssertTrue(until(5) { asked.withLock { $0.count } == 2 })
+        b.trust.forget(a.key)
+        XCTAssertTrue(until(5) { withdrawn.withLock { $0 } == 2 })
+        XCTAssertTrue(until(5) { second.state.isFinal })
+        XCTAssertNotEqual(second.state, .completed)
     }
 
     func test(_ from: TestMac, _ to: TestMac, seconds: Double = 1, streams: Int = 4, expect: PublicKey? = nil) -> SpeedTest {
@@ -27,7 +100,7 @@ final class SpeedTests: XCTestCase {
     func testItMeasuresBothDirectionsAndWritesNothing() throws {
         let (a, b) = try pairedMacs()
         let seen = Locked<[Transfer]>([])
-        b.listener.onSpeedTest = { t in seen.withLock { $0.append(t) } }
+        b.listener.onSpeedTest = { t in seen.withLock { $0.append(t) }; t.accept() }
         let t = test(a, b)
         XCTAssertTrue(until(15) { t.state.isFinal })
         XCTAssertEqual(t.state, .completed)
@@ -39,8 +112,7 @@ final class SpeedTests: XCTestCase {
         XCTAssertTrue((0.5...3).contains(r.upSeconds) && (0.5...3).contains(r.downSeconds), "\(r)")
         XCTAssertGreaterThan(r.upRate, 0)
         XCTAssertGreaterThan(r.downRate, 0)
-        XCTAssertTrue(b.offers.withLock { $0.isEmpty }, "nobody was asked anything")
-        XCTAssertEqual(seen.withLock { $0.count }, 1, "and the Mac that was asked knows it happened")
+        XCTAssertEqual(seen.withLock { $0.count }, 1, "asked once")
         XCTAssertTrue(until(5) { seen.withLock { $0[0].state } == .completed })
         // Both Macs show the same two figures, each from its own side.
         let theirs = try XCTUnwrap(seen.withLock { $0[0].speedResult })

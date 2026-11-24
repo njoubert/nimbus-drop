@@ -333,7 +333,7 @@ final class AppModel: ObservableObject {
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.pairRequested(pairing) } }
                 }
                 l.onSpeedTest = { [weak self] test in
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.add(test) } }
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.speedAsked(test) } }
                 }
                 l.onRefusedIdentity = { [weak self] name, address in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.refusedIdentity(name: name, address: address) } }
@@ -859,6 +859,26 @@ final class AppModel: ObservableObject {
         q.show(cascade: place)
     }
 
+    /// A paired Mac asks to measure the link to this one: the person here says whether it may.
+    private func speedAsked(_ test: SpeedResponder) {
+        add(test)
+        let id = test.id
+        test.onWithdrawn = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.withdraw(id) } }
+        }
+        let q = OfferPanel(speed: test) { [weak self] answer in
+            MainActor.assumeIsolated {
+                self?.asking[id] = nil
+                if answer == .allow, test.state == .waitingForAccept { test.accept() } else { test.decline() }
+            }
+        }
+        let place = asking.count
+        asking[id] = Asking(question: q, chooser: nil)
+        NSApp.activate(ignoringOtherApps: true)
+        NSSound(named: "Glass")?.play()
+        q.show(cascade: place)
+    }
+
     private func askWhere(_ session: ReceiveSession) {
         let id = session.id
         let p = NSOpenPanel()
@@ -1136,6 +1156,9 @@ final class AppModel: ObservableObject {
                 status = "\(t.peerName) is measuring the link to this Mac…"
                 indeterminate = true
             }
+        case .waitingForAccept:
+            status = test != nil ? "Waiting for \(t.peerName) to allow it…" : "\(t.peerName) asks to test the speed between the two Macs…"
+            indeterminate = true
         default: status = "Connecting to \(t.peerAddress)…"; indeterminate = true
         }
         return TransferRow(id: t.id, direction: t.direction, peerName: t.peerName, peerAddress: t.peerAddress, title: "Speed test",

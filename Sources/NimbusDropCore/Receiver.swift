@@ -43,9 +43,9 @@ public final class DropListener: @unchecked Sendable {
     /// Called on a background thread when another Mac asks to pair and its request has reached
     /// the front of the queue. One at a time.
     public var onPairRequest: (@Sendable (PairingSession) -> Void)?
-    /// Another Mac is measuring the link to this one. For whoever shows what is going on;
-    /// nothing is asked.
-    public var onSpeedTest: (@Sendable (Transfer) -> Void)?
+    /// A paired Mac asks to measure the link to this one. Called on a background thread; the
+    /// test waits for `accept()` or `decline()`, and with nobody to ask it is declined.
+    public var onSpeedTest: (@Sendable (SpeedResponder) -> Void)?
     /// A retired or run-out identity was used, and the person should be told (rationed).
     public var onRefusedIdentity: (@Sendable (_ name: String, _ address: String) -> Void)?
 
@@ -391,8 +391,8 @@ public final class DropListener: @unchecked Sendable {
             socket.shutdown()
 
         case .speed:
-            // As for a drop: both sides must hold the pairing. Nobody is asked, because
-            // nothing is written and what it may cost is bounded (the plan's Addendum B).
+            // As for a drop: both sides must hold the pairing, and the person here is asked
+            // (the plan's Addendum B). One question, or one test, at a time.
             guard hello.paired, case .paired(let mac) = standing else { socket.shutdown(); return }
             guard let frame = try? channel.read(), frame.type == .speed, let ask = try? decode(SpeedAsk.self, from: frame.body) else { socket.shutdown(); return }
             saidWhatItCameFor()
@@ -413,7 +413,6 @@ public final class DropListener: @unchecked Sendable {
             let test = SpeedResponder(channel: channel, ask: ask, mac: mac, listener: self)
             // Free for the next one from the moment this one has its answer, not a moment after.
             test.served = { [weak self] in self?.lock.withLock { self?.speedTesting = false } }
-            onSpeedTest?(test)
             test.run()
             socket.shutdown()
 

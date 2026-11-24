@@ -273,7 +273,27 @@ enum CLI {
         case .send(let target, let paths):
             let urls = paths.map { URL(fileURLWithPath: $0) }
             for u in urls where (try? u.checkResourceIsReachable()) != true { fputs("\(u.path) does not exist\n", stderr); return 1 }
-            let (host, hostPort, peerName) = locate(target)
+            // A name means one Known Mac, and the drop goes to the key that Mac is paired by,
+            // wherever on the network that key is proved. What a Mac announces itself as picks
+            // nothing: `--send air` used to go to whichever paired Mac answered under "air".
+            var (host, hostPort, peerName) = (target, port ?? defaultPort, target)
+            var expect: PublicKey?
+            let parts = target.split(separator: ":")
+            if target.contains(".") || (parts.count == 2 && UInt16(parts[1]) != nil) {
+                // An address: whoever is there, provided it proves a key this identity is paired with.
+                (host, hostPort, peerName) = locate(target)
+            } else {
+                guard let mac = trust.knownMac(called: target) else {
+                    fputs("this identity is not paired with a Mac it calls “\(target)” (see --known). Pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)\n", stderr)
+                    return 1
+                }
+                let found = browse(seconds: 5) { $0.contains { $0.key == mac.key && $0.address != nil } }
+                guard let peer = found.first(where: { $0.key == mac.key }), let a = peer.address, let p = peer.port else {
+                    fputs("\(mac.name) [\(mac.key.tag)] was not found on the network\n", stderr)
+                    return 1
+                }
+                (host, hostPort, peerName, expect) = (a, p, mac.name, mac.key)
+            }
             var prescanned: ScannedDrop?
             if let only {
                 // --only jpg,cr3: the kinds those extensions belong to (so jpg brings .jpeg too).
@@ -285,7 +305,7 @@ enum CLI {
                 }
             }
             let session = SendSession(urls: urls, host: host, port: hostPort, peerName: peerName, identity: identity, trust: trust,
-                                      streams: streams ?? Settings.streams, prescanned: prescanned)
+                                      expect: expect, streams: streams ?? Settings.streams, prescanned: prescanned)
             session.start()
             let code = watch(session)
             if case .failed = session.state, session.needsPairing { Swift.print("pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)") }

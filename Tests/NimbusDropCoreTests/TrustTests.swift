@@ -68,12 +68,25 @@ final class TrustTests: XCTestCase {
         guard case .expired = trust.standing(of: key) else { return XCTFail("rollback kept the key alive") }
     }
 
-    func testACalendarSetForwardEndsAKeyEarly() throws {
+    /// The calendar is a second way for a pairing to end sooner, and no more than that: a date
+    /// reached on the calendar alone ends the pairing (the Mac is to be paired again), and does
+    /// not refuse the key for good. Until the review of 2026-11-23 (F3) it did, and a calendar
+    /// set forward once cost every pairing permanently.
+    func testACalendarSetForwardEndsThePairingEarlyAndNotTheKey() throws {
         let clock = FakeClock()
         let trust = Trust.inMemory(clock: clock)
         let key = try pairing(trust, remaining: 30 * day)
         clock.setCalendar(by: 31 * day)
-        guard case .expired = trust.standing(of: key) else { return XCTFail("\(trust.standing(of: key))") }
+        guard case .renew = trust.standing(of: key) else { return XCTFail("\(trust.standing(of: key))") }
+        XCTAssertFalse(trust.standing(of: trust.publicKey) != .mine)
+        XCTAssertTrue(trust.known.isEmpty)
+        XCTAssertTrue(trust.tombstones.isEmpty, "only the time counted here refuses a key for good")
+        // Put right again, it is still a Mac to pair again, not a paired one.
+        clock.setCalendar(by: -31 * day)
+        guard case .renew = trust.standing(of: key) else { return XCTFail("\(trust.standing(of: key))") }
+        // And the count kept here still ends its key when it was always going to.
+        clock.pass(31 * day)
+        XCTAssertFalse(trust.standing(of: key).mayPair)
     }
 
     func testTimeIsCountedAcrossARestartAndAReboot() throws {

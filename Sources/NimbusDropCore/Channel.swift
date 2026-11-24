@@ -147,7 +147,7 @@ final class Channel: @unchecked Sendable {
         }
         let noise = Noise(initiator: true, prologue: prologue(initiator: mine, responder: theirs.bytes), s: keys, ephemeral: ephemeral)
         try write(socket, try noise.write())
-        _ = try noise.read(try read(socket, limit: 1024))
+        guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
         return noise
     }
 
@@ -184,9 +184,10 @@ final class Channel: @unchecked Sendable {
         try mine.withUnsafeBytes { try socket.writeAll($0.baseAddress!, mine.count) }
         guard theirs.majors.contains(UInt8(protocolVersion)) else { throw DropError.damagedMessage }
         let noise = Noise(initiator: false, prologue: prologue(initiator: theirs.bytes, responder: mine), s: keys, ephemeral: ephemeral)
-        _ = try noise.read(try read(socket, limit: 1024))
+        // A handshake message carries the handshake and nothing else: a payload ends it.
+        guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
         try write(socket, try noise.write())
-        _ = try noise.read(try read(socket, limit: 1024))
+        guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
         return try Channel(socket: socket, noise: noise)
     }
 

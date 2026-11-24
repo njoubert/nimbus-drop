@@ -154,10 +154,14 @@ final class SecurityTests: XCTestCase {
         bad(.init(path: "l", kind: .symlink, link: String(repeating: "a", count: 5000)))
         XCTAssertThrowsError(try Manifest(chunkSize: 1 << 40, entries: [.init(path: "f", kind: .file)]).validate())
         // The largest sizes that are let through do not overflow the sums done with them.
-        let big = Manifest(chunkSize: 4096, entries: (0..<4).map { .init(path: "f\($0)", kind: .file, size: Manifest.maxFileSize) })
+        let big = Manifest(chunkSize: 1 << 20, entries: (0..<4).map { .init(path: "f\($0)", kind: .file, size: Manifest.maxFileSize) })
         XCTAssertNoThrow(try big.validate())
         XCTAssertEqual(big.totalBytes, 4 << 50)
-        XCTAssertEqual(big.chunkCount(0), 1 << 38)
+        XCTAssertEqual(big.chunkCount(0), 1 << 30)
+        // A chunk is named on the wire by 32 bits: a file of more chunks than that is refused,
+        // not sent with numbers that wrap.
+        XCTAssertThrowsError(try Manifest(chunkSize: 4096, entries: [.init(path: "f", kind: .file, size: Manifest.maxFileSize)]).validate())
+        XCTAssertNoThrow(try Manifest(chunkSize: 4096, entries: [.init(path: "f", kind: .file, size: 4096 * Int64(UInt32.max) - 1)]).validate())
     }
 
     // MARK: A raw connection: what is on the wire, without the app's sender

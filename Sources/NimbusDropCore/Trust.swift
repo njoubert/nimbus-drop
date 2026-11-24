@@ -181,6 +181,29 @@ public final class Trust: @unchecked Sendable {
     }
 
     private let lock = NSRecursiveLock()
+    private var depth = 0
+    /// What a change under the lock leaves to be done once the lock is free: ending sessions
+    /// and telling the listeners, both of which reach sockets. Run in the order they were set
+    /// down, on the thread that made the change, before its call returns.
+    private var afterwards: [() -> Void] = []
+
+    /// Everything here runs under the one lock, through this. The work a change leaves for
+    /// afterwards is done when the outermost call lets go. Ending a session with the lock held
+    /// stopped the whole store for good once: a sender blocked writing to a Mac that had
+    /// stopped reading held its channel, the farewell waited on the channel, and every
+    /// question about any key waited on the lock (the review of 2026-11-23, F7).
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        depth += 1
+        defer {
+            depth -= 1
+            var run: [() -> Void] = []
+            if depth == 0 { run = afterwards; afterwards = [] }
+            lock.unlock()
+            for r in run { r() }
+        }
+        return try body()
+    }
     private var file: File
     private var pair: KeyPair
     private let storage: TrustStorage
@@ -249,23 +272,23 @@ public final class Trust: @unchecked Sendable {
     // MARK: This Mac
 
     /// This Mac's key as it is now: one that has reached its end is replaced before it is handed out.
-    public var keyPair: KeyPair { lock.withLock { tick(); return pair } }
-    public var publicKey: PublicKey { lock.withLock { tick(); return pair.publicKey } }
-    public var made: Date { lock.withLock { file.made } }
-    public var lifetime: Double { lock.withLock { file.lifetime } }
+    public var keyPair: KeyPair { locked { tick(); return pair } }
+    public var publicKey: PublicKey { locked { tick(); return pair.publicKey } }
+    public var made: Date { locked { file.made } }
+    public var lifetime: Double { locked { file.lifetime } }
     /// Seconds this Mac's key has left.
-    public var remaining: Double { lock.withLock { tick(); return max(0, min(file.endsElapsed - file.elapsed, file.endsWall.timeIntervalSince(clock.wall))) } }
+    public var remaining: Double { locked { tick(); return max(0, min(file.endsElapsed - file.elapsed, file.endsWall.timeIntervalSince(clock.wall))) } }
     /// When this Mac's key ends, as a date to show.
     public var ends: Date { clock.wall.addingTimeInterval(remaining) }
     public var requestsOff: Bool {
-        get { lock.withLock { file.requestsOff } }
-        set { lock.withLock { file.requestsOff = newValue; save() }; onChange?() }
+        get { locked { file.requestsOff } }
+        set { locked { file.requestsOff = newValue; save() }; onChange?() }
     }
 
     /// How long keys made from now on last. A current key already older than that is replaced now.
     public func setLifetime(_ seconds: Double) {
         guard Trust.lifetimes.contains(seconds) else { return }
-        lock.withLock {
+        locked {
             tick()
             let age = file.lifetime - (file.endsElapsed - file.elapsed)
             file.lifetime = seconds
@@ -283,7 +306,7 @@ public final class Trust: @unchecked Sendable {
     /// count down. Cheap; called before every decision that depends on a date.
     public func tick() {
         var changed = false
-        lock.withLock {
+        locked {
             let boot = clock.bootSession, c = clock.continuous, wall = clock.wall
             // Same boot: the continuous clock is exact, whether or not this process was running.
             // After a reboot: at least the time since boot, and the calendar's gap if that is more.
@@ -297,18 +320,34 @@ public final class Trust: @unchecked Sendable {
                 rotate(reason: "its end date")
                 changed = true
             }
-            for k in file.known where !current(k.endsElapsed, k.endsWall) && !file.tombstones.contains(where: { $0.key == k.key }) {
+            let elapsed = file.elapsed
+            // A key's end is counted in elapsed time, and only that count refuses it for good.
+            for k in file.known where elapsed >= k.endsElapsed && !file.tombstones.contains(where: { $0.key == k.key }) {
                 file.tombstones.append(Tombstone(key: k.key, name: k.name, at: wall, reason: "expired"))
                 changed = true
                 DropLog.write("identity: \(k.name)'s key \(k.key.tag) reached its end date; it needs pairing again")
             }
-            let before = file.again.count
-            let elapsed = file.elapsed
-            file.again.removeAll { !(elapsed < $0.endsElapsed && wall < $0.endsWall) }
-            if file.again.count != before { changed = true }
+            // The calendar reaching the date first ends the pairing and no more: the Mac is to
+            // be paired again, and its key is not held to have run out. A calendar set forward
+            // once (a forged time server, or a clock that was years behind being put right)
+            // used to refuse every paired key for good, also after it was set back.
+            for k in file.known where elapsed < k.endsElapsed && wall >= k.endsWall {
+                file.again.removeAll { $0.key == k.key }
+                file.again.append(Renewal(key: k.key, name: k.name, told: nil, endsElapsed: k.endsElapsed, endsWall: k.endsWall))
+                changed = true
+                DropLog.write("identity: the calendar passed the date recorded for \(k.name)'s key \(k.key.tag) before the time counted here did; it needs pairing again", .warn)
+            }
+            file.known.removeAll { elapsed < $0.endsElapsed && wall >= $0.endsWall }
+            // A key that runs out while waiting to be paired again is refused like any other.
+            for r in file.again where elapsed >= r.endsElapsed {
+                if !file.tombstones.contains(where: { $0.key == r.key }) { file.tombstones.append(Tombstone(key: r.key, name: r.name, at: wall, reason: "expired")) }
+                changed = true
+            }
+            file.again.removeAll { elapsed >= $0.endsElapsed }
+            if file.tombstones.count > 2000 { file.tombstones.removeFirst(file.tombstones.count - 2000) }
             if changed || file.elapsed - lastSave > 3600 { save() }
+            endSessionsPastGrace()
         }
-        endSessionsPastGrace()
         if changed { onChange?() }
     }
 
@@ -317,12 +356,12 @@ public final class Trust: @unchecked Sendable {
     /// Replaces this Mac's key. Every Known Mac that is still current moves to the renew list.
     private func rotate(reason: String, told: [PublicKey: Bool]? = nil) {
         let old = pair.publicKey
-        for k in file.known where current(k.endsElapsed, k.endsWall) {
+        for k in file.known where file.elapsed < k.endsElapsed {
             file.again.removeAll { $0.key == k.key }
             file.again.append(Renewal(key: k.key, name: k.name, told: told.map { $0[k.key] ?? false }, endsElapsed: k.endsElapsed, endsWall: k.endsWall))
         }
         // Expired entries leave their tombstones behind; nothing else of them is needed.
-        for k in file.known where !file.tombstones.contains(where: { $0.key == k.key }) && !current(k.endsElapsed, k.endsWall) {
+        for k in file.known where !file.tombstones.contains(where: { $0.key == k.key }) && file.elapsed >= k.endsElapsed {
             file.tombstones.append(Tombstone(key: k.key, name: k.name, at: clock.wall, reason: "expired"))
         }
         file.known = []
@@ -337,12 +376,23 @@ public final class Trust: @unchecked Sendable {
 
     // MARK: Other Macs
 
-    public var known: [KnownMac] { lock.withLock { file.known.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } } }
-    public var again: [Renewal] { lock.withLock { file.again.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } } }
-    public var tombstones: [Tombstone] { lock.withLock { file.tombstones } }
+    public var known: [KnownMac] { locked { file.known.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } } }
+    public var again: [Renewal] { locked { file.again.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } } }
+    public var tombstones: [Tombstone] { locked { file.tombstones } }
+
+    /// The one Known Mac a person means by `text`: the name this Mac has for it (which no other
+    /// Known Mac shares), or its key tag. Never what a Mac on the network calls itself.
+    public func knownMac(called text: String) -> KnownMac? {
+        locked {
+            tick()
+            let tag = text.uppercased().replacingOccurrences(of: "-", with: "")
+            return file.known.first { $0.name.caseInsensitiveCompare(text) == .orderedSame }
+                ?? file.known.first { $0.key.tag.replacingOccurrences(of: "-", with: "") == tag }
+        }
+    }
 
     public func standing(of key: PublicKey) -> KeyStanding {
-        lock.withLock {
+        locked {
             tick()
             if key == pair.publicKey { return .mine }
             if let t = file.tombstones.first(where: { $0.key == key }), t.reason != "expired" { return .retired(t) }
@@ -369,7 +419,7 @@ public final class Trust: @unchecked Sendable {
     /// would be taken for, other than `key` itself. `expected`: that Mac's key has reached its
     /// end, so a new key under its name is what one would expect.
     public func nameClash(_ name: String, key: PublicKey) -> NameClash? {
-        lock.withLock {
+        locked {
             tick()
             let folded = Trust.fold(name)
             guard !folded.isEmpty else { return nil }
@@ -385,7 +435,7 @@ public final class Trust: @unchecked Sendable {
 
     /// Counts a key that turned up under a Known Mac's name.
     public func noteImpostor(of mac: PublicKey, at address: String) {
-        lock.withLock {
+        locked {
             guard let i = file.known.firstIndex(where: { $0.key == mac }) else { return }
             file.known[i].impostors += 1
             file.known[i].lastImpostor = address
@@ -395,7 +445,7 @@ public final class Trust: @unchecked Sendable {
     }
 
     public func seen(_ key: PublicKey, name: String, major: Int) {
-        lock.withLock {
+        locked {
             guard let i = file.known.firstIndex(where: { $0.key == key }) else { return }
             file.known[i].lastSeen = clock.wall
             file.known[i].major = max(file.known[i].major, major)
@@ -422,7 +472,7 @@ public final class Trust: @unchecked Sendable {
     @discardableResult
     public func store(pairing key: PublicKey, announced: String, method: String, remaining: Double, major: Int = protocolVersion,
                       replacing: PublicKey? = nil, name: String? = nil) throws -> KnownMac {
-        let made: KnownMac = try lock.withLock {
+        let made: KnownMac = try locked {
             tick()
             guard standing(of: key).mayPair else { throw DropError("That identity can no longer be paired") }
             let life = max(1, min(remaining, Trust.longestLifetime))
@@ -435,7 +485,10 @@ public final class Trust: @unchecked Sendable {
             }
             if let r = file.again.firstIndex(where: { $0.key == key }) {
                 endsElapsed = min(endsElapsed, file.again[r].endsElapsed)
-                endsWall = min(endsWall, file.again[r].endsWall)
+                // Its calendar date too, unless the calendar is already past it: that ended the
+                // pairing once, and the date now follows from what the elapsed count leaves.
+                endsWall = clock.wall < file.again[r].endsWall ? min(endsWall, file.again[r].endsWall)
+                                                               : min(endsWall, clock.wall.addingTimeInterval(endsElapsed - file.elapsed))
                 inherited = inherited ?? file.again[r].name
                 file.again[r].pairedAgain = true
             }
@@ -457,7 +510,7 @@ public final class Trust: @unchecked Sendable {
     }
 
     public func rename(_ key: PublicKey, to name: String) {
-        lock.withLock {
+        locked {
             guard let i = file.known.firstIndex(where: { $0.key == key }) else { return }
             file.known[i].name = uniqueName(Sanitize.label(name, limit: 64), except: key)
             save()
@@ -466,7 +519,7 @@ public final class Trust: @unchecked Sendable {
     }
 
     public func removeFromAgain(_ key: PublicKey) {
-        lock.withLock { file.again.removeAll { $0.key == key }; save() }
+        locked { file.again.removeAll { $0.key == key }; save() }
         onChange?()
     }
 
@@ -476,7 +529,7 @@ public final class Trust: @unchecked Sendable {
     /// key merely runs out (the other Mac's or this one's) a running session may finish, but not
     /// for ever: at most a day past the end, or one key lifetime if that is shorter.
     func track(_ transfer: Transfer, key: PublicKey) {
-        lock.withLock {
+        locked {
             sessions.removeAll { $0.transfer() == nil }
             let theirs = file.known.first { $0.key == key }?.endsElapsed ?? file.elapsed
             let end = min(theirs, file.endsElapsed)
@@ -486,11 +539,12 @@ public final class Trust: @unchecked Sendable {
 
     /// Called with a key whose trust was withdrawn, after the store is written and its sessions
     /// are ended. The listener uses it to cancel what is waiting on a person.
-    func onWithdrawn(_ body: @escaping (PublicKey) -> Void) { lock.withLock { watchers.append(body) } }
+    func onWithdrawn(_ body: @escaping (PublicKey) -> Void) { locked { watchers.append(body) } }
 
     /// The steps every withdrawal of trust takes, in order: written to disk, then nothing new
-    /// accepted (the store says so from here), then everything the key had authenticated ended.
-    /// With the lock held.
+    /// accepted (the store says so from here), then everything the key had authenticated ended
+    /// and the listeners told. With the lock held; the last two are done as it is let go
+    /// (`locked`), before the call that withdrew the trust returns.
     private func withdrawLocked(_ key: PublicKey, name: String, reason: String, refuseForGood: Bool = true) {
         if let i = file.tombstones.firstIndex(where: { $0.key == key }) {
             if refuseForGood { file.tombstones[i].reason = reason }
@@ -502,34 +556,52 @@ public final class Trust: @unchecked Sendable {
         file.again.removeAll { $0.key == key }
         save()
         endSessions(of: key, because: "\(name) is no longer trusted (\(reason))")
-        for w in watchers { w(key) }
+        tellWatchers(key)
     }
 
+    /// With the lock held. The sessions leave the list now; they are ended once it is let go.
     private func endSessions(of key: PublicKey, because: String) {
         let mine = sessions.filter { $0.key == key }.compactMap { $0.transfer() }
         sessions.removeAll { $0.key == key || $0.transfer() == nil }
-        for t in mine where !t.state.isFinal {
-            t.log("ended: \(because)", .warn)
-            t.withdrawn(DropError(because.prefix(1).uppercased() + because.dropFirst()))
+        afterwards.append {
+            for t in mine where !t.state.isFinal {
+                t.log("ended: \(because)", .warn)
+                t.withdrawn(DropError(because.prefix(1).uppercased() + because.dropFirst()))
+            }
         }
     }
 
+    /// With the lock held.
+    private func tellWatchers(_ key: PublicKey) {
+        let all = watchers
+        afterwards.append { for w in all { w(key) } }
+    }
+
+    /// With the lock held. A drop that is running when its key runs out may finish, within the
+    /// time allowed. One that has not begun (the question is still on screen, or still
+    /// unanswered at the other Mac) does not begin: the pairing it was offered under is over.
     private func endSessionsPastGrace() {
-        let over: [Transfer] = lock.withLock {
-            sessions.removeAll { $0.transfer().map(\.state.isFinal) ?? true }
-            let late = sessions.filter { file.elapsed > $0.deadline }.compactMap { $0.transfer() }
-            sessions.removeAll { file.elapsed > $0.deadline }
-            return late
-        }
-        for t in over {
-            t.log("ended: its key ran out and the time allowed to finish has passed", .warn)
-            t.withdrawn(DropError("The pairing ran out before the drop finished; pair again and send it again to continue"))
+        sessions.removeAll { $0.transfer().map(\.state.isFinal) ?? true }
+        let late = sessions.filter { file.elapsed > $0.deadline }.compactMap { $0.transfer() }
+        sessions.removeAll { file.elapsed > $0.deadline }
+        let paired = Set(file.known.filter { current($0.endsElapsed, $0.endsWall) }.map(\.key))
+        let unbegun = sessions.filter { !paired.contains($0.key) }.compactMap { $0.transfer() }.filter { $0.state == .waitingForAccept }
+        guard !late.isEmpty || !unbegun.isEmpty else { return }
+        afterwards.append {
+            for t in late where !t.state.isFinal {
+                t.log("ended: its key ran out and the time allowed to finish has passed", .warn)
+                t.withdrawn(DropError("The pairing ran out before the drop finished; pair again and send it again to continue"))
+            }
+            for t in unbegun where t.state == .waitingForAccept {
+                t.log("ended: the pairing ran out before the drop was accepted", .warn)
+                t.withdrawn(DropError("The pairing ran out before the drop was accepted; pair again and send it again"))
+            }
         }
     }
 
     /// The other Mac said its identity is retired: refused from now on, for good.
     public func retire(_ key: PublicKey, reason: String = "retired") {
-        lock.withLock {
+        locked {
             let name = file.known.first { $0.key == key }?.name ?? file.again.first { $0.key == key }?.name ?? key.tag
             DropLog.write("identity: \(name)'s key \(key.tag) is \(reason); it will be refused from now on", .warn)
             withdrawLocked(key, name: name, reason: reason)
@@ -541,7 +613,7 @@ public final class Trust: @unchecked Sendable {
     /// refused for good (it may be paired again, by two people, like any other); a key already
     /// retired or run out stays refused.
     public func forget(_ key: PublicKey) {
-        lock.withLock {
+        locked {
             let name = file.known.first { $0.key == key }?.name ?? key.tag
             DropLog.write("identity: forgot \(name) (\(key.tag))")
             withdrawLocked(key, name: name, reason: "forgotten", refuseForGood: false)
@@ -557,7 +629,7 @@ public final class Trust: @unchecked Sendable {
     /// Until this existed the tile went on saying Paired and every drop to it failed
     /// (found by the owner, 2026-11-23).
     public func notePairingGone(_ key: PublicKey) {
-        let changed: Bool = lock.withLock {
+        let changed: Bool = locked {
             guard let mac = file.known.first(where: { $0.key == key }), current(mac.endsElapsed, mac.endsWall) else { return false }
             DropLog.write("identity: \(mac.name) (\(key.tag)) no longer has this Mac paired; it needs pairing again", .warn)
             withdrawLocked(key, name: mac.name, reason: "the other Mac forgot this one", refuseForGood: false)
@@ -571,7 +643,7 @@ public final class Trust: @unchecked Sendable {
     /// A retired or expired key was presented. Counts it; true when the person should be told
     /// (once a day per key, three times a day in all).
     public func noteRefused(_ key: PublicKey) -> Bool {
-        lock.withLock {
+        locked {
             guard let i = file.tombstones.firstIndex(where: { $0.key == key }) else { return false }
             file.tombstones[i].attempts += 1
             let today = clock.wall.timeIntervalSince1970 / 86400
@@ -588,20 +660,20 @@ public final class Trust: @unchecked Sendable {
     /// Reset Identity, first half: the key that is about to be destroyed and the Macs to tell,
     /// so that the caller can send the notices while the key still exists.
     public func beginReset() -> (old: KeyPair, peers: [KnownMac]) {
-        lock.withLock { tick(); return (pair, file.known.filter { current($0.endsElapsed, $0.endsWall) }) }
+        locked { tick(); return (pair, file.known.filter { current($0.endsElapsed, $0.endsWall) }) }
     }
 
     /// Reset Identity, second half: a new key, every Known Mac moved to the pair-again list
     /// marked with whether it was told, every session ended. The old key is gone when this returns.
     public func completeReset(told: Set<PublicKey>) {
-        lock.withLock {
+        locked {
             let everyone = file.known.map(\.key) + file.again.map(\.key)
             var map: [PublicKey: Bool] = [:]
             for k in file.known { map[k.key] = told.contains(k.key) }
             rotate(reason: "Reset Identity", told: map)
             save()
             for key in Set(everyone) { endSessions(of: key, because: "this Mac's identity was reset") }
-            for key in Set(everyone) { for w in watchers { w(key) } }
+            for key in Set(everyone) { tellWatchers(key) }
         }
         onChange?()
     }
@@ -621,5 +693,5 @@ public final class Trust: @unchecked Sendable {
 
     /// Writes the store now; throws if it did not reach the disk. For changes that are about to
     /// be acknowledged to another Mac.
-    func commit() throws { try lock.withLock { try saveOrThrow() } }
+    func commit() throws { try locked { try saveOrThrow() } }
 }

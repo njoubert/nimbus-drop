@@ -25,6 +25,8 @@ rest: how to work here, how the engine is put together, and what was measured.
   implementation, in Python; never "fix" it to match the Swift), an attack in the tests, and a
   line in `scripts/mutate.py` that breaks the new guard and names the test that must notice.
   The first mutation run missed 4 of 17: tests that passed whether or not their guard existed.
+  The review of the code (2026-11-23) then removed 16 more guards by hand and 13 went
+  unnoticed; each has a test in `ReviewTests` and a line in `mutate.py` now.
 - **No cryptography of our own making.** Primitives from CryptoKit only. Speed is never a
   reason to write a cipher or call a private API.
 - **Never write outside what the person chose.** A manifest is input from another machine and
@@ -153,13 +155,14 @@ Sources/NimbusDrop/         the app
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  107 tests. DropTests (whole drops), SecurityTests (a hostile paired
+Tests/NimbusDropCoreTests/  134 tests. ReviewTests (what the review of the code found, as
+                            tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
                             who hears both codes), TrustTests (expiry against a clock that lies,
                             the file), VectorTests (against scripts/vectors.py), CryptoTests
                             (the published Noise vector)
-Tests/NimbusDropChaosTests/ 28 tests: whole drops through ChaosProxy (about 135 s)
+Tests/NimbusDropChaosTests/ 29 tests: whole drops through ChaosProxy (about 140 s)
 scripts/vectors.py          the second implementation; scripts/mutate.py, the mutation checks
 build.sh                    build / test / run / stop / app / dmg / release / install / uninstall /
                             status / icon / clean
@@ -188,6 +191,10 @@ python3 scripts/mutate.py [word…]                                   break each
 ```
 
 `--send` takes everything up to the next `--flag` as its arguments, so other flags go before it.
+`--send NAME` means the Known Mac this identity calls NAME (or its key tag; see `--known`):
+the network is searched for the Mac that proves that key, and the drop is sent expecting it.
+What a Mac announces itself as picks nothing (it did until 2026-11-23: the review's F4). An
+address (`HOST`, `HOST:PORT`) still means whoever answers there, provided it is paired.
 The CLI never uses the app's identity: its trust file is in
 `~/Library/Application Support/<bundle id or com.njoubert.nimbusdrop.cli>/cli-<name or default>/`,
 one per `--name`. Two names on one Mac are two Macs to each other, which is how the whole
@@ -253,7 +260,10 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   `testAMacThatDoesNotKeepToThePairingIsDropped` is that and three more. A Mac stores a pairing
   only when its own person typed the right code AND the other said the same. One pairing at a
   time per Mac (`PairingGate`); requests from others are shown one at a time, at most four
-  waiting, with a pause after each refusal that doubles (`Tuning.pairQuiet…`).
+  waiting, with a pause after each refusal that doubles (`Tuning.pairQuiet…`). While this
+  Mac's own pairing is in progress a request from anyone else is answered busy, not shown
+  beside it. "The same Mac you paired with before" is said only of a key that is on the
+  pair-again list (`PairingModel.isSameMac`), never of a new key under a familiar name.
 - **The window shows one code at a time** (`PairingStage.read` / `.type`): the Mac that asked
   reads its code out and the Mac that was asked types it, then they swap. The wire and the
   engine take the two entries in either order, as before; the order is the window's, driven
@@ -276,6 +286,20 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   At a key's end nobody is asked anything; the next drop needs a pairing. The other Mac knows
   the date (each states its `remaining` in the hello, capped at 90 days), so a new key under
   that name after it reads as a renewal and before it as a surprise.
+  Only the elapsed count refuses a key for good (a tombstone). The calendar reaching a paired
+  key's date first ends the pairing and puts the Mac on the pair-again list, with its elapsed
+  deadline kept: until 2026-11-23 it wrote the tombstone, and one forward jump of the calendar
+  cost every pairing permanently, also after the calendar was put right (the review's F3). A
+  key that runs out while on the pair-again list is tombstoned like any other (F2; it used to
+  be dropped and came back as a New Mac). An offer still unanswered when its pairing ends is
+  withdrawn, and a yes is checked against the pairing before anything starts (F6).
+- **Nothing that touches a socket runs with the trust store locked.** Everything in `Trust`
+  goes through `locked { }`; ending sessions and telling listeners is set down in
+  `afterwards` and done when the outermost call lets go, before it returns. And a withdrawal
+  says no farewell (`SendSession.withdrawn`): a paired Mac that stopped reading its control
+  connection and then sent `retire` (or a frozen one, plus a click on Forget) used to leave the
+  store locked for good, every handshake and every tile waiting on it (the review's F7).
+  `testEndingASessionDoesNotHoldTheTrustStore` is the rule; the F7 test is the attack.
 - **Withdrawing trust is one ordered procedure** (`Trust.withdrawLocked`): written to disk,
   then the store refuses the key, then every session it authenticated is ended and its keys
   wiped (`Transfer.withdrawn`), then listeners drop what it had waiting, and only then is a

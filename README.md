@@ -226,7 +226,7 @@ The same engine without the app, for scripts and for a Mac you reach over ssh:
 ```
 NimbusDrop --pair macstudio               # pair with it: prints this side's code, asks for the other's
 NimbusDrop --receive ~/Incoming          # take drops from paired Macs, asking on the terminal for each
-NimbusDrop --send macstudio ~/Pictures/Christmas   # by the name --peers shows, or HOST, or HOST:PORT
+NimbusDrop --send macstudio ~/Pictures/Christmas   # a Mac you have paired, by the name --known shows; or HOST, or HOST:PORT
 NimbusDrop --peers                        # the Macs found in three seconds, and what each is to this one
 NimbusDrop --identity                     # this identity's key tag, identity number and end date
 NimbusDrop --known                        # who it is paired with (--forget TAG, --reset-identity)

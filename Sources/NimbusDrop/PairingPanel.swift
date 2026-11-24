@@ -82,10 +82,18 @@ final class PairingModel: ObservableObject {
     }
 
     var clash: NameClash? { session.clash }
-    /// The same Mac as before, renewing: nothing odd about it.
+    /// A pairing that was to be expected: the same key as before, or a new key under the name
+    /// of a Mac whose key has run out. Decides how the request is worded, and no more.
     var isRenewal: Bool {
         if case .renew = session.standing { return true }
         return clash?.expected == true
+    }
+    /// It has proved the very key this Mac paired with before. Only that earns the line "The
+    /// same Mac you paired with before": a new key under a familiar name, however expected,
+    /// has shown nothing yet, and the codes are what will (the review of 2026-11-23, F8).
+    var isSameMac: Bool {
+        if case .renew = session.standing { return true }
+        return false
     }
 
     func agree() {
@@ -232,12 +240,12 @@ private struct PairingView: View {
             if s.byNumber { return .number(name: s.peerName, mine: model.myNumber, entry: model.entry, left: left) }
             // The Mac that was asked types first: a request from the network alone leads to a
             // field that wants six digits somebody has to say.
-            if !s.initiator { return .type(name: s.peerName, entry: model.entry, left: left, renewal: model.isRenewal, second: false) }
-            return model.otherTyped ? .type(name: s.peerName, entry: model.entry, left: left, renewal: model.isRenewal, second: true)
-                                    : .read(name: s.peerName, mine: mine, renewal: model.isRenewal, second: false)
+            if !s.initiator { return .type(name: s.peerName, entry: model.entry, left: left, renewal: model.isSameMac, second: false) }
+            return model.otherTyped ? .type(name: s.peerName, entry: model.entry, left: left, renewal: model.isSameMac, second: true)
+                                    : .read(name: s.peerName, mine: mine, renewal: model.isSameMac, second: false)
         case .confirming:
             // This Mac's person typed theirs. For the Mac that was asked, that was step one.
-            if !s.byNumber, !s.initiator, !model.otherTyped { return .read(name: s.peerName, mine: s.myCode, renewal: model.isRenewal, second: true) }
+            if !s.byNumber, !s.initiator, !model.otherTyped { return .read(name: s.peerName, mine: s.myCode, renewal: model.isSameMac, second: true) }
             return .confirming(name: s.peerName)
         case .paired(let mac): return .paired(name: mac.name, until: mac.endsWall, pending: model.pending)
         case .failed(let why): return .failed(why)

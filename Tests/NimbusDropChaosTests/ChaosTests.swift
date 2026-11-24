@@ -306,6 +306,44 @@ final class ChaosTests: XCTestCase {
         try assertArrived(src)
     }
 
+    /// A clock a test can move.
+    final class MovedClock: TrustClock, @unchecked Sendable {
+        private let lock = NSLock()
+        private var ahead = 0.0
+        let bootSession = "boot"
+        var continuous: Double { lock.withLock { 1000 + ahead } }
+        var wall: Date { Date().addingTimeInterval(lock.withLock { ahead }) }
+        func pass(_ seconds: Double) { lock.withLock { ahead += seconds } }
+    }
+
+    func testADropFinishesOnTheKeyItStartedWith() throws {
+        // This Mac's key reaches its end while a drop is running, and is replaced. Then the
+        // link drops. The plan lets a running drop finish on the keys it started with: the
+        // reconnect proves the key the drop began under. It used to prove the new one, which
+        // the receiver has never seen, and the drop ended there (the review of 2026-11-23).
+        let clock = MovedClock()
+        senderTrust = Trust.inMemory(clock: clock, lifetime: 3600)
+        senderTrust.adopt(receiverTrust, as: "receiver")
+        receiverTrust.adopt(senderTrust, as: "sender")
+        let began = senderTrust.publicKey
+        let trust = senderTrust!
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            clock.pass(4000)
+            _ = trust.publicKey   // the key is replaced here
+            p.set { $0.refuseNew = true; $0.bytesPerSecond = nil }
+            p.kill(.all)
+            p.after(seconds: 1.5) { $0.set { $0.refuseNew = false } }
+        }
+        let s = send(src)
+        wait(s)
+        XCTAssertNotEqual(senderTrust.publicKey, began, "the sender's key was replaced on the way")
+        guard s.state == .completed else { return XCTFail("\(s.state)") }
+        XCTAssertGreaterThanOrEqual(s.stats.reconnects, 1)
+        try assertArrived(src)
+    }
+
     func testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd() throws {
         // The owner's test with 0.2.0 on 2026-11-22: a cable out for a while. The receiver timed
         // its control connection out; the sender's survived as far as the sender could tell,

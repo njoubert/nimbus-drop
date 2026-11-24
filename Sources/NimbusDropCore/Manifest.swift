@@ -128,6 +128,8 @@ public struct Manifest: Codable, Equatable, Sendable {
             case .directory: directories.insert(Self.folded(e.path))
             case .file:
                 guard e.size >= 0, e.size <= Self.maxFileSize else { throw DropError("The drop has an impossible size for \(Sanitize.label(e.path, limit: 120))") }
+                // A chunk is named on the wire by 32 bits; a file of more chunks than that cannot be sent.
+                guard e.size / Int64(chunkSize) < Int64(UInt32.max) else { throw DropError("The drop has a file of more chunks than can be numbered: \(Sanitize.label(e.path, limit: 120))") }
                 total += e.size   // cannot overflow: at most 2^21 entries of 2^50 bytes
             case .symlink:
                 guard let l = e.link, !l.isEmpty, !l.utf8.contains(0), l.utf8.count <= Int(PATH_MAX) else {

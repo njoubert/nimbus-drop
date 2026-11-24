@@ -6,6 +6,22 @@ PoC tests and fuzzers: `Tests/NimbusDropCoreTests/ReviewPoCTests.swift` (new fil
 `/private/tmp/claude-501/-Users-njoubert-Code-nimbus-drop/966c9c33-7547-4a2a-ac6d-17d1ac45c1e3/scratchpad/protocol3-code-review-pocs.patch`.
 Every `testPoC_…` (9) asserts something the plan claims and **fails** on the code as it is; every `testFuzz_…` (3) passes; the 109 existing core tests pass beside them. The file is also still in the worktree (`.claude/worktrees/agent-ae2b023ffb054eaad`, detached at `d1863b8`), untracked. Extra mutation checks: `/private/tmp/claude-501/-Users-njoubert-Code-nimbus-drop/966c9c33-7547-4a2a-ac6d-17d1ac45c1e3/scratchpad/review_mutate.py`.
 
+## What has been done about it (2026-11-23, after the review)
+
+Fixed, each with a test in `Tests/NimbusDropCoreTests/ReviewTests.swift` (the proofs below, made permanent) and a line in `scripts/mutate.py`:
+
+- **F7**: nothing that touches a socket runs with the trust store locked, and a withdrawal says no farewell.
+- **F4**: `--send NAME` resolves NAME to one Known Mac and sends expecting its key. An address still means "whoever is paired there".
+- **F2**, **F3**, **F6**, **F5**, **F8**, **F10** as proposed below.
+- Divergences 1 (a handshake payload ends the connection), 9 (chunk counts fit 32 bits), 10 (the receiver holds a stream key to its bytes), 16 (a reconnect proves the key the drop began with), 18 (withdrawal also stops queued requests and this Mac's own pairing with that key), 19 (the notice uses this Mac's name for the key).
+- Test gaps: 12 of the 13 guards now have a test that fails without them. The thirteenth (all-zero key agreement) cannot have one: CryptoKit refuses that agreement before our check is reached, so the check is a second line that no input can exercise.
+
+Waiting on the owner, because each changes the plan or what a person sees:
+
+- **F1** (per-address admission limits; P11 loses "cannot end the drop"). Its two proofs are still in `protocol3-code-review-pocs.patch` and still fail.
+- **F9** (the quiet period as a lever; the fix changes P17's rationing and adds a control to Settings).
+- Divergences 2, 3, 5 (budgets "in all"; a class for a paired key before its offer), 6, 7 (naming a new Mac, look-alikes), 8 (Forget and the end date), 11 (zeroising), 12, 13, 14 (the trust file: `trust` missing, failed writes, the lock), 15 (wording), 17 (probing a Mac added by address shows this Mac's key).
+
 ## Verdict
 
 I found no way for anyone without a paired key to read a drop, alter one, write a byte to disk, or get a key paired without two people typing codes: the handshake, the key schedule, the pairing transaction, the attach and resume proofs and the record path do what the plan says, and about 1,800 malformed connections, messages and records thrown at the parsers trapped nothing. It is safe to put on four Macs on a home LAN as far as confidentiality, integrity and who-is-who go. Fix before release: F1 (any host on the LAN can keep every paired Mac out with 64 idle connections, which P11 and P13 say cannot happen), F7 (a paired Mac, or just a frozen one plus a click on Forget, hangs the app for good), F2 and F6 (two holes in "no key is for ever"), and F4 if the command line is used for anything but tests.

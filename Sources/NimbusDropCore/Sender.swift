@@ -34,7 +34,17 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// Looks the receiver up afresh: its address and port as they are now, or nil when it cannot
     /// be found. Called on an engine thread, between reconnect attempts.
     public var relocate: (@Sendable () -> (host: String, port: UInt16)?)?
-    private var control: Channel!
+    /// The connection the conversation is on; replaced by a reconnect. Read on other threads
+    /// than the one that replaces it (a farewell, the silence watch), so under a lock of its own.
+    private var control: Channel! {
+        get { controlLock.withLock { _control } }
+        set { controlLock.withLock { _control = newValue } }
+    }
+    private var _control: Channel?
+    private let controlLock = NSLock()
+    /// This Mac's key as it was when the drop began. A drop finishes on the keys it started
+    /// with: a reconnect proves this one, also after the key has been replaced on schedule.
+    private var mine: KeyPair?
     /// The drop's keys, from the first handshake; nil until then and again once trust is withdrawn.
     private var keys: DropKeys?
     /// The receiver has said what it holds: the drop is under way, and a lost connection is
@@ -242,7 +252,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
                 socket.setReadTimeout(Int(max(2, Tuning.connectTimeout).rounded(.up)))
                 track(socket)
                 do {
-                    let channel = try Channel.initiate(socket, keys: trust.keyPair, expect: peer, expectName: peerName)
+                    let channel = try Channel.initiate(socket, keys: lock.withLock { mine } ?? trust.keyPair, expect: peer, expectName: peerName)
                     try channel.send(.hello, hello(.resume, to: peer))
                     let theirs = try channel.read()
                     guard theirs.type == .hello else { throw DropError.damagedMessage }
@@ -293,7 +303,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// silent) says so first, so the receiver stops at once instead of waiting out the minute it
     /// allows for a lost connection.
     override func fail(_ error: Error) {
-        if !isOver, let control, let reason = error as? DropError, !reason.connection {
+        if !isOver, let control = control, let reason = error as? DropError, !reason.connection {
             try? control.send(.error, Reason(message: reason.message))
         }
         super.fail(error)
@@ -303,16 +313,23 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// drop into `reconnect`, which succeeds if the link has come back and gives up after its
     /// minute if the other Mac really is frozen.
     override func silence() {
-        guard let control, planned, state != .reconnecting else { return super.silence() }
+        guard let control = control, planned, state != .reconnecting else { return super.silence() }
         log("no sign of life from \(peerName); treating the connection as lost", .warn)
         control.socket.shutdown()
     }
 
     /// Trust in the receiver's key was withdrawn: the drop ends and its keys go, so that nothing
     /// can be attached, resumed or sent under them afterwards.
+    ///
+    /// Nothing is said to the other Mac first. A farewell is a write on the control connection,
+    /// and a Mac that has stopped reading it (frozen, asleep, or hostile) would hold whoever
+    /// withdrew the trust for as long as it liked: the person who clicked Forget, or the listener
+    /// thread acting on its retire notice. The connections close, and that is how it learns.
     override func withdrawn(_ error: DropError) {
-        lock.withLock { keys = nil; planned = false }
-        super.withdrawn(error)
+        lock.withLock { keys = nil; planned = false; mine = nil }
+        var quiet = error
+        quiet.connection = true
+        super.withdrawn(quiet)
     }
 
     // MARK: The handshake
@@ -332,7 +349,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
         track(socket)
         let trust = trust
         let name = peerName
-        let channel = try Channel.initiate(socket, keys: trust.keyPair, expect: expect, expectName: name) { theirs in
+        let own = trust.keyPair
+        lock.withLock { mine = own }
+        let channel = try Channel.initiate(socket, keys: own, expect: expect, expectName: name) { theirs in
             switch trust.standing(of: theirs) {
             case .paired: break
             case .mine: throw DropError("That is this Mac")

@@ -67,6 +67,8 @@ public final class DropListener: @unchecked Sendable {
     private var waiting: [(session: ReceiveSession?, key: PublicKey)] = []
     private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Date)] = [:]
     private var showing: PairingSession?
+    /// Requests waiting behind the one on screen.
+    private var waitingRequests: [PairingSession] = []
     private var queued = 0
     private var reassembling = 0
     private let budget = NSCondition()
@@ -280,7 +282,11 @@ public final class DropListener: @unchecked Sendable {
 
         case .pair, .verify:
             guard standing.mayPair else {
-                if trust.noteRefused(key) { onRefusedIdentity?(name, from) }
+                // By the name this Mac has for that key, never the one the caller gives itself.
+                var known = name
+                if case .expired(let mac) = standing { known = mac.name }
+                if case .retired(let t) = standing { known = t.name }
+                if trust.noteRefused(key) { onRefusedIdentity?(known, from) }
                 socket.shutdown()
                 return
             }
@@ -326,12 +332,16 @@ public final class DropListener: @unchecked Sendable {
             if trust.publicKey.raw.lexicographicallyPrecedes(theirs.raw) { return busy("Both Macs asked at once; carry on with the request from \(identity.name)", log: "this Mac asked first") }
             mine.cancel("Both Macs asked at once; answer the request on this Mac")
         }
+        // One pairing at a time on this Mac, in either role: while its own person is in the
+        // middle of one, nobody else's request is put beside it.
+        if trust.gate.active != nil { return busy("\(identity.name) is in the middle of another pairing", log: "this Mac is in the middle of a pairing of its own") }
         let quiet = trust.gate.quietSecondsLeft
         if quiet > 0 { return busy("\(identity.name) is not taking requests to pair for another \(Int(quiet.rounded(.up))) s", log: "requests are paused after the last one") }
         let turn = lock.withLock { () -> Bool? in
             if showing == nil || showing!.state.isFinal { showing = pairing; return true }
             guard queued < Tuning.pairRequestsWaiting else { return nil }
             queued += 1
+            waitingRequests.append(pairing)
             return false
         }
         guard let turn else { return busy("\(identity.name) has too many requests to pair waiting", log: "too many are waiting") }
@@ -348,8 +358,11 @@ public final class DropListener: @unchecked Sendable {
                     return true
                 }
             }
-            lock.withLock { queued -= 1 }
-            guard mine, trust.gate.quietSecondsLeft == 0 else { return busy("\(identity.name) did not get to this request in time", log: "it waited too long") }
+            lock.withLock { queued -= 1; waitingRequests.removeAll { $0 === pairing } }
+            guard mine, trust.gate.quietSecondsLeft == 0, trust.gate.active == nil else {
+                lock.withLock { if showing === pairing { showing = nil } }
+                return busy("\(identity.name) did not get to this request in time", log: "it waited too long")
+            }
         }
         DropLog.write("\(pairing.peerName) at \(from) (\(pairing.peerKey?.tag ?? "?")) asks to pair" + (pairing.clash.map { "; its name is that of \($0.name), which this Mac knows under another key" } ?? ""))
         if let clash = pairing.clash, clash.paired, !clash.expected { trust.noteImpostor(of: clash.key, at: from) }
@@ -381,12 +394,14 @@ public final class DropListener: @unchecked Sendable {
     /// Trust in `key` was withdrawn. Its sessions have been ended by `Trust`; what is left here
     /// is what it had waiting on a person and what a finished drop of its left behind.
     private func withdraw(_ key: PublicKey) {
-        let pairing = lock.withLock { () -> PairingSession? in
+        var pairings = lock.withLock { () -> [PairingSession] in
             completed = completed.filter { $0.value.key != key }
             sessions = sessions.filter { $0.value.peerKey != key }
-            return showing?.peerKey == key ? showing : nil
+            return ([showing].compactMap { $0 } + waitingRequests).filter { $0.peerKey == key }
         }
-        pairing?.cancel("That Mac's identity is no longer trusted")
+        // And a pairing this Mac's own person started with it.
+        if let mine = trust.gate.active, mine.peerKey == key, !pairings.contains(where: { $0 === mine }) { pairings.append(mine) }
+        for p in pairings { p.cancel("That Mac's identity is no longer trusted") }
     }
 
     /// Room to reassemble a control message of `bytes`, out of what all drops share. Waits when
@@ -445,8 +460,15 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     /// Called once if the sender gives up while this Mac is still deciding.
     public var onWithdrawn: (@Sendable () -> Void)?
 
-    /// The connection the conversation is on. Replaced when the sender reconnects.
-    private var control: Channel
+    /// The connection the conversation is on. Replaced when the sender reconnects, by this
+    /// session's thread, while the listener's thread (a resume), the stream threads and a
+    /// farewell read it: so under a lock of its own.
+    private var control: Channel {
+        get { controlLock.withLock { _control } }
+        set { controlLock.withLock { _control = newValue } }
+    }
+    private var _control: Channel
+    private let controlLock = NSLock()
     /// A connection the sender has opened to pick the drop up again, waiting to be taken.
     private var incoming: Channel?
     private weak var listener: DropListener?
@@ -479,7 +501,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
     private var awaitingControl = false
 
     init(channel: Channel, offer: Offer, hello: SecureHello, mac: KnownMac, listener: DropListener) {
-        control = channel
+        _control = channel
         self.listener = listener
         sender = mac
         senderID = channel.remote.raw.map { String(format: "%02x", $0) }.joined()
@@ -658,6 +680,12 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             return
         }
 
+        // A yes to an offer whose pairing has since ended starts nothing: the question was
+        // asked under a key that no longer holds (it ran out with the panel still up).
+        guard listener.trust.standing(of: control.remote).isPaired else {
+            try? control.send(.decline, Reason(message: "The pairing with \(listener.identity.name) has run out; pair again and send it again"))
+            throw DropError("The pairing with \(peerName) ran out before the drop was accepted")
+        }
         log("accepted, saving to \(destination.path)")
         // Accepting authorises metadata in proportion to what was accepted, out of a budget all
         // drops share: a manifest of 64 KB plus 2 KB for each file the offer announced.
@@ -885,6 +913,7 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
         var openFile = -1
         var fd: Int32 = -1
         defer { if fd >= 0 { close(fd) } }
+        var carried: Int64 = 0
 
         while true {
             do { try sealedHeader.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, RecordHeader.sealedSize) } }
@@ -901,6 +930,10 @@ public final class ReceiveSession: Transfer, @unchecked Sendable {
             let file = Int(header.file), chunk = Int(header.chunk), length = Int(header.length)
             guard file < manifest.entries.count, manifest.entries[file].kind == .file, chunk < manifest.chunkCount(file),
                   length == manifest.chunkLength(file: file, chunk: chunk) else { throw StreamFault.damaged }
+            // One stream key carries so many bytes and no more; an honest sender has moved to
+            // another connection, and so another key, before this.
+            carried += Int64(length)
+            guard carried <= DropKeys.streamBytes else { throw StreamFault.damaged }
             var counted = 0
             do {
                 try socket.readExactly(buffer, length + 16) { [self] n in

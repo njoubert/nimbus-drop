@@ -21,7 +21,58 @@ final class RoundReviewTests: XCTestCase {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("dst"), withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: root) }
+    override func tearDownWithError() throws {
+        Tuning.manifestSeconds = 60
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    /// An accepted drop is given room for its manifest out of a budget all drops share, in
+    /// proportion to the files its offer claimed, and the next accepted drop waits when there
+    /// is none left. Until 2026-11-24 nothing bounded how long the manifest could take to
+    /// come: two offers that each claimed enough files to take half the budget, accepted, and
+    /// then silent, held it for good, and every drop accepted after them waited for room that
+    /// never came, with no word to anyone. A sender that was accepted has so long to be silent.
+    func testAnAcceptedOfferThatSendsNoManifestDoesNotHoldUpEveryOtherDrop() throws {
+        Tuning.manifestSeconds = 1
+        let (a, b) = Trust.paired("greedy", "receiver")
+        let honest = Trust.inMemory()
+        honest.adopt(b, as: "receiver"); b.adopt(honest, as: "honest")
+        let receiver = try TestMac("receiver", trust: b)
+        let dst = root.appendingPathComponent("dst")
+        receiver.listener.onOffer = { [weak receiver] s in
+            receiver?.offers.withLock { $0.append(s) }
+            s.accept(destination: dst)
+        }
+        // Two offers of 300,000 files: room for 512 MB of manifest each, which is all there is.
+        var silent: [Channel] = []
+        for _ in 0..<2 {
+            let (channel, _) = try Channel.dial(host: "127.0.0.1", port: receiver.port, trust: a, name: "greedy", purpose: .drop)
+            channel.socket.setReadTimeout(20)
+            try channel.send(.offer, Offer(items: ["everything"], fileCount: 300_000, totalBytes: 1))
+            XCTAssertEqual(try channel.read().type, .accept)
+            silent.append(channel)
+        }
+        // An honest drop from another Mac, accepted while those two say nothing.
+        let source = root.appendingPathComponent("small.txt")
+        try Data(repeating: 7, count: 1000).write(to: source)
+        let s = SendSession(urls: [source], host: "127.0.0.1", port: receiver.port, peerName: "receiver", identity: Identity(name: "honest", id: UUID().uuidString),
+                            trust: honest, expect: b.publicKey)
+        s.start()
+        XCTAssertTrue(until(15) { s.state.isFinal }, "still \(s.state): the drop is waiting for room that two silent senders hold")
+        XCTAssertEqual(s.state, .completed)
+        // The two that sent nothing were given up, and told why.
+        for channel in silent {
+            let last = try? channel.read()
+            XCTAssertEqual(last?.type, .error)
+            let why = last.flatMap { try? decode(Reason.self, from: $0.body).message } ?? ""
+            XCTAssertTrue(why.contains("did not send"), why)
+        }
+        let greedy = receiver.offers.withLock { $0 }.filter { $0.offeredFiles == 300_000 }
+        XCTAssertEqual(greedy.count, 2)
+        for session in greedy { XCTAssertTrue(until(5) { session.state.isFinal }, "\(session.state)") }
+        s.cancel()
+        for session in receiver.offers.withLock({ $0 }) { session.cancel() }
+    }
 
     /// A paired receiver that means harm, made by hand: it takes a drop as far as its first
     /// plan, lets the round's data connection in and never reads it (so the round does not

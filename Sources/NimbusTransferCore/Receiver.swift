@@ -500,12 +500,21 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
                 }
 
             case .awaitManifest, .reading:
+                // An accepted drop holds room for its manifest out of what all drops share
+                // (`DropListener.reserve`), and the next accepted drop waits for room. So a
+                // sender that was accepted has so long to be silent, and no longer: after
+                // that the conversation counts as lost, which before the first plan is the
+                // end (the machine's), the sender is told, and the room is given back.
+                let asked = Date()
+                if was == .awaitManifest { control.socket.setReadTimeout(Int(Tuning.manifestSeconds.rounded(.up))) }
                 do {
                     let frame = try control.read()
+                    if was == .awaitManifest { control.socket.setReadTimeout(0) }
                     if was == .reading { touch() }
                     todo = step(event(frame))
                 } catch {
-                    cause = error
+                    let silent = was == .awaitManifest && Date().timeIntervalSince(asked) >= Tuning.manifestSeconds
+                    cause = silent ? DropError("\(peerName) was accepted and did not send the drop; it was given up", connection: true) : error
                     todo = step(.lost)
                 }
 

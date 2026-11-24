@@ -192,7 +192,7 @@ final class TrustCoreTests: XCTestCase {
             case "retire": return settle(core.retire(k, wall: wall), diskOK: e.diskOK)
             case "forget": return settle(core.forget(k, wall: wall), diskOK: e.diskOK)
             case "gone": return settle(core.notePairingGone(k, wall: wall), diskOK: e.diskOK)
-            case "removeAgain": return settle(core.removeFromAgain(k), diskOK: e.diskOK)
+            case "removeAgain": return settle(core.removeFromAgain(k, wall: wall), diskOK: e.diskOK)
             case "reset": return settle(core.reset(told: [], wall: wall), diskOK: e.diskOK)
             case "commit": return settle([.save], diskOK: e.diskOK)
             case "evict":
@@ -325,52 +325,89 @@ final class TrustCoreTests: XCTestCase {
     /// relation, under the name the numbers give it.
     func testRandomWalksStayInsideTheRelation() {
         let (_, transitions, _) = Self.relation()
-        var rng = SystemRandomNumberGenerator()
-        let simple = ["standing", "retire", "forget", "replaced", "gone", "store", "store", "store", "removeAgain", "reset", "commit", "evict",
-                      "track", "track", "track", "prune", "tick", "tick", "tick", "tick", "tick", "tick"]
+        // Fixed seeds, so that a failure can be had again, and one from the clock, so that
+        // every run also looks somewhere new. A failure prints its seed and its whole walk.
         var steps = 0
-        for _ in 0..<1500 {
-            var d = Driver()
-            for _ in 0..<40 {
-                let before = d.state
-                let ok = Int.random(in: 0..<4, using: &rng) > 0
-                var e = Event(name: simple.randomElement(using: &rng)!, diskOK: ok)
-                let effects: [String]
-                if e.name == "tick" {
-                    let waiting = d.tracked.filter { _ in Bool.random(using: &rng) }
-                    var next: ClockReading
-                    switch Int.random(in: 0..<10, using: &rng) {
-                    case 0: next = d.after(30)
-                    case 1: next = d.after(3601)
-                    case 2: next = d.after((d.endAhead ?? 0) - d.core.file.elapsed + 1)
-                    case 3: next = d.after(0.5, calendar: (d.mac?.endsWall.timeIntervalSince(d.clock.wall) ?? 0) + 1)
-                    case 4: next = d.after((d.core.sessions.first?.deadline ?? 0) - d.core.file.elapsed + 1)
-                    case 5: next = d.after(max(0.001, (d.core.sessions.first?.deadline ?? 0) - d.core.file.elapsed - 1))
-                    case 6:
-                        // A reboot, with the calendar wherever someone has put it.
-                        d.boots += 1
-                        next = ClockReading(boot: "boot-\(d.boots)", continuous: Double.random(in: 0...50, using: &rng),
-                                            wall: d.clock.wall.addingTimeInterval(Double.random(in: -400 * Self.day...400 * Self.day, using: &rng)))
-                    case 7: next = d.after(1, calendar: -Double.random(in: 0...100 * Self.day, using: &rng))
-                    default: next = d.after(0.001)
+        // NIMBUS_WALK_SEEDS=200 for a longer hunt.
+        let extra = Int(ProcessInfo.processInfo.environment["NIMBUS_WALK_SEEDS"] ?? "") ?? 1
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        for seed in [1, 2, 3, 0x5EED] + (0..<extra).map({ now &+ UInt64($0) &* 7919 }) {
+            var rng = SplitMix(seed: seed)
+            for walk in 0..<400 {
+                var d = Driver()
+                var trace: [String] = []
+                for _ in 0..<40 {
+                    guard let line = Self.walkOneStep(&d, &rng, &trace) else { continue }
+                    steps += 1
+                    guard transitions.contains(line) else {
+                        return XCTFail("seed \(seed), walk \(walk): not in the relation: \(line)\nthe walk:\n  " + trace.joined(separator: "\n  "))
                     }
-                    if next.continuous < d.clock.continuous, next.boot == d.clock.boot { next.continuous = d.clock.continuous }
-                    let (kind, due) = d.found(at: next)
-                    e = Event(name: kind, who: waiting, due: due, diskOK: ok)
-                    // Every session of the key has one deadline here, or "late" would not be one event.
-                    XCTAssertLessThanOrEqual(Set(d.core.sessions.map(\.deadline)).count, 1)
-                    effects = d.step(tick: next, waiting: waiting, diskOK: ok)
-                } else {
-                    if e.name == "track" || e.name == "prune" { e.who = [Bool.random(using: &rng) ? 1 : 2] }
-                    guard let made = d.take(e) else { continue }
-                    effects = made
                 }
-                steps += 1
-                let line = "<< \(before), \(e.tla), \(d.state), \(Self.tuple(effects)) >>"
-                guard transitions.contains(line) else { return XCTFail("not in the relation: \(line)") }
             }
         }
-        XCTAssertGreaterThan(steps, 30000)
+        XCTAssertGreaterThan(steps, 40000)
+    }
+
+    /// A generator that gives the same numbers for the same seed.
+    struct SplitMix: RandomNumberGenerator {
+        var state: UInt64
+        init(seed: UInt64) { state = seed }
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    static let walkEvents = ["standing", "retire", "forget", "replaced", "gone", "store", "store", "store", "removeAgain", "reset", "commit", "evict",
+                             "track", "track", "track", "prune", "tick", "tick", "tick", "tick", "tick", "tick"]
+
+    /// One step of a walk: an event at random, made concrete at random. Returns the step as the
+    /// relation writes it, or nil when the event could not happen from here.
+    static func walkOneStep(_ d: inout Driver, _ rng: inout SplitMix, _ trace: inout [String]) -> String? {
+        let before = d.state
+        let ok = Int.random(in: 0..<4, using: &rng) > 0
+        var e = Event(name: walkEvents.randomElement(using: &rng)!, diskOK: ok)
+        let effects: [String]
+        if e.name == "tick" {
+            let waiting = d.tracked.filter { _ in Bool.random(using: &rng) }
+            var next: ClockReading
+            var how: String
+            switch Int.random(in: 0..<10, using: &rng) {
+            case 0: next = d.after(30); how = "+30 s"
+            case 1: next = d.after(3601); how = "+3601 s"
+            case 2: next = d.after((d.endAhead ?? 0) - d.core.file.elapsed + 1); how = "to the key's end"
+            case 3: next = d.after(0.5, calendar: (d.mac?.endsWall.timeIntervalSince(d.clock.wall) ?? 0) + 1); how = "the calendar to the key's date"
+            case 4: next = d.after((d.core.sessions.first?.deadline ?? 0) - d.core.file.elapsed + 1); how = "to the sessions' deadline"
+            case 5: next = d.after(max(0.001, (d.core.sessions.first?.deadline ?? 0) - d.core.file.elapsed - 1)); how = "to just short of the deadline"
+            case 6:
+                // A reboot, with the calendar wherever someone has put it.
+                d.boots += 1
+                let up = Double.random(in: 0...50, using: &rng), calendar = Double.random(in: -400 * day...400 * day, using: &rng)
+                next = ClockReading(boot: "boot-\(d.boots)", continuous: up, wall: d.clock.wall.addingTimeInterval(calendar))
+                how = "a reboot, up \(up) s, the calendar moved \(calendar) s"
+            case 7:
+                let back = Double.random(in: 0...100 * day, using: &rng)
+                next = d.after(1, calendar: -back)
+                how = "+1 s, the calendar set back \(back) s"
+            default: next = d.after(0.001); how = "+1 ms"
+            }
+            if next.continuous < d.clock.continuous, next.boot == d.clock.boot { next.continuous = d.clock.continuous }
+            let (kind, due) = d.found(at: next)
+            e = Event(name: kind, who: waiting, due: due, diskOK: ok)
+            trace.append("tick (\(how)) = \(e.tla)   elapsed \(d.core.file.elapsed), deadlines \(d.core.sessions.map(\.deadline))")
+            // Every session of the key has one deadline here, or "late" would not be one event.
+            precondition(Set(d.core.sessions.map(\.deadline)).count <= 1, "sessions with different deadlines:\n  " + trace.joined(separator: "\n  "))
+            effects = d.step(tick: next, waiting: waiting, diskOK: ok)
+        } else {
+            if e.name == "track" || e.name == "prune" { e.who = [Bool.random(using: &rng) ? 1 : 2] }
+            guard let made = d.take(e) else { return nil }
+            trace.append("\(e.tla)   elapsed \(d.core.file.elapsed), key ends \(d.mac?.endsElapsed ?? d.renewal?.endsElapsed ?? -1)")
+            effects = made
+        }
+        return "<< \(before), \(e.tla), \(d.state), \(tuple(effects)) >>"
     }
 
     // MARK: Attacks on the core
@@ -414,6 +451,19 @@ final class TrustCoreTests: XCTestCase {
         let effects = d.take(Event(name: "reset")) ?? []
         XCTAssertTrue(effects.contains(Self.eff("end", [1])), "\(effects)")
         XCTAssertEqual(d.tracked, [])
+    }
+
+    /// Remove, on the pair-again list, ends what that Mac still has running. It gets on the
+    /// list with a drop running when the calendar passes its date mid-drop.
+    func testRemovingAMacFromThePairAgainListEndsWhatItHadRunning() {
+        var d = paired()
+        _ = d.take(Event(name: "track", who: [2]))
+        XCTAssertNotNil(d.take(Event(name: "wallK")))
+        XCTAssertNotNil(d.renewal, "the calendar passed its date: to be paired again")
+        XCTAssertEqual(d.tracked, [2], "and its drop may finish")
+        XCTAssertEqual(d.take(Event(name: "removeAgain")), [Self.eff("save"), Self.eff("end", [2]), Self.eff("tell"), Self.eff("changed")])
+        XCTAssertEqual(d.tracked, [])
+        XCTAssertNil(d.renewal)
     }
 
     /// "Refused for good" lasts as long as the tombstone does: the store keeps a bounded number,

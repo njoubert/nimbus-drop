@@ -322,7 +322,8 @@ public final class Trust: @unchecked Sendable {
 
     public func rename(_ key: PublicKey, to name: String) { locked { perform(core.rename(key, to: name)) } }
 
-    public func removeFromAgain(_ key: PublicKey) { locked { perform(core.removeFromAgain(key)) } }
+    /// Remove, on the pair-again list: the Mac is forgotten, and whatever it still had running ends.
+    public func removeFromAgain(_ key: PublicKey) { locked { perform(core.removeFromAgain(key, wall: clock.wall)) } }
 
     // MARK: Withdrawing trust
 

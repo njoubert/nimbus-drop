@@ -162,7 +162,11 @@ Decide(s, ev) ==
         IF MayPair(s) THEN << [s EXCEPT !.known = "current", !.again = IF @ = "no" THEN "no" ELSE "pairedAgain"],
                               << Eff("save", {}), Eff("changed", {}) >> >>
         ELSE << s, << Eff("refused", {}) >> >>
-    ELSE IF e = "removeAgain" THEN << [s EXCEPT !.again = "no"], << Eff("save", {}), Eff("changed", {}) >> >>
+    \* Remove, on the pair-again list. A Mac that is only there is forgotten, and what it still
+    \* had running ends; one that was paired again since just loses the old entry.
+    ELSE IF e = "removeAgain" THEN
+        IF s.known # "no" THEN << [s EXCEPT !.again = "no"], << Eff("save", {}), Eff("changed", {}) >> >>
+        ELSE << Withdrawn(s, FALSE), WithdrawEffects(s) >>
 
     \* Reset Identity: this Mac's key is replaced; a current K is to be paired again; whatever
     \* K had authenticated ends, whichever list K is on or none.

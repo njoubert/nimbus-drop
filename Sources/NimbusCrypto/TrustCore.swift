@@ -370,9 +370,19 @@ package struct TrustCore {
         return [.save, .changed]
     }
 
-    package mutating func removeFromAgain(_ key: PublicKey) -> [Effect] {
-        file.again.removeAll { $0.key == key }
-        return [.save, .changed]
+    /// Remove, on the pair-again list: the Mac is not to be remembered at all. Whatever it
+    /// still has running ends, as with Forget. (A Mac gets on that list with a drop still
+    /// running when the calendar passes its date mid-drop; until 2026-11-24 Remove left that
+    /// drop to run out its day of grace, under a Mac the person had just struck off. Found by
+    /// `TrustCoreTests`' random walks: the session's deadline no longer belonged to anything.)
+    package mutating func removeFromAgain(_ key: PublicKey, wall: Date) -> [Effect] {
+        // Paired again since, and so on the Known list too: only the old entry goes.
+        guard !file.known.contains(where: { $0.key == key }) else {
+            file.again.removeAll { $0.key == key }
+            return [.save, .changed]
+        }
+        let name = file.again.first { $0.key == key }?.name ?? key.tag
+        return [.save] + withdraw(key, name: name, reason: "removed", refuseForGood: false, wall: wall) + [.changed]
     }
 
     /// Whether `key` was paired no more than `seconds` ago.

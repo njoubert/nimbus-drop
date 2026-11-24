@@ -89,6 +89,8 @@ jobs:
         # Each module depends on what Package.swift and scripts/check-layers.py both say, imports
         # only the system frameworks its layer may, and NimbusCrypto stays pure.
         run: python3 scripts/check-layers.py
+      - name: The layer checker itself, against trees with one thing wrong
+        run: python3 scripts/test-check-layers.py
 
   # The formal models that run in seconds: every TLA+ specification in formal/tla with TLC,
   # every mutant of one (each must fail, on the property named for it), the check that the

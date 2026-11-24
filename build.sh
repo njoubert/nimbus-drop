@@ -289,7 +289,8 @@ case "$cmd" in
     quick=0
     if [ "${1:-}" = "quick" ]; then quick=1; shift; fi
     python3 scripts/check-layers.py
-    python3 formal/test_check.py
+    python3 scripts/test-check-layers.py 2>&1 | tail -3
+    python3 formal/test_check.py 2>&1 | tail -3
     python3 formal/sas-bound.py
     if [ $quick = 1 ]; then
       python3 formal/check.py register tla "$@"

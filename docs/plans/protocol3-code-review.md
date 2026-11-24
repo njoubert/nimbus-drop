@@ -14,13 +14,14 @@ Fixed, each with a test in `Tests/NimbusDropCoreTests/ReviewTests.swift` (the pr
 - **F4**: `--send NAME` resolves NAME to one Known Mac and sends expecting its key. An address still means "whoever is paired there".
 - **F2**, **F3**, **F6**, **F5**, **F8**, **F10** as proposed below.
 - Divergences 1 (a handshake payload ends the connection), 9 (chunk counts fit 32 bits), 10 (the receiver holds a stream key to its bytes), 16 (a reconnect proves the key the drop began with), 18 (withdrawal also stops queued requests and this Mac's own pairing with that key), 19 (the notice uses this Mac's name for the key).
+- Divergence 13, the one of the rest with a security consequence (a Forget, retirement or replacement whose write failed was undone by the next launch, silently): the change stays in force, the write is retried until it holds, and the app tells the person meanwhile.
 - Test gaps: 12 of the 13 guards now have a test that fails without them. The thirteenth (all-zero key agreement) cannot have one: CryptoKit refuses that agreement before our check is reached, so the check is a second line that no input can exercise.
 
 Waiting on the owner, because each changes the plan or what a person sees:
 
 - **F1** (per-address admission limits; P11 loses "cannot end the drop"). Its two proofs are still in `protocol3-code-review-pocs.patch` and still fail.
 - **F9** (the quiet period as a lever; the fix changes P17's rationing and adds a control to Settings).
-- Divergences 2, 3, 5 (budgets "in all"; a class for a paired key before its offer), 6, 7 (naming a new Mac, look-alikes), 8 (Forget and the end date), 11 (zeroising), 12, 13, 14 (the trust file: `trust` missing, failed writes, the lock), 15 (wording), 17 (probing a Mac added by address shows this Mac's key).
+- Divergences 2, 3, 5 (budgets "in all"; a class for a paired key before its offer), 6, 7 (naming a new Mac, look-alikes), 8 (Forget and the end date), 11 (zeroising), 12, 14 (the trust file: `trust` missing, the lock), 15 (wording), 17 (probing a Mac added by address shows this Mac's key).
 
 ## Verdict
 

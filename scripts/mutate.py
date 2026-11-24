@@ -45,6 +45,7 @@ M=[
  ('a pairing this Mac began goes on after trust in the key is withdrawn','Sources/NimbusDropCore/Receiver.swift','        if let mine = trust.gate.active, mine.peerKey == key, !pairings.contains(where: { $0 === mine }) { pairings.append(mine) }\n','','ReviewTests/testWithdrawingTrustStopsAPairingThisMacBeganWithThatKey'),
  ('a refused identity is named as it calls itself','Sources/NimbusDropCore/Receiver.swift','                if case .expired(let mac) = standing { known = mac.name }\n','','ReviewTests/testARequestToPairFromAKeyThatHasRunOutIsNotShown'),
  ("a reconnect proves this Mac's new key, not the one the drop began with",'Sources/NimbusDropCore/Sender.swift','keys: lock.withLock { mine } ?? trust.keyPair, expect: peer','keys: trust.keyPair, expect: peer','ChaosTests/testADropFinishesOnTheKeyItStartedWith'),
+ ('a withdrawal that could not be written is not tried again','Sources/NimbusDropCore/Trust.swift','|| (unsavedChange && file.elapsed - lastTry >= 30) { save() }','{ save() }','TrustTests/testAWithdrawalThatCouldNotBeWrittenIsTriedAgainUntilItHolds'),
  # Not here: removing the all-zero check in KeyPair.agree. CryptoKit refuses that agreement
  # before the check is reached, so no test can tell (the review of 2026-11-23).
 ]

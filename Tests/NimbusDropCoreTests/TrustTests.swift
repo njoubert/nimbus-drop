@@ -298,6 +298,31 @@ final class TrustTests: XCTestCase {
 
     // MARK: The file
 
+    /// A Forget that could not be written is in force, is known to be unsaved, and is written
+    /// as soon as the disk takes it; it is not left to be undone by the next launch.
+    func testAWithdrawalThatCouldNotBeWrittenIsTriedAgainUntilItHolds() throws {
+        let storage = MemoryStorage(), clock = FakeClock()
+        let trust = try Trust(storage: storage, clock: clock)
+        let key = try pairing(trust)
+        let changes = Locked(0)
+        trust.onChange = { changes.withLock { $0 += 1 } }
+        storage.failSaves = true
+        trust.forget(key)
+        XCTAssertFalse(trust.standing(of: key).isPaired, "forgotten here and now, written or not")
+        XCTAssertTrue(trust.unsaved)
+        XCTAssertTrue(try Trust(storage: storage, clock: clock).standing(of: key).isPaired, "the hazard: on the disk it is still paired")
+        clock.pass(60)
+        trust.tick()
+        XCTAssertTrue(trust.unsaved, "the disk is still full")
+        storage.failSaves = false
+        let before = changes.withLock { $0 }
+        clock.pass(60)
+        trust.tick()
+        XCTAssertFalse(trust.unsaved)
+        XCTAssertGreaterThan(changes.withLock { $0 }, before, "and whoever is showing a warning hears of it")
+        XCTAssertFalse(try Trust(storage: storage, clock: clock).standing(of: key).isPaired, "a restart no longer brings it back")
+    }
+
     func testAnUnreadableTrustFileIsNeverQuietlyReplaced() throws {
         let storage = MemoryStorage()
         let trust = try Trust(storage: storage)

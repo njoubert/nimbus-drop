@@ -148,7 +148,14 @@ public final class MemoryStorage: TrustStorage, @unchecked Sendable {
     public var fault: TrustFault?
     public init(_ data: Data? = nil) { self.data = data }
     public func load() throws -> Data? { try lock.withLock { if let fault { throw fault }; return data } }
-    public func save(_ data: Data) throws { lock.withLock { self.data = data; saves += 1 } }
+    /// Tests: every write fails, as on a full disk.
+    public var failSaves = false
+    public func save(_ data: Data) throws {
+        try lock.withLock {
+            if failSaves { throw DropError("No space left on device") }
+            self.data = data; saves += 1
+        }
+    }
     public func setAside(_ label: String) { lock.withLock { data = nil; fault = nil } }
     public var stored: Data? { lock.withLock { data } }
 }
@@ -345,7 +352,8 @@ public final class Trust: @unchecked Sendable {
             }
             file.again.removeAll { elapsed >= $0.endsElapsed }
             if file.tombstones.count > 2000 { file.tombstones.removeFirst(file.tombstones.count - 2000) }
-            if changed || file.elapsed - lastSave > 3600 { save() }
+            // A write that failed is tried again, twice a minute, until it holds.
+            if changed || file.elapsed - lastSave > 3600 || (unsavedChange && file.elapsed - lastTry >= 30) { save() }
             endSessionsPastGrace()
         }
         if changed { onChange?() }
@@ -680,15 +688,34 @@ public final class Trust: @unchecked Sendable {
 
     // MARK: Storage
 
-    /// With the lock held. A failure to write is logged and the change stays in memory; nothing
-    /// that is acknowledged to another Mac goes through here without `saveOrThrow`.
+    /// A change is in force here and not on the disk: the last write failed (a full disk). If
+    /// the app quit now, the change would be undone, which for a Forget, a retirement or a
+    /// replacement means a Mac trusted again without anyone deciding so. The write is tried
+    /// again until it holds (`tick`), and the app tells the person meanwhile. Until
+    /// 2026-11-23 the failure was logged and nothing more (the review's divergence 13).
+    public var unsaved: Bool { locked { unsavedChange } }
+    private var unsavedChange = false
+    private var lastTry = 0.0
+
+    /// With the lock held. A failure to write is logged, the change stays in force in memory
+    /// and the write is tried again; nothing that is acknowledged to another Mac goes through
+    /// here without `saveOrThrow`.
     private func save() {
-        do { try saveOrThrow() } catch { DropLog.write("identity: could not write the trust file: \(error)", .error) }
+        do { try saveOrThrow() } catch { DropLog.write("identity: could not write the trust file: \(error); it will be tried again", .error) }
     }
 
     private func saveOrThrow() throws {
-        try storage.save(try JSONEncoder().encode(file))
+        lastTry = file.elapsed
+        do { try storage.save(try JSONEncoder().encode(file)) } catch {
+            if !unsavedChange { unsavedChange = true; afterwards.append { [weak self] in self?.onChange?() } }
+            throw error
+        }
         lastSave = file.elapsed
+        if unsavedChange {
+            unsavedChange = false
+            DropLog.write("identity: the trust file was written; nothing is unsaved any more")
+            afterwards.append { [weak self] in self?.onChange?() }
+        }
     }
 
     /// Writes the store now; throws if it did not reach the disk. For changes that are about to

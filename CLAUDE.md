@@ -155,7 +155,7 @@ Sources/NimbusDrop/         the app
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  134 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  135 tests. ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -324,6 +324,10 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
 - **A record that fails to open is a damaged chunk**: that connection closes, the chunk is
   asked for again. It never ends a drop by itself (an earlier draft's three-strikes rule would
   have let anyone stop one). The receiver's data-path checks are in `ReceiveSession.receive`.
+- **A change to trust that could not be written stays in force and is retried** (twice a
+  minute, in `tick`) until it holds; `Trust.unsaved` says so and the app warns once
+  (`AppModel.warnIfUnsaved`). It used to be logged and no more, and the next launch undid
+  it: a forgotten Mac paired again without anyone deciding so.
 - **The trust file** (`EnclaveStorage`): `device` (a Secure Enclave P-256 key's opaque form,
   a public key `w`, this Mac's hardware UUID; written once) and `trust` (AES-GCM under the
   key agreed between them). Every write is whole-file, fsync, rename, fsync the folder. It is

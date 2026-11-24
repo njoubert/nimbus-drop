@@ -516,11 +516,29 @@ final class AppModel: ObservableObject {
     private func trustChanged() {
         trustChanges += 1
         onChange?()
+        warnIfUnsaved()
         // A key was paired, forgotten, retired or ran out: what each tile shows may be a key
         // its Mac no longer has. A Mac that retires a key says so just before it has the new
         // one, hence the second look.
         browser?.probeAll()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.browser?.probeAll() }
+    }
+
+    private var warnedUnsaved = false
+
+    /// A change to who is trusted is in force but could not be written (a full disk): said
+    /// once, because quitting now would undo it, and a Forget undone is a Mac trusted again.
+    private func warnIfUnsaved() {
+        guard trust.unsaved else { warnedUnsaved = false; return }
+        guard !warnedUnsaved else { return }
+        warnedUnsaved = true
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "A change to this Mac's trusted Macs could not be saved"
+        alert.informativeText = "The change is in force now, but it is not on the disk (the disk may be full). If Nimbus Drop quits before it is saved, the change is undone: a Mac you forgot, or an identity that was retired or replaced, would be trusted again.\n\nNimbus Drop keeps trying. Free some space and leave it running; Internals shows when it has been written."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     // MARK: Known Macs and this Mac's identity

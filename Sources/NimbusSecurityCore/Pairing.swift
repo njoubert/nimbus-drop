@@ -100,11 +100,10 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     private var channel: Channel?
     private var socket: Socket?
     private var theirs: SecureHello?
-    private var expected = ""
-    private var _mine = ""
-    private var tries = 3
-    private var localRight = false
-    private var remoteRight = false
+    /// The transaction itself: what each message and each entry means. Everything a pairing's
+    /// security rests on is decided there (`PairingMachine`, in the crypto module, which has no
+    /// I/O in it); this class is the connection, the person and the clock around it.
+    private var machine: PairingMachine?
     private var go: Bool?
     private var replacing: PublicKey?
     private var localName: String?
@@ -126,10 +125,10 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     public var clash: NameClash? { lock.withLock { _clash } }
     /// This Mac's code, from the moment the codes exist to the end: a window shows it for as
     /// long as the other person still has to type it, which is after this Mac's own entry.
-    public var myCode: String { lock.withLock { _mine } }
+    public var myCode: String { lock.withLock { machine?.mine ?? "" } }
     /// The other Mac has said its person typed this Mac's code. Good for choosing what a
     /// window shows next and for nothing else: anyone at the other end can say it.
-    public var otherTyped: Bool { lock.withLock { remoteRight } }
+    public var otherTyped: Bool { lock.withLock { machine?.remoteRight ?? false } }
     public var secondsLeft: Double { lock.withLock { max(0, deadline.timeIntervalSinceNow) } }
     /// The other Mac turned the request away because it is not showing requests for a while:
     /// for how many seconds, as it said. Starting the pairing from that Mac goes through.
@@ -231,29 +230,33 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     public func submit(_ typed: String) {
         let digits = PublicKey.digits(typed)
         lock.lock()
-        guard case .codes(let mine, _) = _state, !localRight else { lock.unlock(); return }
-        let right = Crypto.same(Data(digits.utf8), Data(expected.utf8))
-        if !right { tries -= 1 }
-        let left = tries
+        guard case .codes = _state, var m = machine else { lock.unlock(); return }
+        let effects = m.step(.typed(digits))
+        machine = m
         let c = channel
-        if right { localRight = true }
         lock.unlock()
-        if right {
-            set(.confirming)
-            do { try c?.send(.paired, Empty()) } catch { end(.failed("The connection was lost")); return }
-            finishIfBoth()
-        } else if left <= 0 {
-            DropLog.write("pairing with \(peerName): three wrong entries; stopped", .warn)
-            try? c?.send(.pairFailed, Reason(message: "The codes did not match on the other Mac"))
-            end(.failed(byNumber ? "That is not this Mac's identity number. Nothing was paired." : "The codes do not match. Something may be between the two Macs. Nothing was paired."))
-        } else {
-            set(.codes(mine: mine, triesLeft: left))
+        for effect in effects {
+            switch effect {
+            case .confirming: set(.confirming)
+            case .send(.paired, _):
+                do { try c?.send(.paired, Empty()) } catch { end(.failed("The connection was lost")); return }
+            case .send:
+                try? c?.send(.pairFailed, Reason(message: "The codes did not match on the other Mac"))
+            case .codes(let mine, let left): set(.codes(mine: mine, triesLeft: left))
+            case .store: store()
+            case .fail(let why):
+                DropLog.write("pairing with \(peerName): three wrong entries; stopped", .warn)
+                end(.failed(text(why)))
+            case .otherTyped: break
+            }
         }
     }
 
-    private func finishIfBoth() {
+    /// The machine said both are true: this Mac's person typed the right code and the other
+    /// Mac said its person did. The key stored is the one this connection's handshake proved.
+    private func store() {
         lock.lock()
-        let ready = localRight && remoteRight && !_state.isFinal
+        let ready = !_state.isFinal
         let key = _peerKey, hello = theirs, replacing = replacing, name = localName
         lock.unlock()
         guard ready, let key, let hello else { return }
@@ -262,6 +265,22 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
                                       replacing: replacing, name: name)
             end(.paired(mac))
         } catch { end(.failed((error as? DropError)?.message ?? "\(error)")) }
+    }
+
+    /// What a person reads when the machine ends the pairing.
+    private func text(_ why: PairingMachine.Failure) -> String {
+        switch why {
+        case .didNotKeep: return "The other Mac did not keep to the pairing. Nothing was paired."
+        case .damaged: return DropError.damagedMessage.message
+        case .malformed: return "Malformed message from the other Mac"
+        case .wrongCode:
+            return byNumber ? "That is not this Mac's identity number. Nothing was paired."
+                            : "The codes do not match. Something may be between the two Macs. Nothing was paired."
+        case .theirsFailed:
+            return byNumber ? "The other Mac did not accept this Mac's identity number. Nothing was paired."
+                            : "The codes did not match on \(peerName). Something may be between the two Macs. Nothing was paired."
+        case .timedOut: return "The codes ran out of time. Nothing was paired."
+        }
     }
 
     // MARK: The exchange
@@ -305,17 +324,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
         case .pairFailed: throw DropError("\(peerName) declined to pair")
         default: throw DropError("Unexpected answer from \(peerName)")
         }
-        if byNumber {
-            beginCodes(mine: "", expecting: c.remote.identityNumber)
-        } else {
-            let ns = Crypto.random(32)
-            try c.send(.commit, PairValue(value: PairCodes.commitment(h: c.h, ns: ns)))
-            let nr = try expectValue(c, .nonce)
-            try c.send(.reveal, PairValue(value: ns))
-            let codes = PairCodes.codes(h: c.h, ns: ns, nr: nr)
-            beginCodes(mine: codes.sender, expecting: codes.receiver)
-        }
-        try awaitTheirs(c)
+        try exchange(c, as: .initiator)
     }
 
     /// A responder's side, on the listener's thread, once the request has reached the front of
@@ -340,72 +349,79 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
             }
             s.setReadTimeout(Int(Tuning.connectTimeout.rounded(.up)))
             try c.send(.pairGo, Empty())
-            if byNumber {
-                beginCodes(mine: "", expecting: c.remote.identityNumber)
-            } else {
-                let commit = try expectValue(c, .commit)
-                // Made only now: the other side has committed and cannot choose its value to suit this one.
-                let nr = Crypto.random(32)
-                try c.send(.nonce, PairValue(value: nr))
-                let ns = try expectValue(c, .reveal)
-                guard Crypto.same(PairCodes.commitment(h: c.h, ns: ns), commit) else {
-                    throw DropError("The other Mac did not keep to the pairing. Nothing was paired.")
-                }
-                let codes = PairCodes.codes(h: c.h, ns: ns, nr: nr)
-                beginCodes(mine: codes.receiver, expecting: codes.sender)
-            }
-            try awaitTheirs(c)
+            try exchange(c, as: .responder)
         } catch {
             if !state.isFinal { try? channel?.send(.pairFailed, Reason(message: "The pairing was stopped")) }
             end(.failed((error as? DropError)?.message ?? "\(error)"))
         }
     }
 
-    /// One value of the exchange: exactly this type, exactly once, 32 bytes.
-    private func expectValue(_ c: Channel, _ type: FrameType) throws -> Data {
-        let frame = try c.read()
-        guard frame.type == type else { throw DropError("The other Mac did not keep to the pairing. Nothing was paired.") }
-        let v = try decode(PairValue.self, from: frame.body).value
-        guard v.count == 32 else { throw DropError.damagedMessage }
-        return v
-    }
-
-    /// The codes are computed here, once; nothing after this point can change what is expected.
-    private func beginCodes(mine: String, expecting: String) {
-        lock.lock()
-        expected = expecting
-        _mine = mine
-        tries = 3
-        deadline = Date().addingTimeInterval(Tuning.pairSeconds)
-        lock.unlock()
-        set(.codes(mine: mine, triesLeft: 3))
-    }
-
-    /// After the codes are up: the only messages the other side may still send are "my person
-    /// typed it right" and "it failed". Either ends this reading.
-    private func awaitTheirs(_ c: Channel) throws {
-        c.socket.setReadTimeout(Int(Tuning.connectTimeout.rounded(.up)))
+    /// The exchange, from the moment both people have agreed to pair until it ends: every
+    /// message that arrives is handed to the machine, and what the machine says is done. Until
+    /// the codes are up a message is waited for; after that the only things the other side may
+    /// still say are "my person typed it right" and "it failed", and the codes have a deadline.
+    private func exchange(_ c: Channel, as role: PairingMachine.Role) throws {
+        // The identity number costs thousands of hashes; it is worked out only when it is used.
+        let m = PairingMachine(role: role, byNumber: byNumber, h: c.h, theirNumber: byNumber ? c.remote.identityNumber : "")
+        lock.withLock { machine = m }
+        try perform(step(.begin), on: c)
+        var polling = false
         while !state.isFinal {
-            if Date() > deadline, !lock.withLock({ localRight && remoteRight }) { throw DropError("The codes ran out of time. Nothing was paired.") }
-            guard c.socket.waitReadable(milliseconds: 200) else { continue }
+            let codesUp = lock.withLock { machine?.phase == .codes }
+            if codesUp {
+                if !polling { c.socket.setReadTimeout(Int(Tuning.connectTimeout.rounded(.up))); polling = true }
+                if Date() > deadline { try perform(step(.timeout), on: c) }
+                guard c.socket.waitReadable(milliseconds: 200) else { continue }
+            }
             let frame: (type: FrameType, body: Data)
             do { frame = try c.read() } catch {
                 if state.isFinal { return }
-                throw DropError("The connection was lost before the pairing finished")
+                if codesUp { throw DropError("The connection was lost before the pairing finished") }
+                throw error
             }
+            let event: PairingMachine.Event
             switch frame.type {
-            case .paired:
-                let again = lock.withLock { () -> Bool in defer { remoteRight = true }; return remoteRight }
-                guard !again else { throw DropError("The other Mac did not keep to the pairing. Nothing was paired.") }
-                onChange?()
-                finishIfBoth()
-                // Nothing more is expected from it. The loop goes on reading all the same, so
-                // that anything more is seen for what it is.
-            case .pairFailed:
-                throw DropError(byNumber ? "The other Mac did not accept this Mac's identity number. Nothing was paired."
-                                         : "The codes did not match on \(peerName). Something may be between the two Macs. Nothing was paired.")
-            default:
-                throw DropError("The other Mac did not keep to the pairing. Nothing was paired.")
+            case .commit: event = .received(.commit, value: (try? decode(PairValue.self, from: frame.body))?.value)
+            case .nonce: event = .received(.nonce, value: (try? decode(PairValue.self, from: frame.body))?.value)
+            case .reveal: event = .received(.reveal, value: (try? decode(PairValue.self, from: frame.body))?.value)
+            case .paired: event = .received(.paired, value: nil)
+            case .pairFailed: event = .received(.failed, value: nil)
+            default: event = .received(.other, value: nil)
+            }
+            try perform(step(event), on: c)
+        }
+    }
+
+    private func step(_ event: PairingMachine.Event) -> [PairingMachine.Effect] {
+        lock.withLock {
+            guard var m = machine else { return [] }
+            defer { machine = m }
+            return m.step(event)
+        }
+    }
+
+    /// Does what the machine said, on the thread that reads the connection. A failure is
+    /// thrown, and ends the pairing where `initiate` and `respond` catch it.
+    private func perform(_ effects: [PairingMachine.Effect], on c: Channel) throws {
+        for effect in effects {
+            switch effect {
+            case .send(let message, let value):
+                switch message {
+                case .commit: try c.send(.commit, PairValue(value: value ?? Data()))
+                case .nonce: try c.send(.nonce, PairValue(value: value ?? Data()))
+                case .reveal: try c.send(.reveal, PairValue(value: value ?? Data()))
+                case .paired: try c.send(.paired, Empty())
+                case .failed, .other: try? c.send(.pairFailed, Reason(message: "The pairing was stopped"))
+                }
+            case .codes(let mine, let left):
+                // The codes are computed once; nothing after this point can change what is expected.
+                lock.withLock { deadline = Date().addingTimeInterval(Tuning.pairSeconds) }
+                set(.codes(mine: mine, triesLeft: left))
+            case .confirming: set(.confirming)
+            case .otherTyped: onChange?()
+            case .store: store()
+            case .fail(.damaged): throw DropError.damagedMessage
+            case .fail(let why): throw DropError(text(why))
             }
         }
     }

@@ -19,3 +19,12 @@ public let protocolMinor = 1
 
 /// "3.0".
 public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
+
+extension Noise {
+    /// What both sides mix into the handshake before anything else: the protocol's name and
+    /// major, and both openings byte for byte as they crossed the wire. An opening altered on
+    /// the way leaves the two ends hashing different things, and the handshake fails.
+    package static func prologue(initiator: Data, responder: Data) -> Data {
+        Data("nimbus-drop/\(protocolVersion)".utf8) + initiator + responder
+    }
+}

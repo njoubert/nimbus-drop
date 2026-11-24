@@ -137,13 +137,6 @@ package final class Channel: @unchecked Sendable {
 
     // MARK: Handshakes
 
-    /// What both sides mix into the handshake before anything else: the protocol's name and
-    /// major, and both openings byte for byte as they crossed the wire. An opening altered on
-    /// the way leaves the two ends hashing different things, and the handshake fails.
-    static func prologue(initiator: Data, responder: Data) -> Data {
-        Data("nimbus-drop/\(protocolVersion)".utf8) + initiator + responder
-    }
-
     /// The initiator's side, up to and including message 2: the responder's key is proved and
     /// nothing about this side has been said. `majors` is what the responder speaks.
     private static func begin(_ socket: Socket, keys: KeyPair, ephemeral: KeyPair? = nil) throws -> Noise {
@@ -154,7 +147,7 @@ package final class Channel: @unchecked Sendable {
         guard theirs.majors.contains(UInt8(protocolVersion)) else {
             throw DropError("The other Mac speaks protocol \(theirs.majors.map(String.init).joined(separator: ", ")); this one speaks \(protocolVersion). Update Nimbus Drop on both.")
         }
-        let noise = Noise(initiator: true, prologue: prologue(initiator: mine, responder: theirs.bytes), s: keys, ephemeral: ephemeral)
+        let noise = Noise(initiator: true, prologue: Noise.prologue(initiator: mine, responder: theirs.bytes), s: keys, ephemeral: ephemeral)
         try write(socket, try noise.write())
         guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
         return noise
@@ -192,7 +185,7 @@ package final class Channel: @unchecked Sendable {
         let mine = Opening.mine()
         try mine.withUnsafeBytes { try socket.writeAll($0.baseAddress!, mine.count) }
         guard theirs.majors.contains(UInt8(protocolVersion)) else { throw DropError.damagedMessage }
-        let noise = Noise(initiator: false, prologue: prologue(initiator: theirs.bytes, responder: mine), s: keys, ephemeral: ephemeral)
+        let noise = Noise(initiator: false, prologue: Noise.prologue(initiator: theirs.bytes, responder: mine), s: keys, ephemeral: ephemeral)
         // A handshake message carries the handshake and nothing else: a payload ends it.
         guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
         try write(socket, try noise.write())

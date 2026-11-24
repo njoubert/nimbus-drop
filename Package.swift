@@ -43,6 +43,9 @@ let package = Package(
             dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore", "NimbusDiscovery",
                            "NimbusTransferCore"]
         ),
+        // The pure module by itself: the pairing machine, attacked, and written out as the
+        // transition relation that TLC checks against its specification (formal/tla).
+        .testTarget(name: "NimbusCryptoTests", dependencies: ["NimbusCrypto"]),
         .testTarget(name: "NimbusDropCoreTests", dependencies: ["NimbusDropCore"]),
         // A middleman for testing only, never part of the app: a TCP proxy that sits between a
         // sender and a receiver and misbehaves on cue (throttles, stalls, drops connections,

@@ -104,7 +104,7 @@ class Layers(unittest.TestCase):
         self.assertIn(old, text)
         open(path, "w").write(text.replace(old, '.target(name: "NimbusBase", dependencies: ["NimbusNet"]),'))
         found = self.problems()
-        self.assertTrue(any("NimbusCrypto reaches ['NimbusNet'] through its dependencies" in p for p in found), found)
+        self.assertTrue(any("NimbusCrypto reaches ['NimbusNet', 'NimbusRuntime'] through its dependencies" in p for p in found), found)
 
     def test_the_app_may_not_import_the_proxy(self):
         self.refuses("NimbusDrop", "import NimbusDropChaos", "the app may not import the chaos proxy")

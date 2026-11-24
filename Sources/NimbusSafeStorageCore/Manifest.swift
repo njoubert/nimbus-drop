@@ -77,6 +77,26 @@ public struct Manifest: Codable, Equatable, Sendable {
     /// insensitive to case and to how accents are composed.
     static func folded(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
 
+    /// How the name of a partial folder ends: `<first item>.<32 hex digits of the drop's key>`
+    /// and this. (`ReceiveSession` makes that name; `Leftovers` looks for it.)
+    package static let partialSuffix = ".nimbusdrop-partial"
+
+    /// Whether `name` ends as a partial folder's name does, in any spelling a Mac's disk takes
+    /// for it (it folds case in full: capitals, and the long s for s).
+    ///
+    /// No entry of a drop may. A partial folder is found by its name alone, and the name can
+    /// be worked out by another paired Mac (a drop's key is its manifest under the sender's
+    /// public key, which is no secret). So one Mac could send a folder with the name another
+    /// Mac's drop would look for, holding a tree of its own bytes and a ledger saying all of
+    /// it had arrived; that folder was put in the destination like any other, and the other
+    /// Mac's drop, when it came, "continued" from it: wrong bytes in place, reported complete,
+    /// under an honest sender's name.
+    static func endsAsPartialFolder(_ name: Substring) -> Bool {
+        // (Only a name ending in l or L can; the rest are spared the folding.)
+        guard let last = name.utf8.last, last == UInt8(ascii: "l") || last == UInt8(ascii: "L") else { return false }
+        return name.folding(options: [.caseInsensitive], locale: nil).hasSuffix(partialSuffix)
+    }
+
     /// Whether a symlink at `path` pointing to `link` stays inside its own top-level item.
     /// A link that does not (an absolute one, or one that climbs out with "..") is not
     /// recreated by a receiver: it would leave in the received folder a door to somewhere else
@@ -116,6 +136,10 @@ public struct Manifest: Codable, Equatable, Sendable {
             guard !e.path.isEmpty, !e.path.hasPrefix("/"), !e.path.utf8.contains(0),
                   parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 }) else {
                 throw DropError("The drop contains an unsafe path: \(Sanitize.label(e.path, limit: 120))")
+            }
+            // Nothing in a drop is named as a partial folder is: a later drop would take it for one.
+            guard !parts.contains(where: Self.endsAsPartialFolder) else {
+                throw DropError("The drop contains something named as an unfinished drop is (\(Sanitize.label(e.path, limit: 120))); it was refused")
             }
             // Unique as the disk sees names, not only as text: "x" and "X" are one file here, and
             // a drop that used both for different things could aim a write through a symlink.

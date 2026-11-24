@@ -543,8 +543,9 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         listener.claim(partial.path, for: self)
         claimed = partial
         itemsRoot = partial.appendingPathComponent("items", isDirectory: true)
-        do { try FileManager.default.createDirectory(at: itemsRoot, withIntermediateDirectories: true) }
-        catch { throw DropError("Cannot write to \(destination.path): \(error.localizedDescription)") }
+        // The partial folder and `items` in it are made by the tree itself, following no link:
+        // made here by path, a partial folder that was a link to somewhere else got an empty
+        // `items` folder left behind it before the tree refused (`ContainmentTests`).
         tree = try SafeTree(root: itemsRoot)
         try prepareTree()
         ledger = try Ledger(url: partial.appendingPathComponent("ledger"), manifest: manifest, tree: tree)
@@ -754,35 +755,45 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         // Everything received is marked as having come from elsewhere, as AirDrop marks it:
         // an app or a script in the drop then gets Gatekeeper's question the first time it is run.
         let quarantine = Quarantine.value()
-        // The tree's lock is taken for each use of it, as the stream threads take it. None of
-        // them should be left by now (`settle` closed them and waited, and no new one is let
-        // in); one that outlived the ten seconds `settle` waits must still not find the tree
-        // half way through a call.
-        for e in manifest.entries.reversed() where e.kind != .symlink {
-            // The owner keeps access to what they were just sent, whatever the mode was; and
-            // nothing arrives set-uid (the mask drops every bit above the permissions).
-            treeLock.withLock {
-                tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
+        // The tree keeps one directory open between calls, and the stream threads use it too:
+        // one at a time, here as there.
+        try treeLock.withLock {
+            for e in manifest.entries.reversed() where e.kind != .symlink {
+                // The owner keeps access to what they were just sent, whatever the mode was; and
+                // nothing arrives set-uid (the mask drops every bit above the permissions).
+                // What is there must still be what the manifest says, or nothing is put in place.
+                try tree.finish(e.path, directory: e.kind == .directory, mtime: e.mtime,
+                                mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
             }
+            tree.release()
         }
-        treeLock.withLock { tree.release() }
+        // The folder the person chose, opened once (to be looked up in, which is all that is
+        // asked of it: a folder that can be written to and not read still takes a drop). Each
+        // item goes into it from the tree the drop was built in, by `SafeTree.place`: a move
+        // that replaces nothing, so "is this name taken?" is asked by trying to take it.
+        let folder = open(destination.path, O_EXEC | O_DIRECTORY)
+        guard folder >= 0 else { throw errnoError("Cannot open \(destination.path)") }
+        defer { close(folder) }
         var saved: [URL] = []
-        let fm = FileManager.default
         for e in manifest.entries where !e.path.contains("/") {
             // A top-level item that was a link out of the drop was left out; there is nothing to move.
             if e.kind == .symlink, !Manifest.linkStaysInside(path: e.path, link: e.link ?? "") { continue }
-            let name = Naming.unique(e.path, isDirectory: e.kind == .directory) {
-                fm.fileExists(atPath: destination.appendingPathComponent($0).path)
-            }
-            let target = destination.appendingPathComponent(name)
             // Trust withdrawn while this was being put in place: stop putting.
             if isOver { throw DropError("\(peerName) is no longer trusted") }
-            guard rename(itemsRoot.appendingPathComponent(e.path).path, target.path) == 0 else {
-                throw errnoError("Cannot move \(e.path) into \(destination.path)")
+            var failure: Error?
+            let name = Naming.unique(e.path, isDirectory: e.kind == .directory) { candidate in
+                do { return try !tree.place(e.path, in: folder, as: candidate) } catch { failure = error; return false }
             }
-            saved.append(target)
+            if let failure { throw failure }
+            saved.append(destination.appendingPathComponent(name))
         }
-        try? fm.removeItem(at: partial)
+        // The partial folder is cleared away if it is still the folder this drop was built in.
+        // Something else that has been given its name since is not this drop's to remove.
+        if tree.isHeld(at: partial) {
+            try? FileManager.default.removeItem(at: partial)
+        } else {
+            log("left \(Sanitize.label(partial.lastPathComponent, limit: 200)) alone: it is no longer the folder this drop was built in", .warn)
+        }
         return saved
     }
 }

@@ -695,8 +695,12 @@ compiler's, by reading, or not established). The plans for the work are
   told otherwise: each agent had to move to the working branch first.
 - **CI** runs the layers and the checkers' own tests, the register, the simulation and the
   TLA+ models on every push (`lint`, `models`, on Linux), and what must not compile after
-  the tests (`build`); the Tamarin proofs weekly and on request (`proofs`), a job nobody had
-  seen run when it was written.
+  the tests (`build`); the Tamarin proofs weekly and on request (`proofs`:
+  `gh workflow run ci.yml --ref BRANCH` starts every job). An hour there, 25 minutes of it
+  building the prover from source. Its first run (by hand, 2026-11-24) stopped at the
+  install: Homebrew refuses a tap's formulae until the tap is trusted, on a runner as on a
+  Mac. With that put right it passed: 43 lemmas and 15 mutants, 4.2 GB at most. A scheduled
+  run has not been seen yet.
 - **CI is not this Mac**: its Swift is older (the `macos-15` image) and its TLC runs on
   Linux. The first push of this round failed there three ways, all green here: an expression
   the older compiler typed as `[Any]?` (write the types out), built modules in `<bin>/Modules`

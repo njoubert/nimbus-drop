@@ -120,9 +120,9 @@ jobs:
       - name: TLA+ models and their mutants
         run: python3 formal/check.py tla
 
-  # The Tamarin proofs take minutes and a Homebrew install, so not on every push: weekly and
-  # on request. `./build.sh verify` runs them on the owner's Mac. (This job had not yet been
-  # seen to run when it was written, 2026-11-24.)
+  # The Tamarin proofs take an hour here (25 minutes building the prover and Maude from
+  # source, 35 proving), so not on every push: weekly and on request. `./build.sh verify` runs
+  # them on the owner's Mac. Seen to pass once, started by hand, 2026-11-24.
   proofs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-15

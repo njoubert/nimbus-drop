@@ -218,7 +218,7 @@ where the evidence is weaker than we would like, or where there is none.
 |---|---|---|
 | G9 | **The app's own glue is not tested by any machine.** Panels, clicks, which Mac a tile means. Two defects of exactly this kind were found by review, and four fixes there have not been clicked by a person. | A UI test target that drives the panels; until then the list in CLAUDE.md, "Not verified by a person yet". |
 | G10 | **Sanitizers and the mutation run are by hand.** Neither is in CI: the mutation run takes two hours. | A weekly CI job for each, beside the weekly proofs. |
-| G11 | **The weekly Tamarin job has not been seen to pass in CI.** It passes on the Mac it was written on. | Start it once by hand and fix what a different machine finds. |
+| G11 | **The Tamarin job has passed in CI once, started by hand** (2026-11-24: 43 lemmas, 15 mutants, an hour, 4.2 GB at most). Its first run stopped at the install, which is fixed. Not seen yet: a run on its weekly schedule. The prover and Maude are whatever the tap holds that day, built from source, and the raw results stay on a runner that is thrown away. | Watch the first scheduled run. Pin the tap to a commit; keep `formal/.results/` as an artifact of the run. |
 | G12 | **Real packet loss, a real radio, a link above gigabit.** Loss is imitated above TCP; Wi-Fi dropping mid-drop is tested through a proxy. | `dnctl`/`pfctl` (needs root) between two Macs; a drop over Wi-Fi with the radio switched off. |
 
 ### Outside what is defended, by decision
@@ -249,7 +249,7 @@ described in `SECURITY.md`.
 
 1. Decide G2 (what a resume believes), and with it the tombstones and the hourly write.
 2. Run this build between two Macs and click through the app's glue (G9, G12).
-3. Put the sanitizers and the mutation run in CI, and see the Tamarin job pass there (G10, G11).
+3. Put the sanitizers and the mutation run in CI (G10); pin what the proofs job installs and keep what it prints (G11).
 4. Trace validation for the classes around the machines (G1).
 5. Coverage-guided fuzzing of the pure core and the parsers on Linux (G4).
 6. A model of the disk gate (G3), then of Forget as a message (G8).

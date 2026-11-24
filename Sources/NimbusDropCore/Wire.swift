@@ -36,7 +36,7 @@ func errnoError(_ what: String) -> DropError {
 /// wire. It does not read, answer or recognise protocol 2 (decided 2026-11-22: it ran on four
 /// Macs, all the owner's).
 public let protocolVersion = 3
-public let protocolMinor = 0
+public let protocolMinor = 1
 
 /// "3.0".
 public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
@@ -314,6 +314,7 @@ enum FrameType: UInt8 {
     case offer = 1, accept, decline, manifest, plan, done, complete, error, hello, resume, resumed
     case pairRequest = 32, pairGo, commit, nonce, reveal, paired, pairFailed, busy
     case retire = 48, retired
+    case speed = 64, speedGo, speedUpDone, speedCount, speedDown, speedDone
 }
 
 func decode<T: Decodable>(_ type: T.Type, from body: Data) throws -> T {

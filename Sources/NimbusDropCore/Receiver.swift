@@ -4,7 +4,7 @@ import Darwin
 import Foundation
 
 /// Closes a socket unless told in time that it has earned its keep.
-private final class Deadline: @unchecked Sendable {
+final class Deadline: @unchecked Sendable {
     private let lock = NSLock()
     private var generation = 0
     private weak var socket: Socket?
@@ -43,13 +43,18 @@ public final class DropListener: @unchecked Sendable {
     /// Called on a background thread when another Mac asks to pair and its request has reached
     /// the front of the queue. One at a time.
     public var onPairRequest: (@Sendable (PairingSession) -> Void)?
+    /// Another Mac is measuring the link to this one. For whoever shows what is going on;
+    /// nothing is asked.
+    public var onSpeedTest: (@Sendable (Transfer) -> Void)?
     /// A retired or run-out identity was used, and the person should be told (rationed).
     public var onRefusedIdentity: (@Sendable (_ name: String, _ address: String) -> Void)?
 
     private let fd: Int32
     private let lock = NSLock()
     private var stopped = false
-    private var sessions: [Data: ReceiveSession] = [:]
+    private var sessions: [Data: DataSession] = [:]
+    /// One speed test at a time on this Mac, whoever asks.
+    private var speedTesting = false
     private var holders: [String: ReceiveSession] = [:]
     /// A connection that has proved nothing yet, and where it came from. Each pool is in order
     /// of arrival: when it is full, the first (the one that has waited longest without proving
@@ -346,7 +351,7 @@ public final class DropListener: @unchecked Sendable {
                 try? channel.send(.complete, done.answer)
                 return
             }
-            guard let session = lock.withLock({ sessions[resume.session] }), session.peerKey == key, session.resume(on: channel, proof: resume.proof) else {
+            guard let session = lock.withLock({ sessions[resume.session] }) as? ReceiveSession, session.peerKey == key, session.resume(on: channel, proof: resume.proof) else {
                 logCounted("resume", "refused \(from): it asked to pick up a drop it could not prove it holds")
                 socket.shutdown()
                 return
@@ -383,6 +388,31 @@ public final class DropListener: @unchecked Sendable {
             guard (try? trust.commit()) != nil else { socket.shutdown(); return }
             try? channel.send(.retired, Empty())
             Thread.sleep(forTimeInterval: 0.2)
+            socket.shutdown()
+
+        case .speed:
+            // As for a drop: both sides must hold the pairing. Nobody is asked, because
+            // nothing is written and what it may cost is bounded (the plan's Addendum B).
+            guard hello.paired, case .paired(let mac) = standing else { socket.shutdown(); return }
+            guard let frame = try? channel.read(), frame.type == .speed, let ask = try? decode(SpeedAsk.self, from: frame.body) else { socket.shutdown(); return }
+            saidWhatItCameFor()
+            guard lock.withLock({ () -> Bool in
+                guard !speedTesting else { return false }
+                speedTesting = true
+                return true
+            }) else {
+                try? channel.send(.busy, Reason(message: "\(identity.name) is in the middle of another speed test"))
+                Thread.sleep(forTimeInterval: 0.2)
+                socket.shutdown()
+                return
+            }
+            defer { lock.withLock { speedTesting = false } }
+            deadline.cancel()
+            socket.setReadTimeout(0)
+            socket.setNoDelay()
+            let test = SpeedResponder(channel: channel, ask: ask, mac: mac, listener: self)
+            onSpeedTest?(test)
+            test.run()
             socket.shutdown()
 
         case nil:
@@ -476,7 +506,7 @@ public final class DropListener: @unchecked Sendable {
         }
     }
 
-    func register(_ session: ReceiveSession, id: Data) { lock.withLock { sessions[id] = session } }
+    func register(_ session: DataSession, id: Data) { lock.withLock { sessions[id] = session } }
     func unregister(id: Data) { lock.withLock { sessions[id] = nil } }
 
     /// Trust in `key` was withdrawn. Its sessions have been ended by `Trust`; what is left here
@@ -533,7 +563,7 @@ public final class DropListener: @unchecked Sendable {
 /// The transfer runs in rounds (see `SendSession`): a data connection that is lost or carries a
 /// damaged chunk is closed and what it did not deliver is asked for again, on the same accepted
 /// drop, without asking the person twice.
-public final class ReceiveSession: Transfer, @unchecked Sendable {
+public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     /// The sender's key, as text: what a re-sent drop is recognised by.
     public let senderID: String
     /// The Known Mac the sender proved to be.

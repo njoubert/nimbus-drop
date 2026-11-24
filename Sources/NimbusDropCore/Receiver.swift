@@ -51,10 +51,16 @@ public final class DropListener: @unchecked Sendable {
     private var stopped = false
     private var sessions: [Data: ReceiveSession] = [:]
     private var holders: [String: ReceiveSession] = [:]
-    private var strangers = 0
+    /// A connection that has proved nothing yet, and where it came from. Each pool is in order
+    /// of arrival: when it is full, the first (the one that has waited longest without proving
+    /// anything) gives way.
+    private struct Unproved { let socket: Socket; let address: String }
+    private var strangers: [Unproved] = []
+    private var unattached: [Unproved] = []
     private var unpaired = 0
-    private var unattached = 0
-    private var arrivals: [Date] = []
+    private var arrivals: [(at: Date, address: String)] = []
+    /// Connections from each paired key that have not yet said what they came for.
+    private var pairedWaiting: [PublicKey: Int] = [:]
     private var turnedAway = Set<String>()
     private var _localOnly = true
     /// Take connections only from the local network (the default). Off: from anything that can reach the port.
@@ -136,22 +142,47 @@ public final class DropListener: @unchecked Sendable {
             }
             return false
         }
+        var displaced: Socket?
         let taken = lock.withLock { () -> Bool in
             let now = Date()
-            arrivals.removeAll { now.timeIntervalSince($0) > 1 }
-            guard arrivals.count < Tuning.arrivalsPerSecond, strangers < Tuning.strangers else { return false }
-            arrivals.append(now)
-            strangers += 1
+            arrivals.removeAll { now.timeIntervalSince($0.at) > 1 }
+            // The rate cannot be met by anyone giving way: over it, the newcomer is closed.
+            guard arrivals.count < Tuning.arrivalsPerSecond,
+                  arrivals.filter({ $0.address == from }).count < Tuning.arrivalsPerAddress else { return false }
+            arrivals.append((now, from))
+            displaced = place(socket, from: from, in: &strangers, limit: Tuning.strangers, perAddress: Tuning.strangersPerAddress)
             return true
         }
-        if !taken { logCounted("full", "turned away a connection from \(from): too many at once") }
+        if !taken { logCounted("full", "turned away a connection from \(from): too many in a second") }
+        if let displaced {
+            logCounted("displaced", "closed a connection that had proved nothing, to make room for one from \(from)", .debug)
+            displaced.shutdown()
+        }
         return taken
+    }
+
+    /// With the lock held. Puts `socket` in a pool of connections that have proved nothing
+    /// yet; returns the one that gives way for it, to be closed. At its address's own limit
+    /// that is the oldest from the same address, so one address can only ever push out its own;
+    /// with the whole pool full it is the oldest of all. An honest Mac proves itself within
+    /// milliseconds of arriving and what an attacker's connection does is wait, so the longest
+    /// wait is what loses the place. Refusing the newcomer instead let 64 silent connections
+    /// from one host keep every paired Mac out (the review of the code, F1).
+    private func place(_ socket: Socket, from: String, in pool: inout [Unproved], limit: Int, perAddress: Int) -> Socket? {
+        var out: Unproved?
+        if let own = pool.indices.filter({ pool[$0].address == from }).first, pool.filter({ $0.address == from }).count >= perAddress {
+            out = pool.remove(at: own)
+        } else if pool.count >= limit, !pool.isEmpty {
+            out = pool.removeFirst()
+        }
+        pool.append(Unproved(socket: socket, address: from))
+        return out?.socket
     }
 
     private func serve(_ socket: Socket) {
         let from = socket.peerAddress
         var stranger = true
-        func noLongerAStranger() { if stranger { stranger = false; lock.withLock { strangers -= 1 } } }
+        func noLongerAStranger() { if stranger { stranger = false; lock.withLock { strangers.removeAll { $0.socket === socket } } } }
         defer { noLongerAStranger() }
         // Ten seconds in all (not ten per byte) to get as far as proving a key.
         let deadline = Deadline(socket, seconds: Tuning.strangerSeconds)
@@ -161,15 +192,17 @@ public final class DropListener: @unchecked Sendable {
 
         if kind == Opening.data {
             // A data connection: nothing until it proves it belongs to a drop in progress.
+            var displaced: Socket?
             let room = lock.withLock { () -> Bool in
-                guard unattached < Tuning.unattachedPerDrop * sessions.count else { return false }
-                unattached += 1
+                guard !sessions.isEmpty else { return false }
+                displaced = place(socket, from: from, in: &unattached, limit: Tuning.unattachedPerDrop * sessions.count, perAddress: Tuning.unattachedPerAddress)
                 return true
             }
             noLongerAStranger()
+            displaced?.shutdown()
             guard room else { socket.shutdown(); return }
             var released = false
-            func release() { if !released { released = true; lock.withLock { unattached -= 1 } } }
+            func release() { if !released { released = true; lock.withLock { unattached.removeAll { $0.socket === socket } } } }
             defer { release() }
             deadline.arm(Tuning.attachSeconds)
             let challenge = Crypto.random(16)
@@ -224,6 +257,23 @@ public final class DropListener: @unchecked Sendable {
             channel.limit = 16 << 10
         }
         defer { if holdsUnpaired { lock.withLock { unpaired -= 1 } } }
+        // A paired key is counted too until it has said what it came for: a paired Mac that
+        // means harm could otherwise hold any number of connections here for ten seconds each.
+        var waitsPaired = false
+        func saidWhatItCameFor() { if waitsPaired { waitsPaired = false; lock.withLock { pairedWaiting[key] = (pairedWaiting[key] ?? 1) - 1; if pairedWaiting[key] == 0 { pairedWaiting[key] = nil } } } }
+        if standing.isPaired {
+            guard lock.withLock({ () -> Bool in
+                guard pairedWaiting[key, default: 0] < Tuning.pairedWaiting else { return false }
+                pairedWaiting[key, default: 0] += 1
+                return true
+            }) else {
+                logCounted("pairedwaiting", "turned away \(from) (\(key.tag)): too many connections from that Mac that have not said what they want")
+                socket.shutdown()
+                return
+            }
+            waitsPaired = true
+        }
+        defer { saidWhatItCameFor() }
 
         guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body),
               (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
@@ -236,6 +286,7 @@ public final class DropListener: @unchecked Sendable {
             guard case .paired(let mac) = standing, hello.paired else { socket.shutdown(); return }
             trust.seen(key, name: hello.name, major: protocolVersion)
             guard let frame = try? channel.read(), frame.type == .offer, let offer = try? decode(Offer.self, from: frame.body) else { socket.shutdown(); return }
+            saidWhatItCameFor()
             deadline.cancel()
             socket.setReadTimeout(0)
             socket.setNoDelay()
@@ -264,6 +315,7 @@ public final class DropListener: @unchecked Sendable {
             default: socket.shutdown(); return
             }
             guard let frame = try? channel.read(), frame.type == .resume, let resume = try? decode(Resume.self, from: frame.body) else { socket.shutdown(); return }
+            saidWhatItCameFor()
             // A drop that finished while its sender was out of reach: say so again.
             if let done = lock.withLock({ completed[resume.session] }), done.key == key,
                Crypto.same(resume.proof, DropKeys.resumeProof(done.resumeKey, "resume", h: channel.h)) {
@@ -291,6 +343,7 @@ public final class DropListener: @unchecked Sendable {
                 return
             }
             guard let frame = try? channel.read(), frame.type == .pairRequest else { socket.shutdown(); return }
+            saidWhatItCameFor()
             deadline.cancel()
             request(PairingSession(channel: channel, hello: hello, identity: identity, trust: trust), from: from)
 
@@ -320,9 +373,9 @@ public final class DropListener: @unchecked Sendable {
     /// refused, fails or is abandoned.
     private func request(_ pairing: PairingSession, from: String) {
         let channel = { (reason: String) in pairing.cancel(reason) }
-        func busy(_ message: String, log: String) {
+        func busy(_ message: String, log: String, pause: Double? = nil) {
             logCounted("pairbusy", "a request to pair from \(pairing.peerName) at \(from) was not shown: \(log)")
-            pairing.turnAway(message)
+            pairing.turnAway(message, pause: pause)
             _ = channel
         }
         if trust.requestsOff { return busy("\(identity.name) is not taking requests to pair; start the pairing from that Mac", log: "requests are off in Settings") }
@@ -335,8 +388,20 @@ public final class DropListener: @unchecked Sendable {
         // One pairing at a time on this Mac, in either role: while its own person is in the
         // middle of one, nobody else's request is put beside it.
         if trust.gate.active != nil { return busy("\(identity.name) is in the middle of another pairing", log: "this Mac is in the middle of a pairing of its own") }
+        // The pause is for requests nobody here asked for. One from a key on record (a
+        // renewal: nobody else can prove that key), or from a key this Mac's own person has
+        // just tried to pair with, is shown regardless; otherwise a stranger who keeps the
+        // pause running would keep two people from ever pairing (the review of the code, F9).
+        var wanted = pairing.peerKey.map { trust.gate.expects($0) } ?? false
+        switch pairing.standing {
+        case .paired, .renew: wanted = true
+        default: break
+        }
         let quiet = trust.gate.quietSecondsLeft
-        if quiet > 0 { return busy("\(identity.name) is not taking requests to pair for another \(Int(quiet.rounded(.up))) s", log: "requests are paused after the last one") }
+        if quiet > 0, !wanted {
+            return busy("\(identity.name) is not showing requests to pair for another \(Int(quiet.rounded(.up))) s. Start the pairing from \(identity.name) instead.",
+                        log: "requests are paused after the last one", pause: quiet)
+        }
         let turn = lock.withLock { () -> Bool? in
             if showing == nil || showing!.state.isFinal { showing = pairing; return true }
             guard queued < Tuning.pairRequestsWaiting else { return nil }
@@ -359,7 +424,7 @@ public final class DropListener: @unchecked Sendable {
                 }
             }
             lock.withLock { queued -= 1; waitingRequests.removeAll { $0 === pairing } }
-            guard mine, trust.gate.quietSecondsLeft == 0, trust.gate.active == nil else {
+            guard mine, trust.gate.quietSecondsLeft == 0 || wanted, trust.gate.active == nil else {
                 lock.withLock { if showing === pairing { showing = nil } }
                 return busy("\(identity.name) did not get to this request in time", log: "it waited too long")
             }

@@ -59,6 +59,22 @@ final class PairingGate: @unchecked Sendable {
     }
 
     var quietSecondsLeft: Double { lock.withLock { max(0, quietUntil.timeIntervalSinceNow) } }
+
+    /// Keys this Mac's own person has just started a pairing with, and when. A request from
+    /// one of them is one that was asked for, and the pause does not apply to it.
+    private var asked: [PublicKey: Date] = [:]
+
+    func asked(_ key: PublicKey) {
+        lock.withLock {
+            let now = Date()
+            asked = asked.filter { now.timeIntervalSince($0.value) < Tuning.pairSeconds }
+            if asked.count < 64 { asked[key] = now }
+        }
+    }
+
+    func expects(_ key: PublicKey) -> Bool {
+        lock.withLock { asked[key].map { Date().timeIntervalSince($0) < Tuning.pairSeconds } ?? false }
+    }
 }
 
 /// A pairing between this Mac and one other, from either end.
@@ -139,6 +155,10 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     /// window shows next and for nothing else: anyone at the other end can say it.
     public var otherTyped: Bool { lock.withLock { remoteRight } }
     public var secondsLeft: Double { lock.withLock { max(0, deadline.timeIntervalSinceNow) } }
+    /// The other Mac turned the request away because it is not showing requests for a while:
+    /// for how many seconds, as it said. Starting the pairing from that Mac goes through.
+    public var pausedFor: Double? { lock.withLock { _pausedFor } }
+    private var _pausedFor: Double?
 
     // MARK: Starting
 
@@ -284,6 +304,9 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
             }
         }
         lock.withLock { channel = c; _peerKey = c.remote; _standing = trust.standing(of: c.remote) }
+        // This Mac's person has asked for a pairing with this key: a request from it in the
+        // next two minutes is one they are expecting.
+        trust.gate.asked(c.remote)
         try c.send(.hello, hello())
         let reply = try c.read()
         guard reply.type == .hello else { throw DropError("Unexpected answer from \(peerName)") }
@@ -297,7 +320,11 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
         let answer = try c.read()
         switch answer.type {
         case .pairGo: break
-        case .busy: throw DropError(Sanitize.label((try? decode(Reason.self, from: answer.body).message) ?? "\(peerName) is busy", limit: 200))
+        case .busy:
+            let reason = try? decode(Reason.self, from: answer.body)
+            // A number from another machine: held to what a pause can be before anything shows it.
+            if let p = reason?.pause, p.isFinite, p > 0 { lock.withLock { _pausedFor = min(p, 600) } }
+            throw DropError(Sanitize.label(reason?.message ?? "\(peerName) is busy", limit: 200))
         case .pairFailed: throw DropError("\(peerName) declined to pair")
         default: throw DropError("Unexpected answer from \(peerName)")
         }
@@ -408,8 +435,8 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
 
     /// A responder's request that is not going to be shown: say why and hang up. Not a failure
     /// that counts against anyone.
-    func turnAway(_ message: String) {
-        try? lock.withLock({ channel })?.send(.busy, Reason(message: message))
+    func turnAway(_ message: String, pause: Double? = nil) {
+        try? lock.withLock({ channel })?.send(.busy, Reason(message: message, pause: pause))
         lock.lock()
         _state = .failed(message)
         let s = socket

@@ -243,7 +243,8 @@ final class PairingTests: XCTestCase {
         XCTAssertEqual(b.requests.withLock { $0.count }, 1, "those who waited were not shown either")
         let after = try TestMac("s9").pair(with: b)
         XCTAssertTrue(until { after.state.isFinal })
-        XCTAssertTrue(after.failure?.contains("not taking requests") == true, "\(after.state)")
+        XCTAssertTrue(after.failure?.contains("not showing requests to pair") == true, "\(after.state)")
+        XCTAssertNotNil(after.pausedFor, "and it says for how long, so the tile here can say to start from that Mac")
         XCTAssertEqual(b.requests.withLock { $0.count }, 1)
     }
 

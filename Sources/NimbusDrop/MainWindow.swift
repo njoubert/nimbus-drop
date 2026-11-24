@@ -222,6 +222,7 @@ private struct PeerTile: View {
         case .unproved: return "Could not prove who it is"
         case .refused(let why): return why
         case .new, .renew, .nameInUse: return lit ? "Release to pair, then send" : "Drop files here to pair"
+        case .paused: return "Not taking requests just now · click this Mac's tile there"
         case .paired: return lit ? "Release to send" : (peer.isManual ? "Added by address · drop files here" : "Drop files here")
         }
     }
@@ -299,6 +300,8 @@ private struct PeerMenu: View {
         case .checking: return "Asking the Mac at \(peer.address ?? "this address") to prove who it is."
         case .unproved: return "The Mac at \(peer.address ?? "this address") did not prove who it is."
         case .refused(let why): return why
+        case .paused(let until):
+            return "\(peer.name) is not showing requests to pair for another \(max(1, Int(until.timeIntervalSinceNow.rounded(.up)))) s: a request to it was refused or abandoned a moment ago, perhaps not yours. Start the pairing from \(peer.name) instead (click this Mac's tile there); its request will be shown here."
         }
     }
 }

@@ -21,11 +21,14 @@ enum PeerStanding: Equatable {
     case renew(String)
     /// It proved a key that was given up, replaced or has run out.
     case refused(String)
+    /// It can be paired, but turned this Mac's request away just now: it is not showing
+    /// requests to pair for a while. A pairing started from that Mac goes through.
+    case paused(until: Date)
 
     var canSend: Bool { if case .paired = self { return true }; return false }
     var canPair: Bool {
         switch self {
-        case .new, .nameInUse, .renew: return true
+        case .new, .nameInUse, .renew, .paused: return true
         default: return false
         }
     }
@@ -40,6 +43,7 @@ enum PeerStanding: Equatable {
         case .nameInUse: return ("New · name in use", Palette.failure)
         case .renew: return ("Renew pairing", Palette.send)
         case .refused: return ("Identity not accepted", Palette.failure)
+        case .paused: return ("Pair from that Mac", Palette.warning)
         }
     }
 }

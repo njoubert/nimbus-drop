@@ -98,10 +98,37 @@ final class AppModel: ObservableObject {
         case .paired(let mac): return .paired(mac)
         case .expired(let mac): return .refused("\(mac.name)'s key has run out; it will have a new one after Nimbus Drop is opened there")
         case .retired(let t): return .refused("An identity that \(t.name) gave up")
-        case .renew(let r): return .renew(r.name)
+        case .renew(let r):
+            if let until = pauses[key], until > Date() { return .paused(until: until) }
+            return .renew(r.name)
         case .unknown:
+            if let until = pauses[key], until > Date() { return .paused(until: until) }
             guard let clash = trust.nameClash(peer.name, key: key) else { return .new }
             return clash.expected ? .renew(clash.name) : .nameInUse(clash)
+        }
+    }
+    /// Macs that turned a request to pair from this one away because they are not showing
+    /// requests for a while, and until when (as each said, held to ten minutes by the engine).
+    private var pauses: [PublicKey: Date] = [:]
+
+    /// Watches a pairing this Mac started: if the other Mac answers that it is paused, its
+    /// tile says so for that long, and says what to do instead.
+    private func watchForPause(_ session: PairingSession) {
+        DispatchQueue.global().async { [weak self] in
+            while !session.state.isFinal { Thread.sleep(forTimeInterval: 0.1) }
+            guard let seconds = session.pausedFor, let key = session.peerKey else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.pauses = self.pauses.filter { $0.value > Date() }
+                    self.pauses[key] = Date().addingTimeInterval(seconds)
+                    self.trustChanges += 1
+                    self.onChange?()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + seconds + 0.5) { [weak self] in
+                        MainActor.assumeIsolated { self?.trustChanges += 1; self?.onChange?() }
+                    }
+                }
+            }
         }
     }
     /// Made-up standings for the pictures.
@@ -459,6 +486,7 @@ final class AppModel: ObservableObject {
         let title = urls.isEmpty ? nil : (urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items")
         let session = PairingSession(host: address, port: peer.port ?? defaultPort, peerName: peer.name, identity: identity, trust: trust,
                                      expect: key, replacing: replacing, byNumber: byNumber)
+        watchForPause(session)
         present(session, pending: title) { [weak self] send in
             guard let self, send, !urls.isEmpty else { return }
             self.send(urls, to: peer)

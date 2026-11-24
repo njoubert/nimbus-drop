@@ -18,7 +18,9 @@ rest: how to work here, how the engine is put together, and what was measured.
 - **Nothing is sent to, or shown from, a key that is not paired**, and nothing decides who a
   Mac is but the key it proved. Names, addresses and Bonjour records are labels. A change that
   lets a name, an address or a record affect what a paired key may do, or where its tile
-  points, is a vulnerability (the first plan had one; see The protocol).
+  points, is a vulnerability (the first plan had one; see The protocol). The one use of an
+  address is in admission: which connection that has proved nothing gives way when there are
+  too many (`DropListener.place`). It decides who waits, never who a Mac is.
 - **The plan is the specification**: `docs/plans/secure-drops-plan.html`, with the two reviews
   it went through. A change to the cryptography, the pairing, the key schedule or the admission
   limits is a change to the plan first, a vector in `scripts/vectors.py` (a second
@@ -155,7 +157,7 @@ Sources/NimbusDrop/         the app
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  135 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  142 tests. ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -262,7 +264,13 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   time per Mac (`PairingGate`); requests from others are shown one at a time, at most four
   waiting, with a pause after each refusal that doubles (`Tuning.pairQuiet…`). While this
   Mac's own pairing is in progress a request from anyone else is answered busy, not shown
-  beside it. "The same Mac you paired with before" is said only of a key that is on the
+  beside it. The pause is for requests nobody here asked for: one from a key on the Known or
+  pair-again list, or from a key this Mac's person started a pairing with in the last two
+  minutes (`PairingGate.asked` / `expects`), is shown regardless. A Mac that turns a request
+  away for the pause says for how long (`Reason.pause`, held to ten minutes on receipt), and
+  the asking Mac's tile says "Pair from that Mac" for that long (`PeerStanding.paused`,
+  `AppModel.watchForPause`). Before this, one stranger asking every ten minutes kept two
+  Macs from ever pairing (the review's F9). "The same Mac you paired with before" is said only of a key that is on the
   pair-again list (`PairingModel.isSameMac`), never of a new key under a familiar name.
 - **The window shows one code at a time** (`PairingStage.read` / `.type`): the Mac that asked
   reads its code out and the Mac that was asked types it, then they swap. The wire and the
@@ -310,10 +318,20 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   2026-11-23 it stayed "Paired" and every drop failed). The app then asks at once
   (`AppModel.offerToPairAgain`): pair again and send, or not now. Scheduled expiry is different on purpose: a running drop may finish, within
   a day or one key lifetime, whichever is shorter.
-- **Admission** (`DropListener.admit`, `serve`): a slot before a thread. Not yet a key: 64 at
-  once, 500 a second, 1 KB, 10 s. A key nobody paired: 8 at once, 16 KB, pair/verify only.
-  A data connection before its attach is accepted: 16 per drop in progress, 5 s, none when no
-  drop is. After accept: a manifest of 64 KB + 2 KB per file offered, out of 1 GB shared.
+- **Admission** (`DropListener.admit`, `place`, `serve`): a slot before a thread. Not yet a
+  key: 64 at once (8 from one address), 500 a second (200 from one address), 1 KB, 10 s. A key
+  nobody paired: 8 at once, 16 KB, pair/verify only. A data connection before its attach is
+  accepted: 16 per drop in progress (4 from one address), 5 s, none when no drop is. A paired
+  key that has not yet said what it came for: 8 per key.
+  **In the two pools that have proved nothing, the oldest gives way to the newcomer**; at an
+  address's own limit, that address's oldest. They were global and refused the newcomer, and
+  64 silent connections from one host kept every paired Mac out (the review's F1). An honest
+  Mac proves itself in milliseconds; waiting is what loses the place. The rate cannot work
+  that way (nothing to close), so over it the newcomer is closed. Not claimed (P11 was
+  narrowed): that a flood from many addresses cannot stop a drop. The per-address arrival
+  limit is 200, not the 50 first proposed: several drops at once on 32 connections each open
+  more than a hundred in a second. Tests whose two ends share 127.0.0.1 and arrive faster
+  raise `Tuning.arrivalsPerAddress`. After accept: a manifest of 64 KB + 2 KB per file offered, out of 1 GB shared.
   The arrival rate was 50 a second at first, and fifty strangers in a second kept a paired
   sender out (`testCompletingAHandshakeWithAFreshKeyEarnsNothing` failed on it).
 - **One master per drop.** A reconnect proves the same two Macs and re-keys control only;

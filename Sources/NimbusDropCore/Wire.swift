@@ -63,6 +63,15 @@ enum Tuning {
     nonisolated(unsafe) static var strangerSeconds: Double = 10
     /// Connections that have not yet said what they are, at once; more are closed on arrival.
     nonisolated(unsafe) static var strangers = 64
+    /// Of which from one address. At either limit the oldest gives way to the newcomer.
+    nonisolated(unsafe) static var strangersPerAddress = 8
+    /// New connections a second from one address, under `arrivalsPerSecond` from all. A Mac
+    /// sending several drops at once on 32 connections each opens well over a hundred in a second.
+    nonisolated(unsafe) static var arrivalsPerAddress = 200
+    /// Of `unattachedPerDrop`, from one address.
+    nonisolated(unsafe) static var unattachedPerAddress = 4
+    /// Connections from one paired key that have not yet said what they came for.
+    nonisolated(unsafe) static var pairedWaiting = 8
     /// Offers waiting for the person's answer at once, in all and from one address; more are
     /// declined, so that nobody can bury the screen in panels.
     nonisolated(unsafe) static var pendingOffers = 6
@@ -324,7 +333,12 @@ struct Offer: Codable {
 
 struct Empty: Codable {}
 
-struct Reason: Codable { var message: String }
+struct Reason: Codable {
+    var message: String
+    /// With `busy` to a request to pair: the seconds for which requests nobody here asked for
+    /// are not being shown. The asking Mac's tile says to start the pairing from this one.
+    var pause: Double?
+}
 
 /// The receiver's answer to a manifest: what it already holds from an earlier attempt.
 struct Plan: Codable {

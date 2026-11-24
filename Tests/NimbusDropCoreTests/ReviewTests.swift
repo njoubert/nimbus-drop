@@ -9,8 +9,7 @@ import XCTest
 /// as reviewed; the finding it belongs to is named in its comment. The second group is one
 /// test for each guard the review could remove without any test noticing; `scripts/mutate.py`
 /// removes them again. `testFuzz…`: malformed input thrown at the parsers (a trap in the
-/// listener would take the test process down with it). The two proofs of F1 are not here:
-/// that finding waits on a change to the plan, and they are kept in the review's patch.
+/// listener would take the test process down with it).
 final class ReviewTests: XCTestCase {
     var root: URL!
     let chunk = 16 * 1024
@@ -20,6 +19,9 @@ final class ReviewTests: XCTestCase {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("nimbusdrop-review-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("dst"), withIntermediateDirectories: true)
         Tuning.reconnectSeconds = 2
+        // Both ends of every test are at one address, and the fuzzers arrive faster than one
+        // address may.
+        Tuning.arrivalsPerAddress = 500
     }
 
     override func tearDownWithError() throws {
@@ -30,7 +32,11 @@ final class ReviewTests: XCTestCase {
         Tuning.attachSeconds = 5
         Tuning.connectRetrySeconds = 30
         Tuning.strangers = 64
+        Tuning.strangersPerAddress = 8
         Tuning.arrivalsPerSecond = 500
+        Tuning.arrivalsPerAddress = 200
+        Tuning.unattachedPerAddress = 4
+        Tuning.pairedWaiting = 8
         Tuning.unattachedPerDrop = 16
         Tuning.streamsPerDrop = 64
         Tuning.pairSeconds = 120
@@ -370,51 +376,203 @@ final class ReviewTests: XCTestCase {
         drop.peer.socket.shutdown()
     }
 
+/// How many of `sockets` the other end is still holding open.
+    func open(_ sockets: [Socket]) -> Int { sockets.filter { !$0.waitReadable(milliseconds: 0) }.count }
+
+    func knock(_ port: UInt16) throws -> (socket: Socket, challenged: Bool) {
+        let s = try Socket.connect(host: "127.0.0.1", port: port)
+        s.setReadTimeout(2)
+        try Opening.data.withUnsafeBytes { try s.writeAll($0.baseAddress!, 5) }
+        var challenge = Data(count: 16)
+        return (s, (try? challenge.withUnsafeMutableBytes { try s.readExactly($0.baseAddress!, 16) }) != nil)
+    }
+
+    /// F1. 64 connections that say nothing used to keep every paired Mac out: the pool was
+    /// full and the newcomer was refused. Now the one that has waited longest gives way.
+    /// Once with the limit that one address has (the attacker pushes out only its own), once
+    /// as if they came from many addresses (the whole pool is full).
+    func testSilentConnectionsDoNotKeepAPairedMacOut() throws {
+        for perAddress in [8, 64] {
+            Tuning.strangersPerAddress = perAddress
+            let (sender, receiver) = try pairedMacs()
+            var held: [Socket] = []
+            for _ in 0..<Tuning.strangers { held.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)) }
+            Thread.sleep(forTimeInterval: 0.5)
+            XCTAssertLessThanOrEqual(open(held), perAddress)
+            let s = send([try file("a-\(perAddress).bin", bytes: chunk * 4)], from: sender, to: receiver)
+            wait(s, 8)
+            XCTAssertEqual(s.state, .completed, "with \(perAddress) places an address: silent connections kept a paired Mac out")
+            Thread.sleep(forTimeInterval: 1.1)   // the next round's arrivals are counted afresh
+        }
+    }
+
+    /// F1, the second pool: strangers that say "NDATA" and nothing more do not keep a drop's
+    /// own data connections from proving themselves.
+    func testStrangersCannotTakeTheDataConnectionSlotsOfADrop() throws {
+        for perAddress in [4, 16] {
+            Tuning.unattachedPerAddress = perAddress
+            let (sender, receiver) = try pairedMacs()
+            var drop = try handDrop(from: sender, to: receiver, bytes: chunk * 3)
+            var held: [Socket] = []
+            for _ in 0..<Tuning.unattachedPerDrop { held.append(try knock(receiver.port).socket) }
+            XCTAssertLessThanOrEqual(open(held), perAddress)
+            let (real, _) = try drop.attach()
+            XCTAssertFalse(real.waitReadable(milliseconds: 300), "the drop's own data connection was closed")
+            drop.peer.socket.shutdown()
+        }
+    }
+
+    /// The pools are still pools: never more unproved connections than the limit, however
+    /// many arrive. The newest are the ones that stay.
+    func testConnectionsThatHaveProvedNoKeyAreCounted() throws {
+        Tuning.strangers = 8
+        Tuning.strangersPerAddress = 100
+        let (_, receiver) = try pairedMacs()
+        var held: [Socket] = []
+        for _ in 0..<12 { held.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)); Thread.sleep(forTimeInterval: 0.02) }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(open(held), 8, "twelve arrived and the pool holds eight")
+        XCTAssertEqual(open(Array(held.suffix(8))), 8, "the eight that arrived last")
+    }
+
+    func testOneAddressHoldsOnlySoManyPlaces() throws {
+        Tuning.strangersPerAddress = 3
+        let (_, receiver) = try pairedMacs()
+        var held: [Socket] = []
+        for _ in 0..<10 { held.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)); Thread.sleep(forTimeInterval: 0.02) }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(open(held), 3, "ten arrived from one address, which may hold three places of the 64")
+        XCTAssertEqual(open(Array(held.suffix(3))), 3)
+    }
+
     func testDataConnectionsThatHaveProvedNothingAreCounted() throws {
-        Tuning.unattachedPerDrop = 4
         let (sender, receiver) = try pairedMacs()
         let drop = try handDrop(from: sender, to: receiver, bytes: chunk * 3)
-        func knock() throws -> (Socket, Bool) {
-            let s = try Socket.connect(host: "127.0.0.1", port: receiver.port)
-            s.setReadTimeout(2)
-            try Opening.data.withUnsafeBytes { try s.writeAll($0.baseAddress!, 5) }
-            var challenge = Data(count: 16)
-            return (s, (try? challenge.withUnsafeMutableBytes { try s.readExactly($0.baseAddress!, 16) }) != nil)
+        for (whole, perAddress) in [(4, 100), (16, 2)] {
+            Tuning.unattachedPerDrop = whole
+            Tuning.unattachedPerAddress = perAddress
+            var held: [Socket] = []
+            for _ in 0..<8 {
+                let k = try knock(receiver.port)
+                XCTAssertTrue(k.challenged)
+                held.append(k.socket)
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            XCTAssertEqual(open(held), min(whole, perAddress), "eight arrived; the drop has \(whole) places for connections that have proved nothing, \(perAddress) an address")
+            XCTAssertEqual(open(Array(held.suffix(min(whole, perAddress)))), min(whole, perAddress), "the newest")
+            for s in held { s.shutdown() }
+            Thread.sleep(forTimeInterval: 0.2)
         }
-        var held: [Socket] = []
-        for _ in 0..<4 {
-            let k = try knock()
-            XCTAssertTrue(k.1)
-            held.append(k.0)
-        }
-        XCTAssertFalse(try knock().1, "a fifth that has proved nothing gets no challenge while four are waiting to prove themselves")
-        withExtendedLifetime(held) {}
         drop.peer.socket.shutdown()
     }
 
-    func testConnectionsThatHaveProvedNoKeyAreCounted() throws {
-        Tuning.strangers = 8
-        let (_, receiver) = try pairedMacs()
-        var held: [Socket] = []
-        for _ in 0..<8 { held.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)) }
-        Thread.sleep(forTimeInterval: 0.3)
-        let ninth = try Socket.connect(host: "127.0.0.1", port: receiver.port)
-        XCTAssertTrue(closed(ninth), "a ninth connection that has said nothing is closed on arrival")
-        for s in held { XCTAssertFalse(s.waitReadable(milliseconds: 0), "the eight have their ten seconds") }
-    }
-
     func testArrivalsAreRationed() throws {
-        Tuning.arrivalsPerSecond = 10
-        let (_, receiver) = try pairedMacs()
-        var all: [Socket] = []
-        for _ in 0..<30 { all.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)) }
-        Thread.sleep(forTimeInterval: 0.5)
-        let open = all.filter { !$0.waitReadable(milliseconds: 0) }.count
-        XCTAssertLessThanOrEqual(open, 10, "thirty arrived within a second and \(open) were taken")
-        XCTAssertGreaterThan(open, 0)
+        Tuning.strangersPerAddress = 64
+        for (all, perAddress) in [(10, 500), (500, 10)] {
+            Tuning.arrivalsPerSecond = all
+            Tuning.arrivalsPerAddress = perAddress
+            let (_, receiver) = try pairedMacs()
+            var held: [Socket] = []
+            for _ in 0..<30 { held.append(try Socket.connect(host: "127.0.0.1", port: receiver.port)) }
+            Thread.sleep(forTimeInterval: 0.5)
+            let taken = open(held)
+            XCTAssertLessThanOrEqual(taken, 10, "thirty arrived within a second and \(taken) were taken (\(all) a second in all, \(perAddress) from one address)")
+            XCTAssertGreaterThan(taken, 0)
+        }
     }
 
-    /// A finished drop's answer names its files. It is said again only to the Mac that sent the
+    /// A paired key is in a counted class too, from its handshake until it says what it came for.
+    func testAPairedKeyIsCountedUntilItSaysWhatItWants() throws {
+        Tuning.pairedWaiting = 3
+        let (sender, receiver) = try pairedMacs()
+        var held: [Channel] = []
+        for _ in 0..<3 { held.append(try Channel.dial(host: "127.0.0.1", port: receiver.port, trust: sender.trust, name: "sender", purpose: .drop).channel) }
+        XCTAssertThrowsError(try Channel.dial(host: "127.0.0.1", port: receiver.port, trust: sender.trust, name: "sender", purpose: .drop),
+                             "a fourth connection from a paired key that has asked for nothing was answered")
+        for c in held { c.socket.shutdown() }
+        Thread.sleep(forTimeInterval: 0.3)
+        let s = send([try file("a.bin", bytes: chunk * 4)], from: sender, to: receiver)
+        wait(s)
+        XCTAssertEqual(s.state, .completed, "and it is not held against the key once they are gone")
+    }
+
+    // MARK: The pause after a refused request (F9)
+
+    /// Puts `mac` into its pause: a stranger asks, and the person there says no.
+    func pause(_ mac: TestMac) throws {
+        mac.onRequest = { $0.refuse() }
+        let p = try TestMac("nobody").pair(with: mac)
+        XCTAssertTrue(until(5) { p.state.isFinal })
+        mac.onRequest = nil
+    }
+
+    /// F9. One stranger keeps the pause running on both Macs. Two people can still pair, by
+    /// trying once from each side: the first try is turned away with the seconds left, and the
+    /// request that then comes back the other way is one this Mac's person asked for.
+    func testAStrangerCannotKeepTwoPeopleFromPairing() throws {
+        Tuning.pairQuietSeconds = 60
+        let a = try TestMac("a"), b = try TestMac("b"), c = try TestMac("c")
+        try pause(a)
+        try pause(b)
+        let first = a.pair(with: b)
+        XCTAssertTrue(until(5) { first.state.isFinal })
+        XCTAssertFalse(first.isPaired)
+        let seconds = try XCTUnwrap(first.pausedFor, "b did not say it is paused: \(first.state)")
+        XCTAssertTrue(seconds > 0 && seconds <= 60)
+        // Anyone a's person did not ask is still turned away by a's own pause.
+        let other = c.pair(with: a)
+        XCTAssertTrue(until(5) { other.state.isFinal })
+        XCTAssertEqual(a.requests.withLock { $0.count }, 1, "only the stranger's, from before")
+        // Now from b, as a's tile says to.
+        a.onRequest = { $0.proceed() }
+        let second = b.pair(with: a)
+        let theirs = try XCTUnwrap(second.code(), "\(second.state)")
+        let request = try XCTUnwrap(a.requests.withLock { $0.last })
+        let mine = try XCTUnwrap(request.code())
+        second.submit(mine)
+        request.submit(theirs)
+        XCTAssertTrue(until(5) { second.isPaired && request.isPaired })
+    }
+
+    /// F9. A Mac that is on record here (to be paired again) is not a stranger: nobody else
+    /// can prove its key, and the pause does not apply to its request.
+    func testThePauseDoesNotApplyToAMacThatIsToBePairedAgain() throws {
+        Tuning.pairQuietSeconds = 60
+        let a = try TestMac("a"), b = try TestMac("b")
+        a.trust.adopt(b.trust, as: "b")
+        _ = a.trust.beginReset()
+        a.trust.completeReset(told: [])
+        guard case .renew = a.trust.standing(of: b.key) else { return XCTFail("\(a.trust.standing(of: b.key))") }
+        try pause(a)
+        let p = b.pair(with: a)
+        XCTAssertTrue(until(5) { a.requests.withLock { $0.count } == 2 }, "the request of a Mac it knows was not shown: \(p.state)")
+        p.cancel()
+    }
+
+    /// The seconds in a `busy` are a number from another machine: held to what a pause can be.
+    func testAPauseOfAnyLengthIsHeldToTenMinutes() throws {
+        let a = try TestMac("a")
+        let (fd, port) = try Socket.listen(port: 0)
+        defer { close(fd) }
+        let keys = KeyPair()
+        Thread.detachNewThread {
+            let client = accept(fd, nil, nil)
+            guard client >= 0 else { return }
+            let socket = Socket(fd: client)
+            socket.setReadTimeout(3)
+            guard (try? Opening.readKind(socket)) == Opening.control, let c = try? Channel.respond(socket, keys: keys), (try? c.read()) != nil,
+                  (try? c.send(.hello, SecureHello(minor: 0, app: "x", name: "liar", remaining: 1, paired: false, purpose: nil))) != nil,
+                  (try? c.read()) != nil else { return }
+            try? c.send(.busy, body: Data(#"{"message":"later","pause":1e300}"#.utf8))
+            Thread.sleep(forTimeInterval: 0.5)
+            socket.shutdown()
+        }
+        let p = PairingSession(host: "127.0.0.1", port: port, peerName: "liar", identity: a.identity, trust: a.trust)
+        XCTAssertTrue(until(5) { p.state.isFinal })
+        XCTAssertEqual(p.pausedFor, 600)
+    }
+
+        /// A finished drop's answer names its files. It is said again only to the Mac that sent the
     /// drop, on proof that it holds the drop's keys; and not at all once trust in that Mac has
     /// been withdrawn, even if it is paired again afterwards.
     func testAFinishedDropsAnswerIsOnlyForItsSenderAndGoesWhenTrustDoes() throws {

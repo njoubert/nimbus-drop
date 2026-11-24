@@ -17,11 +17,15 @@ Fixed, each with a test in `Tests/NimbusDropCoreTests/ReviewTests.swift` (the pr
 - Divergence 13, the one of the rest with a security consequence (a Forget, retirement or replacement whose write failed was undone by the next launch, silently): the change stays in force, the write is retried until it holds, and the app tells the person meanwhile.
 - Test gaps: 12 of the 13 guards now have a test that fails without them. The thirteenth (all-zero key agreement) cannot have one: CryptoKit refuses that agreement before our check is reached, so the check is a second line that no input can exercise.
 
-Waiting on the owner, because each changes the plan or what a person sees:
+Decided with the owner and then done, plan first (Admission, Pairing, P11, P17):
 
-- **F1** (per-address admission limits; P11 loses "cannot end the drop"). Its two proofs are still in `protocol3-code-review-pocs.patch` and still fail.
-- **F9** (the quiet period as a lever; the fix changes P17's rationing and adds a control to Settings).
-- Divergences 2, 3, 5 (budgets "in all"; a class for a paired key before its offer), 6, 7 (naming a new Mac, look-alikes), 8 (Forget and the end date), 11 (zeroising), 12, 14 (the trust file: `trust` missing, the lock), 15 (wording), 17 (probing a Mac added by address shows this Mac's key).
+- **F1**: in the two pools of connections that have proved nothing, the oldest gives way to the newcomer, and one address holds only so many places (8 of 64; 4 of a drop's 16; 200 arrivals a second of 500). P11 no longer says "cannot end the drop". Both proofs pass.
+- **F9**: the pause does not apply to a key on record here, nor to a key this Mac's own person has just started a pairing with; a Mac that is paused says for how long, and the asking Mac's tile says to start from there. No control in Settings.
+- Divergence 5: a paired key is counted (8) until it has said what it came for.
+
+Left, because each is wording or changes what a person sees, and none changes an outcome an attacker can reach:
+
+- Divergences 2, 3 (budgets "in all"), 6, 7 (naming a new Mac, look-alikes), 8 (Forget and the end date), 11 (zeroising), 12, 14 (the trust file: `trust` missing, the lock), 15 (wording), 17 (probing a Mac added by address shows this Mac's key).
 
 ## Verdict
 

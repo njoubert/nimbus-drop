@@ -1397,3 +1397,23 @@ extension ContainmentTests {
         }
     }
 }
+
+// MARK: - The ledger's count
+
+extension ContainmentTests {
+    /// `validate` lets a file have as many chunks as 32 bits can number; the ledger counted
+    /// the chunks a file still lacks in 31, clamped. A file of more than 2^31 chunks (8 TB and
+    /// up at the smallest chunk) would have been called complete with chunks still missing,
+    /// and put in place short. Nobody can send two billion chunks in a test: what is checked
+    /// is the count the ledger starts from.
+    func testAFileOfMoreChunksThanThirtyOneBitsCountIsCountedInFull() throws {
+        let chunks = Int(Int32.max) + 6
+        let manifest = Manifest(chunkSize: 4096, entries: [.init(path: "huge.bin", kind: .file, size: Int64(chunks) * 4096 - 100), .init(path: "small.bin", kind: .file, size: 5000)])
+        XCTAssertNoThrow(try manifest.validate())
+        XCTAssertEqual(manifest.chunkCount(0), chunks)
+        let partial = dst.appendingPathComponent("T.partial")
+        let ledger = try Ledger(url: partial.appendingPathComponent("ledger"), manifest: manifest, tree: try SafeTree(root: partial.appendingPathComponent("items")))
+        XCTAssertEqual(ledger.missingChunks, chunks + 2, "the ledger starts \(chunks + 2 - ledger.missingChunks) chunks short: it would call the file complete that many early")
+        XCTAssertFalse(ledger.isComplete)
+    }
+}

@@ -14,13 +14,17 @@ package final class Ledger: @unchecked Sendable {
     private let manifest: Manifest
     private let lock = NSLock()
     private var done = Set<UInt64>()
-    /// Chunks still missing, per manifest entry.
-    private var remaining: [Int32]
+    /// Chunks still missing, per manifest entry. As wide as a chunk's number on the wire, which
+    /// is what `Manifest.validate` holds a file to: in 31 bits, clamped, a file of more than
+    /// 2^31 chunks was called complete with chunks still to come.
+    private var remaining: [UInt32]
     private var fd: Int32 = -1
     private var _doneBytes: Int64 = 0
     private var _doneFiles = 0
     package var doneBytes: Int64 { lock.withLock { _doneBytes } }
     package var doneFiles: Int { lock.withLock { _doneFiles } }
+    /// Chunks not yet here, in all.
+    var missingChunks: Int { lock.withLock { remaining.reduce(0) { $0 + Int($1) } } }
 
     private static func pack(_ file: Int, _ chunk: Int) -> UInt64 { UInt64(file) << 32 | UInt64(chunk) }
 
@@ -34,7 +38,7 @@ package final class Ledger: @unchecked Sendable {
     /// the other end was read, emptied, and had the drop's records appended to it.
     package init(url: URL, manifest: Manifest, tree: SafeTree) throws {
         self.manifest = manifest
-        remaining = manifest.entries.indices.map { Int32(clamping: manifest.chunkCount($0)) }
+        remaining = manifest.entries.indices.map { UInt32(clamping: manifest.chunkCount($0)) }
         fd = try tree.openBeside(url.lastPathComponent)
 
         var st = stat()

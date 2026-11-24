@@ -284,12 +284,23 @@ public final class DropListener: @unchecked Sendable {
         // Not on a reconnect: a drop that is running may finish after its sender's own key
         // was replaced on schedule, and that sender truthfully says it no longer has this
         // Mac paired. What a resume may do is decided by its proof of the drop's keys.
-        if standing.isPaired, !hello.paired, hello.purpose != .resume {
+        // Nor from a key paired in the last few seconds: a hello that was truthful when it was
+        // sealed (a probe during the pairing, a Forget just before pairing again) can arrive
+        // after the pairing it predates, and someone on the path can hold it back that long,
+        // but no longer than a connection may take to prove a key.
+        if standing.isPaired, !hello.paired, hello.purpose != .resume, !trust.pairedWithin(Tuning.strangerSeconds, key) {
             trust.notePairingGone(key)
             standing = trust.standing(of: key)
+            // It is a key nobody has paired now, and is held to what one may send.
+            channel.limit = 16 << 10
         }
+        // What this Mac says of the pairing. On a reconnect from a key that has run out, the
+        // drop it belongs to may still finish (below), and the sender takes `paired: false`
+        // here for a Forget: so it is told what is true of the drop, that it will be taken.
+        var says = standing.isPaired
+        if hello.purpose == .resume, case .expired = standing { says = true }
         guard (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
-                                                     paired: standing.isPaired, purpose: nil))) != nil else { socket.shutdown(); return }
+                                                     paired: says, purpose: nil))) != nil else { socket.shutdown(); return }
         let name = Sanitize.label(hello.name, limit: 64)
 
         switch hello.purpose {

@@ -296,7 +296,7 @@ private struct PeerMenu: View {
         switch standing {
         case .paired(let mac): return "Drag files or folders here to send them to \(mac.name), or click to choose them. Paired on \(mac.pairedAt.formatted(date: .abbreviated, time: .omitted)); good until \(mac.endsWall.formatted(date: .abbreviated, time: .omitted))."
         case .new: return "\(peer.name) has not been paired with this Mac. Drop files here and the two of you will each read out a code and type the other's."
-        case .renew(let name): return "\(name) needs pairing again: keys are replaced on a schedule, and one has run out. Drop files here to renew it with two codes."
+        case .renew(let name): return "\(name) needs pairing again: a key was replaced (they are, on a schedule), or one of the two Macs chose to forget the other. Drop files here to renew it with two codes."
         case .nameInUse(let clash): return "This Mac calls itself \(peer.name) but is not the \(clash.name) you paired with. It may have been erased or replaced, or be another Mac using the name."
         case .needsUpdate: return "\(peer.name) runs a version of Nimbus Drop from before drops were encrypted (protocol \(peer.protocolText)). Update Nimbus Drop there."
         case .checking: return "Asking the Mac at \(peer.address ?? "this address") to prove who it is."

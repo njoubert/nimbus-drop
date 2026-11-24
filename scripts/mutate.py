@@ -57,8 +57,11 @@ M=[
  ('the pause lets anyone through (F9)','Sources/NimbusDropCore/Receiver.swift','if quiet > 0, !wanted {','if quiet > 0, false {','ReviewTests/testAStrangerCannotKeepTwoPeopleFromPairing'),
  ('a pause of any length is believed','Sources/NimbusDropCore/Pairing.swift','lock.withLock { _pausedFor = min(p, 600) }','lock.withLock { _pausedFor = p }','ReviewTests/testAPauseOfAnyLengthIsHeldToTenMinutes'),
  ('a drop goes on trying to reach a Mac that has forgotten this one','Sources/NimbusDropCore/Sender.swift','guard try decode(SecureHello.self, from: theirs.body).paired else {','guard true else {','ReviewTests/testADropEndsAtOnceWhenTheReceiverForgetsThePairingMidDrop'),
- ('a Mac told it was forgotten goes on calling the other paired','Sources/NimbusDropCore/Receiver.swift','if standing.isPaired, !hello.paired, hello.purpose != .resume {','if false {','ReviewTests/testForgetTellsTheOtherMacAndNobodyElseCanSayItForIt'),
- ('a reconnect after the sender\'s key was replaced is taken for a Forget','Sources/NimbusDropCore/Receiver.swift','if standing.isPaired, !hello.paired, hello.purpose != .resume {','if standing.isPaired, !hello.paired {','ChaosTests/testADropFinishesOnTheKeyItStartedWith'),
+ ('a Mac told it was forgotten goes on calling the other paired','Sources/NimbusDropCore/Receiver.swift','if standing.isPaired, !hello.paired, hello.purpose != .resume, !trust.pairedWithin(Tuning.strangerSeconds, key) {','if false {','ReviewTests/testForgetTellsTheOtherMacAndNobodyElseCanSayItForIt'),
+ ('a reconnect after the sender\'s key was replaced is taken for a Forget','Sources/NimbusDropCore/Receiver.swift','!hello.paired, hello.purpose != .resume, !trust','!hello.paired, !trust','ChaosTests/testADropFinishesOnTheKeyItStartedWith'),
+ ('a drop in its grace is told it is not paired when it reconnects','Sources/NimbusDropCore/Receiver.swift','        if hello.purpose == .resume, case .expired = standing { says = true }\n','','ForgetReviewTests/testADropInItsGraceSurvivesAReconnectWhenBothSidesHaveSeenTheKeyRunOut'),
+ ('telling a forgotten Mac may take for ever','Sources/NimbusDropCore/Retirement.swift','        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { socket.shutdown() }\n','','ForgetReviewTests/testTellingAForgottenMacTakesNoLongerThanItSays'),
+ ('a hello from before a pairing can end it','Sources/NimbusDropCore/Receiver.swift',', !trust.pairedWithin(Tuning.strangerSeconds, key) {',' {','ForgetReviewTests/testAHelloFromBeforeAPairingDoesNotEndIt'),
  # Not here: removing the all-zero check in KeyPair.agree. CryptoKit refuses that agreement
  # before the check is reached, so no test can tell (the review of 2026-11-23).
 ]

@@ -306,7 +306,7 @@ struct PairingStageView: View {
                         Text("wants to pair. It is **not** the \(clash.name) you paired with\(clash.pairedAt.map { " on \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""). Go on only if someone you can hear tells you why.")
                             .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     } else if renewal {
-                        Text("wants to pair again. Keys are replaced on a schedule, and one ran out, so this was expected. The codes will show whether it is the Mac you know. Go on only if someone you can hear is asking you to.")
+                        Text("wants to pair again. A key was replaced (they are, on a schedule) or one of the two Macs forgot the other, so this is not a surprise. The codes will show whether it is the Mac you know. Go on only if someone you can hear is asking you to.")
                             .foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     } else {
                         Text("wants to pair with this Mac. Go on only if someone you can hear is asking you to.")

@@ -160,7 +160,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  145 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  148 tests. ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -326,7 +326,13 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   `paired: false` in its hello drops its half there and then, whatever the purpose but
   `resume` (`DropListener.serve`; a reconnect after the sender's own key was replaced on
   schedule says `paired: false` truthfully, and `testADropFinishesOnTheKeyItStartedWith`
-  failed on the first version of this). Otherwise the forgotten Mac learns at its next drop, when the key
+  failed on the first version of this). An independent review the same day found no way to
+  end an established pairing without one of the two keys, and three smaller things, now
+  `ForgetReviewTests`: the responder's reply to a `resume` from a run-out key said
+  `paired: false` and the sender took that for a Forget (a drop in its grace died at its
+  first reconnect; the chaos test moved only the sender's clock); the notice had a deadline
+  per read, not in all; and a truthful `paired: false` sealed just before a pairing could
+  end it just after (ignored now for `Tuning.strangerSeconds` after pairing). Otherwise the forgotten Mac learns at its next drop, when the key
   it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
   withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
   2026-11-23 it stayed "Paired" and every drop failed). The same is read from the hello of a

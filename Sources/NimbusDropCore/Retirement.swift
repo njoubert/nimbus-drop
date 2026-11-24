@@ -54,6 +54,9 @@ extension Trust {
         guard let place, let socket = try? Socket.connect(host: place.host, port: place.port, timeout: seconds) else { return false }
         defer { socket.shutdown() }
         socket.setReadTimeout(Int(seconds.rounded(.up)))
+        // `seconds` in all, not per read: whatever answers at that address (it need not be
+        // the Mac, and need prove nothing) could otherwise hold this for an hour, a byte at a time.
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { socket.shutdown() }
         guard let channel = try? Channel.initiate(socket, keys: mine, expect: key),
               (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: remaining,
                                                      paired: false, purpose: nil))) != nil,

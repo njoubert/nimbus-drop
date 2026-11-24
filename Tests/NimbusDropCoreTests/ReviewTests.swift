@@ -297,7 +297,10 @@ final class ReviewTests: XCTestCase {
     /// Mac went on showing "Paired" until its next drop failed). What it is told is something
     /// only the forgetting Mac's own key can say, and only about itself.
     func testForgetTellsTheOtherMacAndNobodyElseCanSayItForIt() throws {
+        // (A pairing only seconds old is not ended by such a hello; these have been paired a while.)
+        Tuning.strangerSeconds = 0.5
         let (sender, receiver) = try pairedMacs()
+        Thread.sleep(forTimeInterval: 0.6)
         let third = Trust.inMemory()
         third.adopt(receiver.trust, as: "receiver"); receiver.trust.adopt(third, as: "third")
         // A stranger, and another paired Mac, each say "not paired": it is about themselves only.
@@ -861,7 +864,7 @@ final class ReviewTests: XCTestCase {
             Data(#"{"minor":0,"app":"x","name":"x","remaining":1,"paired":true,"purpose":"nonsense"}"#.utf8),
             Data(#"{"minor":0,"app":7,"name":["x"],"remaining":"soon","paired":1}"#.utf8),
             Data(#"{"minor":0,"app":"x","name":"\u0000‮\n\r","remaining":0,"paired":true,"purpose":"pair"}"#.utf8),
-            Data(#"{"minor":0,"app":"x","name":""#.utf8) + Data(repeating: 0x41, count: 15000) + Data(#"","remaining":0,"paired":false,"purpose":"verify"}"#.utf8),
+            Data(#"{"minor":0,"app":"x","name":""#.utf8) + Data(repeating: 0x41, count: 15000) + Data(#"","remaining":0,"paired":true,"purpose":"verify"}"#.utf8),   // (true: from the paired key, false is a Forget, which is not what this test is about)
             Data(#"{"items":[],"fileCount":-9223372036854775808,"totalBytes":-9223372036854775808}"#.utf8),
             Data(#"{"items":["a"],"fileCount":9223372036854775807,"totalBytes":9223372036854775807}"#.utf8),
             Data(#"{"session":"AAAA","proof":"AAAA"}"#.utf8), Data(#"{"value":"AAAA"}"#.utf8), Data(#"{"streams":-1}"#.utf8),

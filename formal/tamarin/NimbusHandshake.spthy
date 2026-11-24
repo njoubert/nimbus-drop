@@ -58,10 +58,14 @@
  *
  * MUTANTS. Every guard the lemmas rest on is a macro (below, "The guards"), and each has a
  * flag that takes it out. With the flag, the lemma named beside it must come out falsified;
- * formal/check.py runs every one and fails if any does not. A guard whose removal falsified
+ * formal/check.py runs them and fails if one does not. A guard whose removal falsified
  * nothing was a lemma that said nothing about it: three were like that when the flags were
  * written (the prologue, the handshake hash in the resume proofs, a record's header as its
  * chunk's associated data), and each has a lemma now.
+ * NOT SETTLED: NoConnInStreamKey, and with it NoHeaderBinding. With one stream key for a
+ * whole drop the search was stopped at 12 GB in each of seven runs (two to three minutes
+ * each), over the three lemmas that should notice. Nothing is claimed of those two flags:
+ * they are not in check.py, and the lemmas are not shown to depend on those guards.
  *
  * HOW IT IS PROVED. The lemmas are in order and the later ones use the earlier ([reuse]):
  * first the handshake by itself, then two helpers saying that `master` names one handshake,
@@ -224,9 +228,9 @@ macros: attachTag(akey, sid, conn, c) = mac(akey, <sid, conn, c>)
 #endif
 
 /* Each data connection has a key of its own. DropKeys.stream, DropKeys.swift:29.
-   NoConnInStreamKey falsifies what_is_written_is_what_the_sender_sealed (a record moves to
-   another connection of the drop) and what_a_speed_test_counts_is_what_the_other_mac_sealed
-   (a record the tester sent comes back to it).                                              */
+   NoConnInStreamKey should falsify what_is_written_is_what_the_sender_sealed (a record moves
+   to another connection of the drop) and what_a_speed_test_counts_is_what_the_other_mac_sealed
+   (a record the tester sent comes back to it). NOT SETTLED: the search did not finish.      */
 #ifdef NoConnInStreamKey
 macros: streamKey(master, conn) = kdf(master, 'stream')
 #else
@@ -235,11 +239,12 @@ macros: streamKey(master, conn) = kdf(master, <'stream', conn>)
 
 /* A chunk is sealed with its header as associated data. RecordHeader.seal,
    DropKeys.swift:59; ReceiveSession.receive, Receiver.swift:516.
-   By itself NoHeaderBinding falsifies nothing, here or in the code: a header and its chunk
-   are consecutive counts under a key nothing else is sealed with, and that ties them
+   By itself NoHeaderBinding should falsify nothing, here or in the code: a header and its
+   chunk are consecutive counts under a key nothing else is sealed with, and that ties them
    already. The header as associated data is the tie that is left when a stream key is used
    on two connections: with NoConnInStreamKey, a_chunk_is_written_only_under_its_own_header
-   still holds; with both flags it is falsified.                                             */
+   should still hold, and with both flags be falsified. NOT SETTLED, any of the three: the
+   search did not finish (see MUTANTS above).                                                */
 #ifdef NoHeaderBinding
 macros: chunkAD(hdr) = 'none'
 #else
@@ -680,6 +685,25 @@ lemma the_initiators_master_is_one_handshake [reuse, hide_lemma=master_is_secret
       ==> (gSI2 = gSI & gSR2 = gSR & hh2 = hh & kIR2 = kIR & kRI2 = kRI)
         | (Ex #r. RevealStatic(gSR) @ r & #r < #i)"
 
+/* And at each end `master` is no other handshake's of that end: two responders never hold
+   the same one, nor two initiators (when the first finished with a key not given away by
+   then). Without these a guard whose removal lets two connections share a key sends the
+   search past 12 GB: it has to rule out, from the handshake's own messages, that an end
+   finished twice with one `master`. With them, OneTransportKey is found in 24 s.            */
+lemma the_responders_master_is_no_other_responders [reuse, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake]:
+  "All R A gSR gSI hh kIR kRI R2 gSR2 gSI2 hh2 kIR2 kRI2 m #i #j #a.
+      RDone(R, gSR, gSI, hh, kIR, kRI, m) @ i & Static(A, gSI) @ a
+      & RDone(R2, gSR2, gSI2, hh2, kIR2, kRI2, m) @ j
+      ==> #i = #j
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #i)"
+
+lemma the_initiators_master_is_no_other_initiators [reuse, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders]:
+  "All I B gSI gSR hh kIR kRI I2 gSI2 gSR2 hh2 kIR2 kRI2 m #i #j #b.
+      IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & Static(B, gSR) @ b
+      & IDone(I2, gSI2, gSR2, hh2, kIR2, kRI2, m) @ j
+      ==> #i = #j
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #i)"
+
 /* How the lemmas from here on are searched (see HOW IT IS PROVED): the facts of the drop
    first; then what the helpers say of the lemma's own handshake, whose time every lemma
    below calls #done; then tags, keys and records derived from `master`; the handshake's own
@@ -725,17 +749,17 @@ lemma the_initiator_hears_only_the_responder [reuse, heuristic={drop}]:
    connection number, for the challenge this receiver made for it, and for a connection of
    the same purpose. Also when the sender's key is given away while the drop runs: it is the
    drop's keys that attach, not the Mac's.                                                    */
-lemma only_the_sender_attaches_a_data_connection [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+lemma only_the_sender_attaches_a_data_connection [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All p R A gSR gSI hh kIR kRI m conn c #i #done #a.
       Claimed(p, gSR, gSI, hh, m, conn, c) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       ==> (Ex #k. Attached(p, gSI, gSR, hh, m, conn, c) @ k & #k < #i)
         | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
 
-/* What the header as associated data gives by itself: whatever else goes wrong with a
-   record's key, a chunk is written only under the header (which file, which chunk) the
-   sender sealed it with. Before the lemma below, so that a mutant of that one cannot be
-   assumed here.                                                                              */
-lemma a_chunk_is_written_only_under_its_own_header [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+/* What the header as associated data is for: a chunk is written only under the header
+   (which file, which chunk) the sender sealed it with. Here it follows from the lemma below
+   and is proved before it, so that a mutant of that one cannot be assumed; that it holds by
+   the header alone, with one stream key for a whole drop, is NOT SETTLED (see MUTANTS).     */
+lemma a_chunk_is_written_only_under_its_own_header [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All p R A gSR gSI hh kIR kRI m conn n hdr body #i #done #a.
       Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       ==> (Ex conn2 n2 #k. Sealed(p, gSI, gSR, hh, m, conn2, n2, hdr, body) @ k & #k < #i)
@@ -744,7 +768,7 @@ lemma a_chunk_is_written_only_under_its_own_header [heuristic={drop}, hide_lemma
 /* The one outcome that must never happen, as far as the cryptography goes: what is written
    is what the sender sealed, under that header, on that connection, at that count, for a
    connection of that purpose.                                                                */
-lemma what_is_written_is_what_the_sender_sealed [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+lemma what_is_written_is_what_the_sender_sealed [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All p R A gSR gSI hh kIR kRI m conn n hdr body #i #done #a.
       Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       ==> (Ex #k. Sealed(p, gSI, gSR, hh, m, conn, n, hdr, body) @ k & #k < #i)
@@ -753,7 +777,7 @@ lemma what_is_written_is_what_the_sender_sealed [reuse, heuristic={drop}, hide_l
 /* The other direction of a speed test: what the tester opens and counts was sealed by the
    Mac it asked, for this test, on that connection. In particular it is not what the tester
    itself sent on another connection.                                                         */
-lemma what_a_speed_test_counts_is_what_the_other_mac_sealed [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+lemma what_a_speed_test_counts_is_what_the_other_mac_sealed [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
   "All I B gSI gSR hh kIR kRI m conn n hdr bytes #i #done #b.
       CountedDown(gSI, gSR, hh, m, conn, n, hdr, bytes) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
       ==> (Ex #k. SealedDown(gSR, gSI, hh, m, conn, n, hdr, bytes) @ k & #k < #i)
@@ -764,14 +788,14 @@ lemma what_a_speed_test_counts_is_what_the_other_mac_sealed [heuristic={drop}, h
    handshake, under the same `master`; and nothing a speed test sends back is ever written.
    (An attach is covered by only_the_sender_attaches_a_data_connection, which has the purpose
    in it; a resume is of a connection whose hello said `drop`, by the rules.)                 */
-lemma what_is_sealed_for_one_purpose_is_never_written_for_another [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+lemma what_is_sealed_for_one_purpose_is_never_written_for_another [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All p q R A gSR gSI hh kIR kRI m conn n hdr body gSI2 gSR2 hh2 m2 conn2 n2 hdr2 #i #done #a #k.
       Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       & Sealed(q, gSI2, gSR2, hh2, m2, conn2, n2, hdr2, body) @ k
       ==> (q = p & hh2 = hh & m2 = m)
         | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
 
-lemma what_a_speed_test_sends_back_is_never_written [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+lemma what_a_speed_test_sends_back_is_never_written [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All p R A gSR gSI hh kIR kRI m conn n hdr body gSI2 gSR2 hh2 m2 conn2 n2 hdr2 #i #done #a #k.
       Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       & SealedDown(gSR2, gSI2, hh2, m2, conn2, n2, hdr2, body) @ k
@@ -781,14 +805,14 @@ lemma what_a_speed_test_sends_back_is_never_written [heuristic={drop}, hide_lemm
    handshake, that connection, that count, that header), whoever else the receiver, or any
    other Mac, is talking to; and so it is written at most once. As the sender sees it: its
    own key may be known.                                                                      */
-lemma a_sealed_chunk_is_written_only_where_it_was_sealed_for [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+lemma a_sealed_chunk_is_written_only_where_it_was_sealed_for [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
   "All p I B gSI gSR hh kIR kRI m conn n hdr body p2 gSR2 gSI2 hh2 m2 conn2 n2 hdr2 #s #done #b #k.
       Sealed(p, gSI, gSR, hh, m, conn, n, hdr, body) @ s & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
       & Written(p2, gSR2, gSI2, hh2, m2, conn2, n2, hdr2, body) @ k
       ==> (gSR2 = gSR & gSI2 = gSI & hh2 = hh & m2 = m & conn2 = conn & n2 = n & hdr2 = hdr)
         | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
 
-lemma a_sealed_chunk_is_written_once [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+lemma a_sealed_chunk_is_written_once [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
   "All p I B gSI gSR hh kIR kRI m conn n hdr body p2 gSR2 gSI2 hh2 m2 conn2 n2 hdr2 p3 gSR3 gSI3 hh3 m3 conn3 n3 hdr3 #s #done #b #i #k.
       Sealed(p, gSI, gSR, hh, m, conn, n, hdr, body) @ s & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
       & Written(p2, gSR2, gSI2, hh2, m2, conn2, n2, hdr2, body) @ i
@@ -798,7 +822,7 @@ lemma a_sealed_chunk_is_written_once [heuristic={drop}, hide_lemma=master_is_sec
 
 /* A chunk is secret, as the sender sees it: unless the receiver's key was given away before
    the drop's handshake finished. Not if it is given away later, and not if the sender's is.  */
-lemma a_chunk_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+lemma a_chunk_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
   "All I B gSI gSR hh kIR kRI m chunk #i #done #b.
       SecretChunk(gSI, gSR, hh, chunk) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
       ==> not (Ex #k. K(chunk) @ k)
@@ -806,7 +830,7 @@ lemma a_chunk_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_r
 
 /* And as the receiver sees it: what it wrote is secret, unless the sender's key was given
    away before the drop's handshake finished.                                                 */
-lemma what_is_written_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+lemma what_is_written_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All p R A gSR gSI hh kIR kRI m conn n hdr body #i #done #a.
       Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       ==> not (Ex #k. K(body) @ k)
@@ -822,13 +846,13 @@ lemma what_is_written_is_secret [heuristic={drop}, hide_lemma=master_is_secret_f
    drop up or to answer for it. (As first written these two allowed no key to be given away
    at any time, and then they said nothing of the hash in the proofs: the channel alone
    carried them.)                                                                             */
-lemma only_the_sender_resumes_a_drop [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiator_hears_only_the_responder]:
+lemma only_the_sender_resumes_a_drop [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All R A gSR gSI hh kIR kRI m h2 #i #done #a.
       Resumed(gSR, gSI, hh, m, h2) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
       ==> (Ex #k. ResumeAsked(gSI, gSR, hh, m, h2) @ k & #k < #i)
         | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
 
-lemma only_the_receiver_confirms_a_resume [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed, hide_lemma=only_the_sender_resumes_a_drop]:
+lemma only_the_receiver_confirms_a_resume [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed, hide_lemma=only_the_sender_resumes_a_drop]:
   "All I B gSI gSR hh kIR kRI m h2 #i #done #b.
       ResumeConfirmed(gSI, gSR, hh, m, h2) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
       ==> (Ex #k. Resumed(gSR, gSI, hh, m, h2) @ k & #k < #i)

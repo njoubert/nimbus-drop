@@ -90,16 +90,6 @@ TRUST_INV = ["TypeOK", "AcknowledgedMeansRefusedForGood", "NothingOutlivesTheWit
              "LiveIsOnTheList", "NoSocketWorkUnderTheLock"]
 EXPIRY_INV = ["TypeOK", "TickIsAnEvent", "TheCountCoversTheTimeUp", "TheFileIsLessThanAnHourBehind", "PairedNoLongerThanItsLife",
               "OnlyTheCountRefusesForGood", "PastItsEndIsNeverPaired", "NoSessionPastItsGrace"]
-DROP_INV = ["TypeOK", "NoWrongBytes", "PlacedIsWhole", "SentMeansSaved", "NoStreamKeyTwice"]
-DROP_PROPS = ["NothingWrittenAfterPlacing", "ItEnds", "ItArrives"]
-
-
-def drop(**changes):
-    c = {"Chunks": "{c1, c2}", "MaxFaults": "3", "MaxConns": "11", "ChecksTag": "TRUE", "KeepsCounter": "TRUE", "MayGiveUp": "FALSE"}
-    c.update(changes)
-    return c
-
-
 def gate(**changes):
     c = {"Waits": "TRUE", "PatienceRunsOut": "FALSE", "StartsBesideARequest": "FALSE"}
     c.update(changes)
@@ -232,20 +222,252 @@ TLA_RUNS = [
      ("Expiry.tla", "/\\ Counted - mem.lastSave >= Hour", "/\\ FALSE")),
     ("Expiry / mutant: a session has no deadline", "Expiry", expiry(), EXPIRY_INV, [], "NoSessionPastItsGrace",
      ("Expiry.tla", "Late       == core.tracked # {} /\\ Counted > ends.d", "Late       == FALSE")),
+]
 
-    # A drop's rounds under a network that misbehaves.
+
+# ---- A drop's conversation ---------------------------------------------------------------------
+# RoundMachine.tla is Sources/NimbusCrypto/RoundMachine.swift (RoundRefinement holds the two
+# equal). Rounds.tla is each of its two machines against an other end that keeps to nothing;
+# Drop.tla is the two of them and a network that misbehaves. Every guard of the machines has a
+# mutant here: the specification with that guard taken out, and the property that must notice.
+
+ROUNDS_SENDER = ["TypeOK", "EndsOnce", "AWithdrawalSaysNothing", "NothingIsSaidAfterAnEnd", "OfferedOnce", "ManifestOnlyToAYes",
+                 "ChunksOnlyForAPlan", "CompleteOnlyAsAnAnswer", "DeclinedOnlyAsTheAnswerToTheOffer", "FruitlessReconnectsEndIt",
+                 "OnlyReconnectsCount", "ReconnectOnlyUnderWay", "UnderWayALossIsGotBack", "OnlyAReconnectIsGivenUp",
+                 "SUnderWaySilenceIsNotTheEnd", "AnAttemptThatGotNowhereChangesNothing", "STheirWordEndsIt", "TheLinksFaultIsNotSaid",
+                 "NothingIsSaidBeforeTheOffer"]
+ROUNDS_RECEIVER = ["TypeOK", "EndsOnce", "AWithdrawalSaysNothing", "NothingBeforeTheYes", "NobodyToAskMeansNo", "AskedOnce",
+                   "OnlyWhatWasOffered", "NothingArrivesBeforeTheFolder", "PlacedOnlyWhenWhole", "OneJudgementARound",
+                   "CompleteOnlyWhenInPlace", "IdleRoundsEndIt", "OnlyIdleRoundsCount", "HeldOnlyUnderWay", "UnderWayALossIsHeld",
+                   "BackOnlyToAHeldDrop", "NobodyGivesUpWhoWasNotWaiting", "DeclinedOnlyOnceSaid", "DeclinedMeansNo",
+                   "TheQuestionGoesWhenTheDropDoes", "TheSendersGivingUpIsNotAnswered", "RUnderWaySilenceIsNotTheEnd",
+                   "RTheirWordEndsIt", "AFinishedDropSaysOnlyCompleteAgain"]
+
+DROP_INV = ["TypeOK", "NoWrongBytes", "PlacedIsWhole", "SentMeansSaved", "NoStreamKeyTwice", "NothingBeforeTheYes", "OnlyWhatWasOffered",
+            "DeclinedWroteNothing", "NothingWrittenOnceJudged"]
+DROP_PROPS = ["NothingWrittenAfterPlacing", "ItEnds", "ItArrives"]
+
+
+def drop(**changes):
+    """Drop.tla's constants: as the code is, the person says yes, the sender is honest, nobody gives up, and the
+    conversation is cut only once the drop is under way and fewer times than the sender has patience."""
+    c = {"Chunks": "{c1, c2}", "MaxFaults": "3", "MaxCuts": "2", "MaxConns": "11", "Patience": "3", "IdleRounds": "5", "Says": '{"yes"}',
+         "Lies": "FALSE", "ChecksTag": "TRUE", "KeepsCounter": "TRUE", "KeepsOutLate": "TRUE", "CutsEarly": "FALSE", "MayGiveUp": "FALSE"}
+    c.update(changes)
+    return c
+
+
+def rounds(end, mutant=None, fails=HOLDS, old=None, new=None):
+    """One end of the conversation against anything; with `mutant`, RoundMachine.tla with `old` made `new`."""
+    title = f"Rounds (the {'sending' if end == 'sender' else 'receiving'} end)" + (f" / mutant: {mutant}" if mutant else "")
+    return (title, "Rounds", {"End": f'"{end}"', "Patience": "3" if end == "sender" else "5"},
+            ROUNDS_SENDER if end == "sender" else ROUNDS_RECEIVER, ["FinalIsFinal"] if fails == HOLDS else [], fails,
+            ("RoundMachine.tla", old, new) if mutant else None)
+
+
+ROUND_RUNS = [
+    # The Swift machines are the specification's machines.
+    ("RoundRefinement (the Swift code is the two Steps)", "RoundRefinement", {}, ["SpecIsImpl"], [], HOLDS, None),
+    ("RoundRefinement / mutant: the specification's sender differs from the code", "RoundRefinement", {}, ["SpecIsImpl"], [], "ImplIsSpec",
+     ("RoundMachine.tla", "IF s.phase = \"reconnecting\" THEN SFail(s, \"couldNotGetBack\")", "IF s.phase = \"reconnecting\" THEN SFail(s, \"lost\")")),
+    ("RoundRefinement / mutant: the specification's receiver differs from the code", "RoundRefinement", {}, ["SpecIsImpl"], [], "ImplIsSpec",
+     ("RoundMachine.tla", "ELSE IF s.phase \\in {\"settling\", \"awaitSender\", \"placing\"} THEN Nothing(s)",
+      "ELSE IF s.phase \\in {\"awaitSender\", \"placing\"} THEN Nothing(s)")),
+    ("RoundRefinement / mutant: the specification begins where the code does not", "RoundRefinement", {}, ["SpecIsImpl"], [], "SameBeginnings",
+     ("RoundMachine.tla", "ReceiverStart(patience) == [phase |-> \"idle\", idle |-> 0, patience |-> patience]",
+      "ReceiverStart(patience) == [phase |-> \"deciding\", idle |-> 0, patience |-> patience]")),
+
+    ("RoundRefinement / mutant: the specification lets data into a drop that is being put in place", "RoundRefinement", {}, ["SpecIsImpl"], [],
+     "QueryIsQuery",
+     ("RoundMachine.tla", "TakesData(s) == s.phase \\in {\"planning\", \"reading\", \"settling\", \"awaitSender\"}",
+      "TakesData(s) == s.phase \\in {\"planning\", \"reading\", \"settling\", \"awaitSender\", \"placing\"}")),
+
+    # The sending end, against a receiver and a network that keep to nothing.
+    rounds("sender"),
+    rounds("sender", "an end is not the end", "EndsOnce",
+           "    IF Final(s) THEN << s, << >> >>\n    ELSE IF e = \"cancelled\" THEN << [s EXCEPT !.phase = \"cancelled\"], SWord(s)",
+           "    IF e = \"cancelled\" THEN << [s EXCEPT !.phase = \"cancelled\"], SWord(s)"),
+    rounds("sender", "withdrawing trust says a farewell (F7)", "AWithdrawalSaysNothing",
+           "ELSE IF e = \"withdrawn\" THEN << [s EXCEPT !.phase = \"failed\"], << \"fail withdrawn\" >> >>",
+           "ELSE IF e = \"withdrawn\" THEN SFail(s, \"withdrawn\")"),
+    rounds("sender", "the offer goes again", "OfferedOnce",
+           "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"awaitAnswer\"], << \"send offer\" >> >>",
+           "IF s.phase \\in {\"idle\", \"awaitVerdict\"} THEN << [s EXCEPT !.phase = \"awaitAnswer\"], << \"send offer\" >> >>"),
+    rounds("sender", "the manifest goes before the other person has answered", "ManifestOnlyToAYes",
+           "ELSE IF s.phase = \"awaitAnswer\" /\\ e = \"accept\" THEN", "ELSE IF s.phase \\in {\"idle\", \"awaitAnswer\"} /\\ e = \"accept\" THEN"),
+    rounds("sender", "a plan is taken before the manifest it answers", "ChunksOnlyForAPlan",
+           "ELSE IF s.phase \\in {\"awaitPlan\", \"awaitVerdict\"} /\\ IsPlan(e) THEN STake(s, e, FALSE)",
+           "ELSE IF s.phase \\in {\"awaitAnswer\", \"awaitPlan\", \"awaitVerdict\"} /\\ IsPlan(e) THEN STake(s, e, FALSE)"),
+    rounds("sender", "'complete' is believed before anything was sent", "CompleteOnlyAsAnAnswer",
+           "ELSE IF s.phase = \"awaitVerdict\" /\\ e = \"complete\" THEN", "ELSE IF s.phase \\in {\"awaitPlan\", \"awaitVerdict\"} /\\ e = \"complete\" THEN"),
+    rounds("sender", "'complete' is believed in the middle of a round", "CompleteOnlyAsAnAnswer",
+           "ELSE IF s.phase = \"awaitVerdict\" /\\ e = \"complete\" THEN", "ELSE IF s.phase \\in {\"sending\", \"awaitVerdict\"} /\\ e = \"complete\" THEN"),
+    rounds("sender", "'done' is said of a round that never was", "CompleteOnlyAsAnAnswer",
+           "IF s.phase = \"sending\" THEN << [s EXCEPT !.phase = \"awaitVerdict\"], << \"send done\" >> >>",
+           "IF s.phase \\in {\"awaitPlan\", \"sending\"} THEN << [s EXCEPT !.phase = \"awaitVerdict\"], << \"send done\" >> >>"),
+    rounds("sender", "a decline is taken after the drop began", "DeclinedOnlyAsTheAnswerToTheOffer",
+           "ELSE IF s.phase = \"awaitAnswer\" /\\ e = \"decline\" THEN", "ELSE IF s.phase \\in {\"awaitAnswer\", \"awaitVerdict\"} /\\ e = \"decline\" THEN"),
+    rounds("sender", "reconnects that find nothing new go on for ever", "FruitlessReconnectsEndIt",
+           "IN IF f < s.patience", "IN IF TRUE"),
+    rounds("sender", "a round that ends short counts as a fruitless reconnect", "OnlyReconnectsCount",
+           "ELSE IF back THEN s.fruitless + 1 ELSE s.fruitless", "ELSE s.fruitless + 1"),
+    rounds("sender", "a conversation lost before the drop is under way is reconnected", "ReconnectOnlyUnderWay",
+           "IF s.phase \\in {\"sending\", \"awaitVerdict\"} THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>",
+           "IF s.phase \\in {\"awaitPlan\", \"sending\", \"awaitVerdict\"} THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>"),
+    rounds("sender", "a conversation lost in the middle of a round ends the drop", "UnderWayALossIsGotBack",
+           "IF s.phase \\in {\"sending\", \"awaitVerdict\"} THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>",
+           "IF s.phase = \"awaitVerdict\" THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>"),
+    rounds("sender", "time running out ends a drop that is not waiting", "OnlyAReconnectIsGivenUp",
+           "        IF s.phase = \"reconnecting\" THEN SFail(s, \"couldNotGetBack\")\n        ELSE << s, << >> >>", "        SFail(s, \"couldNotGetBack\")"),
+    rounds("sender", "silence under way ends the drop", "SUnderWaySilenceIsNotTheEnd",
+           "IF s.phase \\in {\"sending\", \"awaitVerdict\"} THEN << s, << \"hangUp\" >> >>", "IF FALSE THEN << s, << \"hangUp\" >> >>"),
+    rounds("sender", "what is not an answer to a reconnect ends the drop", "AnAttemptThatGotNowhereChangesNothing",
+           "        ELSE IF s.phase = \"reconnecting\" THEN << s, << >> >>\n        ELSE SFail(s, \"unexpected\")", "        ELSE SFail(s, \"unexpected\")"),
+    rounds("sender", "the receiver's reason for stopping is not the end", "STheirWordEndsIt",
+           "        IF e = \"error\" THEN SFail(s, \"theirs\")\n        ELSE IF s.phase = \"awaitAnswer\" /\\ e = \"accept\"",
+           "        IF s.phase = \"awaitAnswer\" /\\ e = \"accept\""),
+    rounds("sender", "a plan that cannot be read is taken", "ChunksOnlyForAPlan",
+           "    IF e = \"planMalformed\" THEN SFail(s, \"malformed\")\n    ELSE LET f ==", "    LET f =="),
+    rounds("sender", "the link's fault is said on the link", "TheLinksFaultIsNotSaid",
+           "ELSE << [s EXCEPT !.phase = \"failed\"], << \"fail lost\" >> >>", "ELSE SFail(s, \"lost\")"),
+    rounds("sender", "an error that is nobody's message is said", "TheLinksFaultIsNotSaid",
+           "ELSE IF e = \"stoppedSilently\" THEN << [s EXCEPT !.phase = \"failed\"], << \"fail here\" >> >>",
+           "ELSE IF e = \"stoppedSilently\" THEN SFail(s, \"here\")"),
+    rounds("sender", "a word is said before there is anybody to say it to", "NothingIsSaidBeforeTheOffer",
+           "SWord(s) == IF s.phase = \"idle\" THEN << >> ELSE << \"send error\" >>", "SWord(s) == << \"send error\" >>"),
+
+    # The receiving end, against a sender, a person and a network that keep to nothing.
+    rounds("receiver"),
+    rounds("receiver", "an end is not the end", "EndsOnce", "    ELSE IF Final(s) THEN Nothing(s)\n", ""),
+    rounds("receiver", "withdrawing trust says a farewell", "AWithdrawalSaysNothing",
+           "<< \"fail withdrawn\" >> \\o Unask(s) >>", "<< \"send error\", \"fail withdrawn\" >> \\o Unask(s) >>"),
+    rounds("receiver", "a yes to a question that was never asked is taken", "NothingBeforeTheYes",
+           "IF s.phase = \"deciding\" THEN << [s EXCEPT !.phase = \"awaitManifest\"], << \"send accept\" >> >> ELSE Nothing(s)",
+           "IF s.phase \\in {\"idle\", \"deciding\"} THEN << [s EXCEPT !.phase = \"awaitManifest\"], << \"send accept\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "a yes after the pairing ended is taken (F6)", "NothingBeforeTheYes",
+           "THEN << [s EXCEPT !.phase = \"failed\"], << \"send decline pairingRanOut\", \"send error\", \"fail pairingRanOut\" >> >>",
+           "THEN << [s EXCEPT !.phase = \"awaitManifest\"], << \"send accept\" >> >>"),
+    rounds("receiver", "a manifest is taken while the person is still deciding", "NothingBeforeTheYes",
+           "        IF s.phase = \"deciding\" THEN\n", "        IF s.phase = \"deciding\" /\\ e = \"manifest\" THEN << [s EXCEPT !.phase = \"preparing\"], << \"prepare\" >> >>\n        ELSE IF s.phase = \"deciding\" THEN\n"),
+    rounds("receiver", "nobody to ask, and the question is shown", "NobodyToAskMeansNo",
+           "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"declining\"], << \"send decline notReceiving\" >> >> ELSE Nothing(s)",
+           "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"deciding\"], << \"ask\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "the question is asked again", "AskedOnce",
+           "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"deciding\"], << \"ask\" >> >> ELSE Nothing(s)",
+           "IF s.phase \\in {\"idle\", \"awaitManifest\"} THEN << [s EXCEPT !.phase = \"deciding\"], << \"ask\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "a manifest that is not what was offered is taken", "OnlyWhatWasOffered",
+           "ELSE IF s.phase = \"awaitManifest\" /\\ e = \"manifest\" THEN", "ELSE IF s.phase = \"awaitManifest\" /\\ e \\in {\"manifest\", \"manifestOther\"} THEN"),
+    rounds("receiver", "a manifest that did not pass validate is taken", "OnlyWhatWasOffered",
+           "ELSE IF s.phase = \"awaitManifest\" /\\ e = \"manifest\" THEN", "ELSE IF s.phase = \"awaitManifest\" /\\ e \\in {\"manifest\", \"manifestInvalid\"} THEN"),
+    rounds("receiver", "a manifest that cannot be read is taken", "OnlyWhatWasOffered",
+           "ELSE IF s.phase = \"awaitManifest\" /\\ e = \"manifest\" THEN", "ELSE IF s.phase = \"awaitManifest\" /\\ e \\in {\"manifest\", \"manifestMalformed\"} THEN"),
+    rounds("receiver", "'prepared' is believed of a folder nobody asked for", "NothingArrivesBeforeTheFolder",
+           "IF s.phase = \"preparing\" THEN << [s EXCEPT !.phase = \"planning\"], << \"send plan\" >> >> ELSE Nothing(s)",
+           "IF s.phase \\in {\"awaitManifest\", \"preparing\"} THEN << [s EXCEPT !.phase = \"planning\"], << \"send plan\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "the rounds begin on a plan that was never to be said", "HeldOnlyUnderWay",
+           "ELSE IF s.phase = \"planning\" THEN << [s EXCEPT !.phase = \"reading\"], << >> >>",
+           "ELSE IF s.phase \\in {\"awaitManifest\", \"planning\"} THEN << [s EXCEPT !.phase = \"reading\"], << >> >>"),
+    rounds("receiver", "'done' is taken before the rounds began", "NothingArrivesBeforeTheFolder",
+           "ELSE IF s.phase = \"reading\" /\\ e = \"done\" THEN", "ELSE IF s.phase \\in {\"awaitManifest\", \"reading\"} /\\ e = \"done\" THEN"),
+    rounds("receiver", "a second 'done' while the first is being judged", "OneJudgementARound",
+           "ELSE IF s.phase = \"reading\" /\\ e = \"done\" THEN", "ELSE IF s.phase \\in {\"reading\", \"settling\"} /\\ e = \"done\" THEN"),
+    rounds("receiver", "the drop is put in place when it is not whole", "PlacedOnlyWhenWhole",
+           "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>",
+           "ELSE IF e \\in {\"whole\", \"more\"} THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>"),
+    rounds("receiver", "a judgement nobody asked for is believed", "PlacedOnlyWhenWhole",
+           "IF s.phase # \"settling\" THEN Nothing(s)", "IF s.phase \\notin {\"reading\", \"settling\"} THEN Nothing(s)"),
+    rounds("receiver", "'complete' is said before the drop is in place", "CompleteOnlyWhenInPlace",
+           "IF s.phase = \"placing\" THEN << [s EXCEPT !.phase = \"completed\"], << \"send complete\", \"end completed\" >> >>",
+           "IF s.phase \\in {\"settling\", \"placing\"} THEN << [s EXCEPT !.phase = \"completed\"], << \"send complete\", \"end completed\" >> >>"),
+    rounds("receiver", "a drop that failed tells a sender that comes back it is complete", "NothingBeforeTheYes",
+           "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << \"send complete\" >> >>",
+           "IF Final(s) /\\ e = \"senderBack\" THEN << s, << \"send complete\" >> >>"),
+    rounds("receiver", "rounds that bring nothing go on for ever", "IdleRoundsEndIt",
+           "ELSE IF s.idle + 1 < s.patience THEN", "ELSE IF TRUE THEN"),
+    rounds("receiver", "a round that brought something still counts as idle", "OnlyIdleRoundsCount",
+           "ELSE IF e = \"more\" THEN << [s EXCEPT !.idle = 0, !.phase = \"reading\"], << \"send plan\" >> >>",
+           "ELSE IF e = \"more\" THEN << [s EXCEPT !.phase = \"reading\"], << \"send plan\" >> >>"),
+    rounds("receiver", "a drop whose first plan never went out is held for the sender", "HeldOnlyUnderWay",
+           "ELSE IF s.phase = \"reading\" THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>",
+           "ELSE IF s.phase \\in {\"planning\", \"reading\"} THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>"),
+    rounds("receiver", "a conversation lost in the middle of a round ends the drop", "UnderWayALossIsHeld",
+           "ELSE IF s.phase = \"reading\" THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>",
+           "ELSE IF FALSE THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>"),
+    rounds("receiver", "a sender is answered as back by a drop that is not held for it", "BackOnlyToAHeldDrop",
+           "IF s.phase = \"awaitSender\" THEN << [s EXCEPT !.phase = \"reading\"], << \"send plan\" >> >> ELSE Nothing(s)",
+           "IF s.phase \\in {\"reading\", \"awaitSender\"} THEN << [s EXCEPT !.phase = \"reading\"], << \"send plan\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "a sender that is there is given up on", "NobodyGivesUpWhoWasNotWaiting",
+           "IF s.phase = \"awaitSender\" THEN RFail(s, \"didNotComeBack\") ELSE Nothing(s)",
+           "IF s.phase \\in {\"reading\", \"awaitSender\"} THEN RFail(s, \"didNotComeBack\") ELSE Nothing(s)"),
+    rounds("receiver", "a decline is the end before it is said", "DeclinedOnlyOnceSaid",
+           "IF s.phase = \"deciding\" THEN << [s EXCEPT !.phase = \"declining\"], << \"send decline declined\" >> >> ELSE Nothing(s)",
+           "IF s.phase = \"deciding\" THEN << [s EXCEPT !.phase = \"declined\"], << \"send decline declined\", \"end declined\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "a no is taken after the yes", "DeclinedMeansNo",
+           "IF s.phase = \"deciding\" THEN << [s EXCEPT !.phase = \"declining\"], << \"send decline declined\" >> >> ELSE Nothing(s)",
+           "IF s.phase \\in {\"deciding\", \"reading\"} THEN << [s EXCEPT !.phase = \"declining\"], << \"send decline declined\" >> >> ELSE Nothing(s)"),
+    rounds("receiver", "the question stays on screen when the drop ends", "TheQuestionGoesWhenTheDropDoes",
+           "Unask(s) == IF s.phase = \"deciding\" THEN << \"unask\" >> ELSE << >>", "Unask(s) == << >>"),
+    rounds("receiver", "a question that is not up is taken away", "TheQuestionGoesWhenTheDropDoes",
+           "Unask(s) == IF s.phase = \"deciding\" THEN << \"unask\" >> ELSE << >>", "Unask(s) == << \"unask\" >>"),
+    rounds("receiver", "a sender that gives up while the person decides is answered", "TheSendersGivingUpIsNotAnswered",
+           "            ELSE << [s EXCEPT !.phase = \"failed\"], << \"fail wentAway\", \"unask\" >> >>\n",
+           "            ELSE << [s EXCEPT !.phase = \"failed\"], << \"send error\", \"fail wentAway\", \"unask\" >> >>\n"),
+    rounds("receiver", "silence under way ends the drop", "RUnderWaySilenceIsNotTheEnd",
+           "IF s.phase \\in {\"reading\", \"settling\", \"awaitSender\"} THEN << s, << \"hangUp\" >> >>", "IF FALSE THEN << s, << \"hangUp\" >> >>"),
+    rounds("receiver", "the sender's reason for stopping is not the end", "RTheirWordEndsIt",
+           "ELSE IF s.phase = \"reading\" /\\ e = \"error\" THEN RFail(s, \"theirs\")", "ELSE IF s.phase = \"reading\" /\\ e = \"error\" THEN Nothing(s)"),
+    rounds("receiver", "a 'done' that cannot be read is taken", "RTheirWordEndsIt",
+           "ELSE IF s.phase = \"reading\" /\\ e = \"done\" THEN", "ELSE IF s.phase = \"reading\" /\\ e \\in {\"done\", \"doneMalformed\"} THEN"),
+    rounds("receiver", "a finished drop answers anything at all", "AFinishedDropSaysOnlyCompleteAgain",
+           "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << \"send complete\" >> >>",
+           "IF s.phase = \"completed\" /\\ e \\in {\"senderBack\", \"lost\"} THEN << s, << \"send complete\" >> >>"),
+
+    # A drop: the two machines, the person, and a network that misbehaves.
     ("Drop", "Drop", drop(), DROP_INV, DROP_PROPS, HOLDS, None),
     ("Drop (three chunks, two faults)", "Drop", drop(Chunks="{c1, c2, c3}", MaxFaults="2", MaxConns="8"), DROP_INV, DROP_PROPS, HOLDS, None),
-    ("Drop (either end may give up)", "Drop", drop(MayGiveUp="TRUE", MaxFaults="2", MaxConns="8"), DROP_INV,
+    ("Drop (cut at any time; either end may give up; the person may say no; the sender may lie)", "Drop",
+     drop(CutsEarly="TRUE", MayGiveUp="TRUE", Says='{"yes", "no"}', Lies="TRUE", MaxFaults="2", MaxConns="8"), DROP_INV,
      ["NothingWrittenAfterPlacing", "ItEnds"], HOLDS, None),
+    ("Drop / reachable: it arrives", "Drop", drop(MaxFaults="1", MaxCuts="1", MaxConns="4"), ["NeverArrives"], [], "NeverArrives", None),
+    ("Drop / reachable: a no is a no", "Drop", drop(Says='{"no"}', MaxFaults="1", MaxCuts="1", MaxConns="4"), ["NeverDeclined"], [], "NeverDeclined", None),
+    ("Drop / known limit: cut before the sender has heard what the receiver holds, the drop ends", "Drop",
+     drop(CutsEarly="TRUE", MaxFaults="1", MaxCuts="1", MaxConns="4"), [], ["ItArrives"], "ItArrives", None),
+    ("Drop / known limit: as many fruitless reconnects as the sender has patience", "Drop",
+     drop(Patience="1", MaxFaults="1", MaxCuts="1", MaxConns="4"), [], ["ItArrives"], "ItArrives", None),
+    ("Drop / known limit: as many idle rounds as the receiver has patience", "Drop",
+     drop(IdleRounds="1", MaxFaults="1", MaxCuts="0", MaxConns="4"), [], ["ItArrives"], "ItArrives", None),
     ("Drop / mutant: a record is written without being opened", "Drop", drop(ChecksTag="FALSE"), DROP_INV, [], "NoWrongBytes", None),
     ("Drop / mutant: the connection counter starts again on a reconnect", "Drop", drop(KeepsCounter="FALSE"), DROP_INV, [], "NoStreamKeyTwice", None),
-    ("Drop / mutant: 'complete' is said of a drop that is not whole", "Drop", drop(), DROP_INV, [], "PlacedIsWhole",
-     ("Drop.tla", "         /\\ IF have = Chunks\n               THEN placed' = TRUE", "         /\\ IF have # {}\n               THEN placed' = TRUE")),
+    ("Drop / mutant: a data connection is let into a drop that has been judged (the code before 2026-11-24)", "Drop", drop(KeepsOutLate="FALSE"),
+     DROP_INV, [], "NothingWrittenOnceJudged", None),
+    ("Drop / mutant: the ledger is said to be whole when it is not", "Drop", drop(), DROP_INV, [], "PlacedIsWhole",
+     ("Drop.tla", "RDo(IF have = Chunks THEN \"whole\"", "RDo(IF have # {} THEN \"whole\"")),
+    ("Drop / mutant: the machine puts in place a drop that was not judged whole", "Drop", drop(), DROP_INV, [], "PlacedIsWhole",
+     ("RoundMachine.tla", "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>",
+      "ELSE IF e \\in {\"whole\", \"more\"} THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>")),
+    ("Drop / mutant: 'complete' is said before the drop is in place", "Drop", drop(), DROP_INV, [], "SentMeansSaved",
+     ("RoundMachine.tla", "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>",
+      "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"send complete\", \"place\" >> >>")),
+    ("Drop / mutant: the receiver accepts without waiting for the person", "Drop", drop(), DROP_INV, [], "NothingBeforeTheYes",
+     ("RoundMachine.tla", "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"deciding\"], << \"ask\" >> >> ELSE Nothing(s)",
+      "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"awaitManifest\"], << \"ask\", \"send accept\" >> >> ELSE Nothing(s)")),
+    ("Drop / mutant: a manifest that is not what was offered is taken", "Drop", drop(Lies="TRUE"), DROP_INV, [], "OnlyWhatWasOffered",
+     ("RoundMachine.tla", "ELSE IF s.phase = \"awaitManifest\" /\\ e = \"manifest\" THEN",
+      "ELSE IF s.phase = \"awaitManifest\" /\\ e \\in {\"manifest\", \"manifestOther\"} THEN")),
     ("Drop / mutant: the sender does not come back after losing the conversation", "Drop", drop(), [], ["ItArrives"], "deadlock",
-     ("Drop.tla", "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Reconnect \\/ Refused",
-      "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Refused")),
+     ("Drop.tla", "            \\/ Reconnect \\/ Refused \\/ Abandoned", "            \\/ Refused \\/ Abandoned")),
+    ("Drop / mutant: the sending machine gives up a drop whose conversation is lost in the middle of a round", "Drop", drop(), [], ["ItArrives"], "ItArrives",
+     ("RoundMachine.tla", "IF s.phase \\in {\"sending\", \"awaitVerdict\"} THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>",
+      "IF s.phase = \"awaitVerdict\" THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>")),
+    ("Drop / mutant: the receiving machine does not hold a drop whose conversation is lost", "Drop", drop(), [], ["ItArrives"], "ItArrives",
+     ("RoundMachine.tla", "ELSE IF s.phase = \"reading\" THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>",
+      "ELSE IF FALSE THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>")),
+    ("Drop / mutant: a finished drop does not say 'complete' again to a sender that comes back", "Drop", drop(), [], ["ItArrives"], "deadlock",
+     ("RoundMachine.tla", "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << \"send complete\" >> >>",
+      "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << >> >>")),
 ]
+
+TLA_RUNS += ROUND_RUNS
 
 
 # TLC's exit code for each outcome (tlc2.output.EC). Anything else is the tool failing.

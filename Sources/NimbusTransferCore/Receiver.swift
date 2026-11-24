@@ -67,9 +67,20 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     private let streamInfo = Locked<[ObjectIdentifier: Int]>([:])
     /// The control connection is gone and the session is waiting for the sender to bring another.
     private var awaitingControl = false
+    /// The conversation itself: what each message, each answer, each loss and each ending means,
+    /// and how many rounds that deliver nothing are borne (`RoundMachine.Receiver`, in the crypto
+    /// module, which has no I/O in it). This class is the connections, the disk, the person and
+    /// the clock around it: it says nothing on the conversation, and ends the drop in no way,
+    /// but as the machine's effect. Under `lock`.
+    private var machine: RoundMachine.Receiver
+    private typealias Effect = RoundMachine.Receiver.Effect
+    /// The machine said to take the question away; the session's thread does, at its next look.
+    private var unasked = false
 
     init(channel: Channel, offer: Offer, hello: SecureHello, mac: KnownMac, listener: DropListener) {
         _control = channel
+        machine = RoundMachine.Receiver(offered: RoundMachine.Described(files: offer.fileCount, bytes: offer.totalBytes, names: offer.items),
+                                        patience: Tuning.idleRounds)
         self.listener = listener
         sender = mac
         senderID = channel.remote.raw.map { String(format: "%02x", $0) }.joined()
@@ -86,20 +97,64 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         log("offer from \(peerName) (\(channel.remote.tag)) at \(channel.socket.peerAddress) (Nimbus Drop \(senderAppVersion), protocol \(senderProtocol)): “\(items.prefix(20).joined(separator: "”, “"))”, \(offer.fileCount) files, \(offer.totalBytes) bytes")
         update { $0.totalBytes = offer.totalBytes; $0.totalFiles = offer.fileCount }
         track(channel.socket)
-        farewell = { [weak self] message in try? self?.control.send(.error, Reason(message: message)) }
         // From here on, withdrawing trust in the sender ends this drop, asked about or not.
         listener.trust.track(self, key: channel.remote)
     }
+
+    private func step(_ event: RoundMachine.Receiver.Event) -> [Effect] { lock.withLock { machine.step(event) } }
+
+    /// An ending the machine gave to a thread that is not the session's own (or to the session's
+    /// own, for an error of this Mac's): the word, then the end. A question still on screen is
+    /// taken away by the session's thread, which is the one that put it there.
+    private func conclude(_ effects: [Effect], with error: Error) {
+        noteKind(of: error)
+        for effect in effects {
+            switch effect {
+            case .send(.error): try? control.send(.error, Reason(message: (error as? DropError)?.message ?? error.localizedDescription))
+            case .end(.failed): super.fail(error)
+            case .unask: lock.withLock { unasked = true }
+            default: break
+            }
+        }
+        // Cancelled a moment ago, its end still waiting on the farewell: it ends now instead.
+        if lock.withLock({ cancelRequested }) { super.fail(error) }
+    }
+
+    /// The drop cannot go on, for a reason of this Mac's. `tell`: the sender is told why, when
+    /// it is still there to hear it (the machine says whether it is).
+    private func stop(_ error: Error, tell: Bool) { conclude(step(.stopped(tell: tell)), with: error) }
+
+    /// Ended from outside without a word: the sender offered the same drop again, and that
+    /// session took this one's partial folder.
+    override func fail(_ error: Error) { stop(error, tell: false) }
 
     /// Trust in the sender was withdrawn. The keys go first, so that nothing can attach or
     /// resume; what was being written stays in its partial folder and is not put in place.
     package override func withdrawn(_ error: DropError) {
         lock.withLock { keys = nil }
-        super.withdrawn(error)
+        conclude(step(.withdrawn), with: error)
         streams.lock()
         incoming?.socket.shutdown()
         streams.broadcast()
         streams.unlock()
+    }
+
+    /// Stops the drop. What has arrived stays in the partial folder, so sending the same drop
+    /// again continues it.
+    public override func cancel() {
+        let effects = lock.withLock { () -> [Effect] in
+            cancelRequested = true
+            return machine.step(.cancelled)
+        }
+        if effects.contains(.unask) { lock.withLock { unasked = true } }
+        // Best effort, so the other side can say who stopped it rather than "connection lost":
+        // the word on a queue of its own, and the end a moment after it.
+        if effects.contains(.send(.error)) {
+            DispatchQueue.global().async { [weak self] in try? self?.control.send(.error, Reason(message: "Cancelled on the other Mac")) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { self.finish(.cancelled) }
+        } else {
+            finish(.cancelled)
+        }
     }
 
     /// A data connection presents `conn` and a tag over the challenge this Mac just made for
@@ -123,8 +178,7 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     func run() {
         do { try conduct() } catch {
             // Tell the sender why, when it is still there to hear it.
-            if !isOver { try? control.send(.error, Reason(message: (error as? DropError)?.message ?? error.localizedDescription)) }
-            fail(error)
+            stop(error, tell: true)
         }
         streams.lock()
         conducted = true
@@ -133,11 +187,17 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     }
 
     /// A long silence is treated as a lost connection (see `SendSession.silence`): the drop is
-    /// held open for the sender to come back to, rather than ended.
+    /// held open for the sender to come back to, rather than ended. Before it is under way
+    /// there is nothing to hold, and silence ends it.
     override func silence() {
-        guard ledger != nil, state == .transferring else { return super.silence() }
-        log("no sign of life from \(peerName); treating the connection as lost", .warn)
-        control.socket.shutdown()
+        let effects = step(.silent)
+        if effects == [.hangUp] {
+            log("no sign of life from \(peerName); treating the connection as lost", .warn)
+            control.socket.shutdown()
+            return
+        }
+        log("no sign of life from \(peerName) for too long; giving up", .error)
+        conclude(effects, with: DropError("\(peerName) stopped responding; send the drop again to continue it"))
     }
 
     /// Returns once this session's own thread has finished with the drop.
@@ -168,114 +228,308 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     }
 
     /// The control connection is gone. Holds the drop open for `Tuning.reconnectSeconds`, with
-    /// everything written so far kept, until the sender reconnects; then answers with what is
-    /// here. Throws when nobody comes.
-    private func awaitSender(after lost: Error) throws {
-        while true {
-            if isOver { throw lost }
-            log("lost the control connection: \((lost as? DropError)?.message ?? "\(lost)"); holding the drop for \(Int(Tuning.reconnectSeconds)) s", .warn)
-            setState(.reconnecting)
-            // Whatever is wrong with the old connection (gone, or it delivered a damaged
-            // message), it is finished: closing it is how the sender learns to reconnect.
-            control.socket.shutdown()
-            streams.lock()
-            for s in active { s.shutdown() }
-            awaitingControl = true
-            // The minute is counted from the last sign of the sender: while data connections are
-            // open and delivering, it is there, whatever has become of the control connection.
-            var deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
-            var seen = progress.doneBytes
-            while incoming == nil, !isOver, Date() < deadline {
-                streams.wait(until: min(deadline, Date().addingTimeInterval(0.2)))
-                let bytes = progress.doneBytes
-                if bytes != seen {
-                    seen = bytes
-                    deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+    /// everything written so far kept, until the sender reconnects; then takes the connection
+    /// it came back on and puts the progress as it stands, ready to say what is here. False
+    /// when nobody came, or the drop ended meanwhile.
+    private func hold(after lost: Error?) -> Bool {
+        if isOver { return false }
+        log("lost the control connection: \((lost as? DropError)?.message ?? "\(String(describing: lost))"); holding the drop for \(Int(Tuning.reconnectSeconds)) s", .warn)
+        setState(.reconnecting)
+        // Whatever is wrong with the old connection (gone, or it delivered a damaged
+        // message), it is finished: closing it is how the sender learns to reconnect.
+        control.socket.shutdown()
+        streams.lock()
+        for s in active { s.shutdown() }
+        awaitingControl = true
+        // The minute is counted from the last sign of the sender: while data connections are
+        // open and delivering, it is there, whatever has become of the control connection.
+        var deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+        var seen = progress.doneBytes
+        while incoming == nil, !isOver, Date() < deadline {
+            streams.wait(until: min(deadline, Date().addingTimeInterval(0.2)))
+            let bytes = progress.doneBytes
+            if bytes != seen {
+                seen = bytes
+                deadline = Date().addingTimeInterval(Tuning.reconnectSeconds)
+            }
+        }
+        let fresh = incoming
+        incoming = nil
+        awaitingControl = false
+        streams.unlock()
+        guard !isOver, let fresh else { return false }
+        replaceControl(control.socket, with: fresh.socket)
+        control = fresh
+        setPeerAddress(fresh.socket.peerAddress)
+        log("the sender is back, from \(fresh.socket.peerAddress), and proved it is the same Mac and the same drop")
+        // The old data connections are closing; let them finish before saying what is here.
+        streams.lock()
+        let settled = Date().addingTimeInterval(5)
+        while !active.isEmpty, streams.wait(until: settled) {}
+        streams.unlock()
+        let have = ledger.doneBytes
+        lock.withLock { roundStartBytes = have }
+        update { $0.doneBytes = have }
+        note { $0.reconnects += 1 }
+        return true
+    }
+
+    /// Ends the drop as failed: only ever the machine's effect.
+    private func end(_ error: Error) { super.fail(error) }
+
+    /// The session's own thread, from the offer to the end. It tells the machine what happened
+    /// (the person's answer, each message, each loss, how each round came out) and does what
+    /// the machine answers. It reads the conversation only where the machine is waiting for
+    /// it: while the person decides (anything the sender says then is its giving up), for the
+    /// manifest, and for each round's "done".
+    private func conduct() throws {
+        typealias Machine = RoundMachine.Receiver
+        let listener = listener
+        let ask = listener?.onOffer
+        // What this thread has in hand while the machine decides.
+        var destination: URL?
+        var declining = "Declined", declinedAs = "Declined"
+        var candidate: Manifest?, refused: Error?
+        var theirs = ""
+        var done = Done(streams: 0)
+        var partial: URL?
+        var held: DropKeys?
+        var complete = Complete(saved: [])
+        var firstPlan = false, back = false
+        var cause: Error?
+        var was = Machine.Phase.idle
+        defer {
+            if let held { listener?.unregister(id: held.sessionID) }
+            if let partial { listener?.release(partial.path, by: self) }
+            if reserved > 0 { listener?.unreserve(reserved) }
+        }
+
+        /// What a message from the sender is, to the machine.
+        func event(_ frame: (type: FrameType, body: Data)) -> Machine.Event {
+            switch frame.type {
+            case .manifest:
+                // Read only when it is its turn; out of turn the machine refuses it unread.
+                guard was == .awaitManifest, let m = try? decode(Manifest.self, from: frame.body) else { return .received(.manifest(.unreadable)) }
+                do { try m.validate() } catch { refused = error; return .received(.manifest(.invalid)) }
+                candidate = m
+                return .received(.manifest(.described(RoundMachine.Described(files: m.fileCount, bytes: m.totalBytes, names: m.topLevelNames))))
+            case .done:
+                guard let d = try? decode(Done.self, from: frame.body) else { return .received(.done(readable: false)) }
+                done = d
+                return .received(.done(readable: true))
+            case .error:
+                guard let reason = try? decode(Reason.self, from: frame.body).message else { return .received(.error(readable: false)) }
+                theirs = Sanitize.label(reason, limit: 300)
+                return .received(.error(readable: true))
+            default:
+                return .received(.other)
+            }
+        }
+
+        /// What the drop fails with when the machine ends it for a reason of the conversation's.
+        func failure(_ why: Machine.Failure) -> Error {
+            switch why {
+            case .wentAway: return DropError("The sender went away")
+            case .theirs: return DropError(theirs)
+            case .unexpected: return DropError(was == .awaitManifest ? "Unexpected message from the sender" : "Unexpected message from \(peerName)")
+            case .malformed: return DropError("Malformed message from the other Mac")
+            case .invalidManifest: return refused ?? DropError("Malformed message from the other Mac")
+            // The person said yes to what the offer described. A manifest that is something else
+            // (more files, more bytes, other names) is not what was agreed to.
+            case .notAsOffered: return DropError("The drop is not what was offered; it was refused")
+            case .pairingRanOut: return DropError("The pairing with \(peerName) ran out before the drop was accepted")
+            case .incomplete: return DropError("The drop arrived incomplete; send it again to continue it")
+            case .didNotComeBack: return DropError("Lost the connection to \(peerName) and it did not come back; send the drop again to continue it")
+            case .lost, .silent, .here, .withdrawn: return cause ?? DropError("The connection to \(peerName) was lost", connection: true)
+            }
+        }
+
+        /// Does what the machine said, in order. The last of them may end with something to
+        /// tell the machine (the word went out, the folder is ready, the round is judged, the
+        /// sender is back); what it says to that is returned, to be done next.
+        func perform(_ effects: [Effect]) throws -> [Effect] {
+            var reason = cause
+            for case .end(.failed(let why)) in effects { reason = failure(why) }
+            for effect in effects {
+                switch effect {
+                case .ask:
+                    ask?(self)
+
+                case .unask:
+                    lock.withLock { unasked = true }
+
+                case .send(.decline(.pairingRanOut)):
+                    // A yes to an offer whose pairing has since ended starts nothing: the question
+                    // was asked under a key that no longer holds (it ran out with the panel still up).
+                    try? control.send(.decline, Reason(message: "The pairing with \(listener?.identity.name ?? "this Mac") has run out; pair again and send it again"))
+
+                case .send(.decline(let why)):
+                    if why == .notReceiving { declining = "Not receiving"; declinedAs = "Not receiving" }
+                    do { try control.send(.decline, Reason(message: declining)) } catch { cause = error; return step(.lost) }
+                    return step(.said)
+
+                case .send(.accept):
+                    guard let listener, let destination else { break }
+                    log("accepted, saving to \(destination.path)")
+                    // Accepting authorises metadata in proportion to what was accepted, out of a budget all
+                    // drops share: a manifest of 64 KB plus 2 KB for each file the offer announced.
+                    let room = min(maxFrameBytes, (64 << 10) + 2048 * max(0, min(offered.fileCount, 1 << 22)))
+                    listener.reserve(room)
+                    reserved = room
+                    control.limit = room
+                    do { try control.send(.accept, Empty()) } catch { cause = error; return step(.lost) }
+
+                case .prepare:
+                    guard let listener, let destination, let candidate else { break }
+                    held = try prepare(candidate, in: destination, partial: &partial, listener: listener)
+                    firstPlan = true
+                    return step(.prepared)
+
+                case .send(.plan):
+                    do { try control.send(.plan, ledger.plan()) } catch { cause = error; return step(.lost) }
+                    if firstPlan {
+                        firstPlan = false
+                        let next = step(.said)
+                        setState(.transferring)
+                        startWatchdog()
+                        return next
+                    }
+                    if back { back = false; setState(.transferring) }
+
+                case .settle:
+                    // Rounds. The sender writes what it was asked for and says done; if connections died or
+                    // chunks arrived damaged along the way, something is missing, and the machine's answer
+                    // is a new plan rather than a failure. It ends when everything is here, or when round
+                    // after round delivers nothing.
+                    let roundStart = lock.withLock { roundStartBytes }
+                    if let resent = done.resent { note { $0.retransmittedChunks = resent } }
+                    let next = settle(opened: done.streams) { [self] in
+                        let soFar = stats
+                        log("the sender says it is done (\(done.streams) data connections opened in all, \(done.resent ?? 0) chunks retransmitted); here: \(soFar.chunks) chunks received, \(soFar.damagedChunks) damaged, \(ledger.doneBytes) of \(manifest.totalBytes) bytes", .debug)
+                        if isOver { return [] }
+                        return step(.settled(ledger.isComplete ? .whole : ledger.doneBytes > roundStart ? .more : .nothingNew))
+                    }
+                    if next == [.send(.plan)] {
+                        note { $0.rounds += 1 }
+                        let have = ledger.doneBytes
+                        log("the sender is done but \(manifest.totalBytes - have) bytes are missing; asking for them (round \(stats.rounds + 1))", .warn)
+                        lock.withLock { roundStartBytes = have }
+                        update { $0.doneBytes = have }
+                    }
+                    return next
+
+                case .place:
+                    // Trust withdrawn while the last chunks arrived: nothing is put in place.
+                    guard !isOver, let partial, let destination else { return [] }
+                    setState(.finishing)
+                    let saved = try finalize(partial: partial, destination: destination)
+                    setSaved(saved)
+                    update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
+                    log("saved as \(saved.map(\.path).joined(separator: ", "))")
+                    let p = progress, s = stats
+                    let seconds = max(0.001, Date().timeIntervalSince(transferStartedAt ?? startedAt))
+                    log("summary: \(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes - p.resumedBytes)) received in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(p.totalBytes - p.resumedBytes) / seconds))"
+                        + (p.resumedBytes > 0 ? " (\(Format.bytes(p.resumedBytes)) were already here)" : "")
+                        + "; \(s.chunks) chunks, \(s.damagedChunks) damaged, \(s.retransmittedChunks) retransmitted by the sender; \(s.rounds + 1) rounds; \(s.connectionFailures) connections dropped; \(s.reconnects) reconnects")
+                    complete = Complete(saved: saved.map(\.lastPathComponent))
+                    return step(.placed)
+
+                case .send(.complete):
+                    try? control.send(.complete, complete)
+                    // A sender that lost the connection meanwhile will come back asking; it is told then,
+                    // by this drop's machine as it stands now. The drop's keys are done with, but for
+                    // the one a late "did it arrive?" is proved with.
+                    if let held, let listener {
+                        listener.remember(completed: held.sessionID, complete, resumeKey: held.resumeKey, key: control.remote, rounds: lock.withLock { machine })
+                    }
+                    lock.withLock { self.keys = nil }
+                    if let fresh = streams.withLock({ incoming }) { try? fresh.send(.complete, complete) }
+
+                case .hold:
+                    // The conversation's connection is gone. The drop was accepted and is partly
+                    // here: wait for the sender to come back rather than ending it.
+                    guard hold(after: cause) else { return isOver ? [] : step(.gaveUp) }
+                    back = true
+                    return step(.senderBack)
+
+                case .hangUp:
+                    break   // a silence is the watchdog's to act on
+
+                case .send(.error):
+                    // Tell the sender why, when it is still there to hear it.
+                    if let reason { try? control.send(.error, Reason(message: (reason as? DropError)?.message ?? reason.localizedDescription)) }
+
+                case .end(.completed):
+                    finish(.completed)
+
+                case .end(.declined):
+                    finish(.declined(declinedAs))
+
+                case .end(.cancelled):
+                    finish(.cancelled)
+
+                case .end(.failed):
+                    if let reason { end(reason) }
                 }
             }
-            let fresh = incoming
-            incoming = nil
-            awaitingControl = false
-            streams.unlock()
-            if isOver { throw lost }
-            guard let fresh else {
-                throw DropError("Lost the connection to \(peerName) and it did not come back; send the drop again to continue it")
-            }
-            replaceControl(control.socket, with: fresh.socket)
-            control = fresh
-            setPeerAddress(fresh.socket.peerAddress)
-            log("the sender is back, from \(fresh.socket.peerAddress), and proved it is the same Mac and the same drop")
-            // The old data connections are closing; let them finish before saying what is here.
-            streams.lock()
-            let settled = Date().addingTimeInterval(5)
-            while !active.isEmpty, streams.wait(until: settled) {}
-            streams.unlock()
-            let have = ledger.doneBytes
-            lock.withLock { roundStartBytes = have }
-            update { $0.doneBytes = have }
-            note { $0.reconnects += 1 }
-            do {
-                try control.send(.plan, ledger.plan())
-                setState(.transferring)
+            return []
+        }
+
+        var todo = step(.begin(askable: ask != nil))
+        while true {
+            while !todo.isEmpty { todo = try perform(todo) }
+            // The drop ended with the question still up (the sender gave up, trust was
+            // withdrawn, it was stopped here): the question goes.
+            if lock.withLock({ unasked }) { onWithdrawn?(); return }
+            cause = nil
+            was = lock.withLock { machine.phase }
+            switch was {
+            case .deciding:
+                // Wait for the person here, while watching for the sender giving up.
+                if control.socket.waitReadable(milliseconds: 200) {
+                    do { todo = step(event(try control.read())) } catch { todo = step(.lost) }
+                } else if let decision = lock.withLock({ decision }) {
+                    switch decision {
+                    case .accept(let folder):
+                        destination = folder
+                        todo = step(.yes(paired: listener?.trust.standing(of: control.remote).isPaired ?? false))
+                    case .decline(let reason):
+                        declining = reason
+                        todo = step(.no)
+                    }
+                }
+
+            case .awaitManifest, .reading:
+                // An accepted drop holds room for its manifest out of what all drops share
+                // (`DropListener.reserve`), and the next accepted drop waits for room. So a
+                // sender that was accepted has so long to be silent, and no longer: after
+                // that the conversation counts as lost, which before the first plan is the
+                // end (the machine's), the sender is told, and the room is given back.
+                let asked = Date()
+                if was == .awaitManifest { control.socket.setReadTimeout(Int(Tuning.manifestSeconds.rounded(.up))) }
+                do {
+                    let frame = try control.read()
+                    if was == .awaitManifest { control.socket.setReadTimeout(0) }
+                    if was == .reading { touch() }
+                    todo = step(event(frame))
+                } catch {
+                    let silent = was == .awaitManifest && Date().timeIntervalSince(asked) >= Tuning.manifestSeconds
+                    cause = silent ? DropError("\(peerName) was accepted and did not send the drop; it was given up", connection: true) : error
+                    todo = step(.lost)
+                }
+
+            default:
+                // An end, or nothing more that this thread is to wait for.
                 return
-            } catch { continue }   // lost again already: wait again
+            }
         }
     }
 
-    private func conduct() throws {
-        guard let listener, let offer = listener.onOffer else {
-            try control.send(.decline, Reason(message: "Not receiving"))
-            finish(.declined("Not receiving"))
-            return
-        }
-        // Ended before it was ever shown (trust in the sender was withdrawn while the offer was
-        // on its way in): nobody is asked about it.
-        if isOver { return }
-        offer(self)
-
-        // Wait for the person here, while watching for the sender giving up.
-        var chosen: Decision?
-        while chosen == nil {
-            if isOver { onWithdrawn?(); return }
-            if control.socket.waitReadable(milliseconds: 200) {
-                let message = (try? control.read()).flatMap { $0.type == .error ? (try? decode(Reason.self, from: $0.body).message).map { Sanitize.label($0, limit: 300) } : nil }
-                finish(.failed(message ?? "The sender went away"))
-                onWithdrawn?()
-                return
-            }
-            chosen = lock.withLock { decision }
-        }
-        guard case .accept(let destination) = chosen else {
-            if case .decline(let reason) = chosen { try control.send(.decline, Reason(message: reason)) }
-            finish(.declined("Declined"))
-            return
-        }
-
-        // A yes to an offer whose pairing has since ended starts nothing: the question was
-        // asked under a key that no longer holds (it ran out with the panel still up).
-        guard listener.trust.standing(of: control.remote).isPaired else {
-            try? control.send(.decline, Reason(message: "The pairing with \(listener.identity.name) has run out; pair again and send it again"))
-            throw DropError("The pairing with \(peerName) ran out before the drop was accepted")
-        }
-        log("accepted, saving to \(destination.path)")
-        // Accepting authorises metadata in proportion to what was accepted, out of a budget all
-        // drops share: a manifest of 64 KB plus 2 KB for each file the offer announced.
-        let room = min(maxFrameBytes, (64 << 10) + 2048 * max(0, min(offered.fileCount, 1 << 22)))
-        listener.reserve(room)
-        reserved = room
-        defer { listener.unreserve(room) }
-        control.limit = room
-        try control.send(.accept, Empty())
-        let frame = try control.read()
-        guard frame.type == .manifest else { throw DropError("Unexpected message from the sender") }
-        manifest = try decode(Manifest.self, from: frame.body)
-        try manifest.validate()
-        // The person said yes to what the offer described. A manifest that is something else
-        // (more files, more bytes, other names) is not what was agreed to.
-        guard manifest.fileCount == offered.fileCount, manifest.totalBytes == offered.totalBytes,
-              manifest.topLevelNames == offered.items else {
-            throw DropError("The drop is not what was offered; it was refused")
-        }
+    /// The manifest is what was offered and the person said yes: everything the drop is built
+    /// in, and the moment data connections may attach. Returns the drop's keys, with the
+    /// session registered under them.
+    private func prepare(_ accepted: Manifest, in destination: URL, partial claimed: inout URL?, listener: DropListener) throws -> DropKeys {
+        manifest = accepted
         setItems(manifest.topLevelNames)
         update { $0.totalBytes = manifest.totalBytes; $0.totalFiles = manifest.fileCount }
 
@@ -287,7 +541,7 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         // partial folder (12 could be, by trying sixteen million manifests).
         let partial = destination.appendingPathComponent("\(label).\(key.prefix(32)).nimbusdrop-partial", isDirectory: true)
         listener.claim(partial.path, for: self)
-        defer { listener.release(partial.path, by: self) }
+        claimed = partial
         itemsRoot = partial.appendingPathComponent("items", isDirectory: true)
         do { try FileManager.default.createDirectory(at: itemsRoot, withIntermediateDirectories: true) }
         catch { throw DropError("Cannot write to \(destination.path): \(error.localizedDescription)") }
@@ -309,73 +563,21 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         // Nothing larger than a `done` is expected from here on.
         control.limit = Channel.fragment
         listener.register(self, id: keys.sessionID)
-        defer { listener.unregister(id: keys.sessionID) }
-        try control.send(.plan, ledger.plan())
-        setState(.transferring)
-        startWatchdog()
-
-        // Rounds. The sender writes what it was asked for and says done; if connections died or
-        // chunks arrived damaged along the way, something is missing, and the answer is a new
-        // plan rather than a failure. It ends when everything is here, or when round after
-        // round delivers nothing.
-        var idle = 0
-        while true {
-            let next: (type: FrameType, body: Data)
-            do { next = try control.read() } catch {
-                // The conversation's connection is gone. The drop was accepted and is partly
-                // here: wait for the sender to come back rather than ending it.
-                try awaitSender(after: error)
-                continue
-            }
-            touch()
-            if next.type == .error { throw DropError(Sanitize.label(try decode(Reason.self, from: next.body).message, limit: 300)) }
-            guard next.type == .done else { throw DropError("Unexpected message from \(peerName)") }
-            let roundStart = lock.withLock { roundStartBytes }
-            let done = try decode(Done.self, from: next.body)
-            if let resent = done.resent { note { $0.retransmittedChunks = resent } }
-            settle(opened: done.streams)
-            let soFar = stats
-            log("the sender says it is done (\(done.streams) data connections opened in all, \(done.resent ?? 0) chunks retransmitted); here: \(soFar.chunks) chunks received, \(soFar.damagedChunks) damaged, \(ledger.doneBytes) of \(manifest.totalBytes) bytes", .debug)
-            if isOver { return }
-            if ledger.isComplete { break }
-            idle = ledger.doneBytes > roundStart ? 0 : idle + 1
-            guard idle < Tuning.idleRounds else { throw DropError("The drop arrived incomplete; send it again to continue it") }
-            note { $0.rounds += 1 }
-            let have = ledger.doneBytes
-            log("the sender is done but \(manifest.totalBytes - have) bytes are missing; asking for them (round \(stats.rounds + 1))", .warn)
-            lock.withLock { roundStartBytes = have }
-            update { $0.doneBytes = have }
-            do { try control.send(.plan, ledger.plan()) } catch {
-                try awaitSender(after: error)
-            }
-        }
-
-        // Trust withdrawn while the last chunks arrived: nothing is put in place.
-        if isOver { return }
-        setState(.finishing)
-        let saved = try finalize(partial: partial, destination: destination)
-        setSaved(saved)
-        update { $0.doneBytes = $0.totalBytes; $0.doneFiles = $0.totalFiles }
-        log("saved as \(saved.map(\.path).joined(separator: ", "))")
-        let p = progress, s = stats
-        let seconds = max(0.001, Date().timeIntervalSince(transferStartedAt ?? startedAt))
-        log("summary: \(Format.files(p.totalFiles)), \(Format.bytes(p.totalBytes - p.resumedBytes)) received in \(String(format: "%.1f", seconds)) s = \(Format.bitRate(Double(p.totalBytes - p.resumedBytes) / seconds))"
-            + (p.resumedBytes > 0 ? " (\(Format.bytes(p.resumedBytes)) were already here)" : "")
-            + "; \(s.chunks) chunks, \(s.damagedChunks) damaged, \(s.retransmittedChunks) retransmitted by the sender; \(s.rounds + 1) rounds; \(s.connectionFailures) connections dropped; \(s.reconnects) reconnects")
-        let complete = Complete(saved: saved.map(\.lastPathComponent))
-        try? control.send(.complete, complete)
-        // A sender that lost the connection meanwhile will come back asking; it is told then.
-        // The drop's keys are done with, but for the one a late "did it arrive?" is proved with.
-        listener.remember(completed: keys.sessionID, complete, resumeKey: keys.resumeKey, key: control.remote)
-        lock.withLock { self.keys = nil }
-        if let fresh = streams.withLock({ incoming }) { try? fresh.send(.complete, complete) }
-        finish(.completed)
+        return keys
     }
 
     /// After the sender says done: wait for the data connections it opened to finish here too
     /// (their last chunks may still be on the wire or on their way to disk), then close whatever
     /// is left so that nothing writes into the drop once it is judged.
-    private func settle(opened: Int) {
+    ///
+    /// `judge` reads the ledger and tells the machine how the drop stands. It runs with the
+    /// data connections' lock still held: no connection is open when the drop is judged, and
+    /// none can be let in between the judgement and the machine's hearing it (`runStream` asks
+    /// the machine, under the same lock). So a drop that is judged whole is put in place as it
+    /// was judged. Until 2026-11-24 the lock was let go first and nothing asked the machine: a
+    /// data connection that arrived late was written into a drop being moved
+    /// (`testNothingIsWrittenIntoADropOnceItHasBeenJudgedWhole`).
+    private func settle(opened: Int, judge: () -> [Effect]) -> [Effect] {
         streams.lock()
         var quietSince = Date()
         var lastBytes = progress.doneBytes
@@ -388,13 +590,17 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
             let patience = active.isEmpty ? Tuning.settleSeconds : Tuning.stallSeconds
             if Date().timeIntervalSince(quietSince) > patience { break }
         }
-        let left = active
-        streams.unlock()
-        for s in left { s.shutdown() }
-        streams.lock()
+        // Whatever is open is closed, and whatever is let in while that is waited for too.
         let deadline = Date().addingTimeInterval(10)
-        while !active.isEmpty, streams.wait(until: deadline) {}
-        streams.unlock()
+        while !active.isEmpty, Date() < deadline {
+            let left = active
+            streams.unlock()
+            for s in left { s.shutdown() }
+            streams.lock()
+            if !active.isEmpty { streams.wait(until: min(deadline, Date().addingTimeInterval(0.05))) }
+        }
+        defer { streams.unlock() }
+        return judge()
     }
 
     /// Folders, symlinks and empty files, before any data. All through `SafeTree`: whatever is
@@ -427,6 +633,14 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         let from = socket.peerAddress
         track(socket)
         streams.lock()
+        // The machine says when a drop takes data: not before its folder is ready, and not once
+        // it has been judged whole. Asked with the lock held under which the drop is judged.
+        guard lock.withLock({ machine.takesData }) else {
+            streams.unlock()
+            log("refused a data connection from \(from): the drop is not taking data (it has been judged, or has not begun)", .warn)
+            socket.shutdown()
+            return
+        }
         guard active.count < Tuning.streamsPerDrop else {
             streams.unlock()
             log("refused a data connection from \(from): \(Tuning.streamsPerDrop) are open already", .warn)
@@ -456,8 +670,8 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
             }
             socket.shutdown()
         } catch {
-            if !isOver { try? control.send(.error, Reason(message: (error as? DropError)?.message ?? error.localizedDescription)) }
-            fail(error)
+            // Trouble with the disk ends the drop, and the sender is told why.
+            stop(error, tell: true)
         }
         untrack(socket)
         update { $0.connections -= 1 }
@@ -540,12 +754,18 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         // Everything received is marked as having come from elsewhere, as AirDrop marks it:
         // an app or a script in the drop then gets Gatekeeper's question the first time it is run.
         let quarantine = Quarantine.value()
+        // The tree's lock is taken for each use of it, as the stream threads take it. None of
+        // them should be left by now (`settle` closed them and waited, and no new one is let
+        // in); one that outlived the ten seconds `settle` waits must still not find the tree
+        // half way through a call.
         for e in manifest.entries.reversed() where e.kind != .symlink {
             // The owner keeps access to what they were just sent, whatever the mode was; and
             // nothing arrives set-uid (the mask drops every bit above the permissions).
-            tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
+            treeLock.withLock {
+                tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
+            }
         }
-        tree.release()
+        treeLock.withLock { tree.release() }
         var saved: [URL] = []
         let fm = FileManager.default
         for e in manifest.entries where !e.path.contains("/") {

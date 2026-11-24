@@ -83,6 +83,78 @@ final class ModelFindingsTests: XCTestCase {
         XCTAssertFalse(until(1) { !receiver.offers.withLock { $0.isEmpty } }, "an offer from a Mac that had just been forgotten was put in front of the person")
     }
 
+    // MARK: Drop.tla, NothingWrittenOnceJudged
+
+    /// A drop is judged whole and then put in place, and putting it in place takes time: every
+    /// file's times, mode and quarantine mark, then the moves. `settle` closes the data
+    /// connections that are open "so that nothing writes into the drop once it is judged", but
+    /// until 2026-11-24 nothing kept a NEW one out. A data connection of the drop that arrived
+    /// after the judgement (held up on the network past the time `settle` waits, or opened by
+    /// a sender that means to) was attached, and its records were written into a drop that was
+    /// being moved. The old model had the receiver take data connections only while it was
+    /// reading a round; the code had no such rule. Here the late record rewrites a chunk of a
+    /// file that had been judged, and that is what would land in the destination.
+    func testNothingIsWrittenIntoADropOnceItHasBeenJudgedWhole() throws {
+        let (a, b) = Trust.paired("sender", "receiver")
+        let receiver = try TestMac("receiver", trust: b)
+        let dst = root.appendingPathComponent("dst")
+        receiver.listener.onOffer = { [weak receiver] s in
+            receiver?.offers.withLock { $0.append(s) }
+            s.accept(destination: dst)
+        }
+        // One file of two chunks, and enough empty files beside it that putting the drop in
+        // place takes a while.
+        let chunk = 16 * 1024, empties = 6000
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "f.bin", kind: .file, size: Int64(2 * chunk)), .init(path: "d", kind: .directory)]
+            + (0..<empties).map { .init(path: "d/\($0)", kind: .file) })
+        let (channel, _) = try Channel.dial(host: "127.0.0.1", port: receiver.port, trust: a, name: "sender", purpose: .drop)
+        channel.socket.setReadTimeout(30)
+        try channel.send(.offer, Offer(items: ["f.bin", "d"], fileCount: empties + 1, totalBytes: manifest.totalBytes))
+        XCTAssertEqual(try channel.read().type, .accept)
+        try channel.send(.manifest, manifest)
+        XCTAssertEqual(try channel.read().type, .plan)
+        let keys = DropKeys(master: channel.master)
+        let session = try XCTUnwrap(receiver.offers.withLock { $0.first })
+
+        /// A data connection of this drop, proved; and a record for a chunk of f.bin.
+        func attach(_ conn: UInt64) throws -> (Socket, CipherState) {
+            let s = try Socket.connect(host: "127.0.0.1", port: receiver.port)
+            s.setReadTimeout(5)
+            try Opening.data.withUnsafeBytes { try s.writeAll($0.baseAddress!, Opening.data.count) }
+            var challenge = Data(count: 16)
+            try challenge.withUnsafeMutableBytes { try s.readExactly($0.baseAddress!, 16) }
+            let message = keys.sessionID + Crypto.be64(conn) + keys.attachTag(conn: conn, challenge: challenge)
+            try message.withUnsafeBytes { try s.writeAll($0.baseAddress!, message.count) }
+            return (s, keys.stream(conn))
+        }
+        func record(_ cipher: inout CipherState, chunk c: Int, of byte: UInt8) throws -> Data {
+            let header = RecordHeader(file: 0, chunk: UInt32(c), length: UInt32(chunk)).bytes
+            return try cipher.seal(header) + cipher.seal(Data(repeating: byte, count: chunk), ad: header)
+        }
+
+        // The drop, honestly: both chunks, the end of the connection, "done".
+        var (first, cipher) = try attach(1)
+        for c in 0..<2 {
+            let r = try record(&cipher, chunk: c, of: 7)
+            try r.withUnsafeBytes { try first.writeAll($0.baseAddress!, r.count) }
+        }
+        let end = try RecordHeader.sealEnd(&cipher)
+        try end.withUnsafeBytes { try first.writeAll($0.baseAddress!, end.count) }
+        try channel.send(.done, Done(streams: 1, resent: 0))
+        // It is whole, and is being put in place. Now the connection that comes late.
+        XCTAssertTrue(until(20) { session.state == .finishing || session.state.isFinal })
+        XCTAssertEqual(session.state, .finishing, "the drop was put in place before the test could try anything")
+        if var (late, lateCipher) = try? attach(2), let r = try? record(&lateCipher, chunk: 0, of: 9) {
+            try? r.withUnsafeBytes { try late.writeAll($0.baseAddress!, r.count) }
+            _ = late
+        }
+        XCTAssertTrue(until(30) { session.state.isFinal })
+        XCTAssertEqual(session.state, .completed)
+        XCTAssertEqual(session.stats.chunks, 2, "a record was taken into a drop that had already been judged whole")
+        XCTAssertEqual(try Data(contentsOf: dst.appendingPathComponent("f.bin")), Data(repeating: 7, count: 2 * chunk), "what was put in place is not what was judged")
+        _ = first
+    }
+
     /// The rule by itself, at the trust store: asking about a key and registering a session
     /// under it are one decision. What was registered before a withdrawal is ended by it; what
     /// comes to register after it is ended there and then.

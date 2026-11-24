@@ -58,4 +58,11 @@ extension Tuning {
     package nonisolated(unsafe) static var streamsPerDrop = 64
     /// How long a receiver waits for connections the sender says it opened but that never arrived.
     package nonisolated(unsafe) static var settleSeconds: Double = 1
+    /// How long a sender that was accepted may be silent before its manifest, or in the
+    /// middle of it. Room for the manifest is held meanwhile out of what all drops share
+    /// (`controlBudget`), so a sender that says nothing must not hold it for ever. A minute:
+    /// the largest manifest there can be (two million entries) took its sender under three
+    /// seconds to encode before the first byte of it went (a debug build, 2026-11-24). It is a
+    /// limit on silence, not on the whole: a manifest that keeps coming is waited for.
+    package nonisolated(unsafe) static var manifestSeconds: Double = 60
 }

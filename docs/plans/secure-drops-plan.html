@@ -1058,6 +1058,7 @@ T → R        speed-down {}
 down         on streams+1 … 2 × streams, R sends records for `seconds`, then the end marker
              T opens every record and discards it, and counts
 R → T        speed-done {bytes}
+T → R        speed-count {bytes, seconds}     what T opened, so that R can show both rates as well
 </pre>
   <ul>
     <li><strong>Who may.</strong> A paired key, with both sides saying so, exactly as for a drop. Nothing is asked of the person at the other Mac: nothing is written there, nothing is shown from the other Mac, and what it costs is bounded. It is logged at both ends.</li>

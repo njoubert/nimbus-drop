@@ -1119,13 +1119,11 @@ final class AppModel: ObservableObject {
         var status = "", indeterminate = false, failed = false, fraction = 0.0
         switch state {
         case .completed:
-            if let test {
-                let r = test.result
-                status = "↑ \(Format.bitRate(r.upRate)) to \(t.peerName) · ↓ \(Format.bitRate(r.downRate)) from it"
-                    + "\n\(Format.connections(r.streams)), \(Int(test.secondsEachWay)) s each way, encrypted, no disk at either end"
-            } else {
-                status = "\(t.peerName) measured the link to this Mac. Nothing was saved."
-            }
+            // The same two figures at both Macs, each from its own side.
+            let r = t.speedResult ?? SpeedResult()
+            status = "↑ \(r.upSeconds > 0 ? Format.bitRate(r.upRate) : "?") to \(t.peerName) · ↓ \(r.downSeconds > 0 ? Format.bitRate(r.downRate) : "?") from \(t.peerName)"
+            status += "\n\(Format.connections(r.streams))" + (t.linkInterface.map { " · over \(LinkName.display($0))" } ?? "")
+                + (test == nil ? " · asked for by \(t.peerName)" : "")
             fraction = 1
         case .declined(let why), .failed(let why): status = why; failed = true
         case .cancelled: status = "Cancelled"; failed = true

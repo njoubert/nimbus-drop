@@ -338,7 +338,7 @@ enum CLI {
             let r = test.result
             Swift.print("to \(peerName):    \(Format.bitRate(r.upRate))  (\(Format.bytes(r.upBytes)) in \(String(format: "%.1f", r.upSeconds)) s)")
             Swift.print("from \(peerName):  \(Format.bitRate(r.downRate))  (\(Format.bytes(r.downBytes)) in \(String(format: "%.1f", r.downSeconds)) s)")
-            Swift.print("\(Format.connections(r.streams)), encrypted, no disk at either end")
+            Swift.print("\(Format.connections(r.streams))" + (test.linkInterface.map { ", over \(LinkName.display($0))" } ?? ""))
             return 0
 
         case .checkUpdate:

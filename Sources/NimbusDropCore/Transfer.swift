@@ -128,6 +128,16 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// Not a drop: a measurement of the link (`SpeedTest`, or the other Mac's, served here).
     /// Nothing was read from a file or written to one, and there is nothing to keep.
     public internal(set) var isSpeedTest = false
+    /// A speed test's rates as this Mac sees them (up: from this Mac to the other), at either
+    /// end, once it has them.
+    public var speedResult: SpeedResult? { lock.withLock { _speedResult } }
+    private var _speedResult: SpeedResult?
+    func setSpeedResult(_ r: SpeedResult) { lock.withLock { _speedResult = r } }
+    /// This Mac's interface the conversation is on ("bridge0"), when it could be told: which
+    /// cable a speed test measured.
+    public var linkInterface: String? { lock.withLock { _linkInterface } }
+    private var _linkInterface: String?
+    func setLinkInterface(_ name: String?) { lock.withLock { _linkInterface = name } }
 
     /// Called on an engine thread whenever the state changes.
     public var onChange: (@Sendable () -> Void)?

@@ -10,6 +10,9 @@ public struct SpeedResult: Equatable, Sendable {
     public var downBytes: Int64 = 0
     public var downSeconds: Double = 0
     public var streams = 0
+    public init(upBytes: Int64 = 0, upSeconds: Double = 0, downBytes: Int64 = 0, downSeconds: Double = 0, streams: Int = 0) {
+        self.upBytes = upBytes; self.upSeconds = upSeconds; self.downBytes = downBytes; self.downSeconds = downSeconds; self.streams = streams
+    }
     /// Bytes a second from this Mac to the other, and back.
     public var upRate: Double { upSeconds > 0 ? Double(upBytes) / upSeconds : 0 }
     public var downRate: Double { downSeconds > 0 ? Double(downBytes) / downSeconds : 0 }
@@ -142,6 +145,7 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
             guard trust.standing(of: theirs).isPaired else { throw DropError.notPaired("This Mac is not paired with \(name)") }
         }
         setPeerKey(control.remote)
+        setLinkInterface(socket.localInterface)
         try control.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
                                              paired: true, purpose: .speed))
         // A copy from before the speed test does not know the purpose and hangs up here.
@@ -196,6 +200,7 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         let count = try decode(SpeedCount.self, from: counted.body)
         guard count.bytes >= 0, count.seconds.isFinite, count.seconds >= 0 else { throw DropError("Unexpected answer from \(peerName)") }
         lock.withLock { _result.upBytes = count.bytes; _result.upSeconds = count.seconds; _phase = "from \(name)" }
+        setSpeedResult(result)
         log("to \(peerName): \(Format.bytes(count.bytes)) in \(String(format: "%.2f", count.seconds)) s = \(Format.bitRate(result.upRate))")
 
         // Down: the other Mac sends on connections of their own; this one counts.
@@ -220,6 +225,9 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         let done = try control.read()
         guard done.type == .speedDone else { throw DropError("Unexpected answer from \(peerName)") }
         lock.withLock { _result.downBytes = meter.bytes; _result.downSeconds = meter.seconds; _phase = "" }
+        setSpeedResult(result)
+        // What this Mac counted, for the other Mac to show beside what it counted itself.
+        try? control.send(.speedCount, SpeedCount(bytes: meter.bytes, seconds: meter.seconds))
         log("from \(peerName): \(Format.bytes(meter.bytes)) in \(String(format: "%.2f", meter.seconds)) s = \(Format.bitRate(result.downRate))")
         finish(.completed)
     }
@@ -277,6 +285,7 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
         setItems(["Speed test"])
         isSpeedTest = true
         track(channel.socket)
+        setLinkInterface(channel.socket.localInterface)
         listener.trust.track(self, key: channel.remote)
     }
 
@@ -350,7 +359,16 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
             served?()
             try control.send(.speedDone, SpeedCount(bytes: sent, seconds: seconds))
             log("to \(peerName): \(Format.bytes(sent)) sent in \(Int(seconds)) s")
-            Thread.sleep(forTimeInterval: 0.2)
+            // The tester says what it counted, so that this Mac can show both rates too. A
+            // number from another machine: used only if it is one a count could be.
+            var result = SpeedResult(upBytes: 0, upSeconds: 0, downBytes: up.bytes, downSeconds: up.seconds, streams: streams)
+            control.socket.setReadTimeout(3)
+            if let last = try? control.read(), last.type == .speedCount, let c = try? decode(SpeedCount.self, from: last.body),
+               c.bytes >= 0, c.bytes <= sent, c.seconds.isFinite, c.seconds > 0 {
+                result.upBytes = c.bytes
+                result.upSeconds = c.seconds
+            }
+            setSpeedResult(result)
             finish(.completed)
         } catch {
             fail(error)

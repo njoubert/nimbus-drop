@@ -41,7 +41,14 @@ final class SpeedTests: XCTestCase {
         XCTAssertGreaterThan(r.downRate, 0)
         XCTAssertTrue(b.offers.withLock { $0.isEmpty }, "nobody was asked anything")
         XCTAssertEqual(seen.withLock { $0.count }, 1, "and the Mac that was asked knows it happened")
-        XCTAssertTrue(until(3) { seen.withLock { $0[0].state } == .completed })
+        XCTAssertTrue(until(5) { seen.withLock { $0[0].state } == .completed })
+        // Both Macs show the same two figures, each from its own side.
+        let theirs = try XCTUnwrap(seen.withLock { $0[0].speedResult })
+        XCTAssertEqual(theirs.downBytes, r.upBytes)
+        XCTAssertEqual(theirs.upBytes, r.downBytes)
+        XCTAssertEqual(theirs.upSeconds, r.downSeconds, accuracy: 0.001)
+        XCTAssertEqual(t.speedResult, r)
+        XCTAssertEqual(t.linkInterface, "lo0")
         // And the Mac is free for another.
         let again = test(a, b, streams: 1)
         XCTAssertTrue(until(15) { again.state.isFinal })

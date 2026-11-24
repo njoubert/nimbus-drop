@@ -3,6 +3,7 @@
 import dnssd
 import Foundation
 import Network
+import SystemConfiguration
 
 public let bonjourType = "_nimbusdrop._tcp"
 
@@ -312,13 +313,31 @@ public final class PeerBrowser: @unchecked Sendable {
     /// copy restarts, so a send resolves first.
     public func resolve(_ id: String, completion: ((Peer?) -> Void)? = nil) { resolve(id, anyInterface: false, completion: completion) }
 
-    /// The interface to reach a Mac on, when it is found on several: a Thunderbolt Bridge
-    /// before anything else. Left to macOS, a Mac cabled by Thunderbolt and also on Ethernet or
-    /// Wi-Fi is resolved to whichever comes first in the service order, usually not the
-    /// Thunderbolt one: the owner's first speed test in the app measured 300 Mbit/s over a
-    /// USB Ethernet adapter with a 37 Gbit/s cable beside it (2026-11-23). Nil: let macOS choose.
-    static func preferred(_ interfaces: [NWInterface]) -> NWInterface? {
-        interfaces.count > 1 ? interfaces.first { $0.name.hasPrefix("bridge") } : nil
+    /// The interface to reach a Mac on, when it is found on several: the one that comes first
+    /// in this Mac's own service order (System Settings › Network › Set Service Order), which
+    /// is the person's stated preference among their networks. An interface that is not a
+    /// network service at all comes after every one that is. Nil (macOS chooses) when the Mac
+    /// is on one interface, or on none that is in the order.
+    ///
+    /// Left to macOS, a Mac cabled by Thunderbolt was resolved over an interface that is in no
+    /// service order: the USB networking the same cable also brings up between two Macs, at
+    /// 300 Mbit/s beside the Thunderbolt Bridge's 37 Gbit/s (the owner's first speed test in
+    /// the app, 2026-11-23). The first fix preferred any interface named "bridge…", which was
+    /// a guess about names; this asks the Mac what its person prefers.
+    static func preferred(among found: [String], order: [String]) -> String? {
+        guard found.count > 1 else { return nil }
+        return order.first { found.contains($0) }
+    }
+
+    /// The BSD names of this Mac's network services that are switched on, in service order.
+    static func serviceOrder() -> [String] {
+        guard let prefs = SCPreferencesCreate(nil, "NimbusDrop" as CFString, nil), let set = SCNetworkSetCopyCurrent(prefs),
+              let ids = SCNetworkSetGetServiceOrder(set) as? [String] else { return [] }
+        return ids.compactMap { id in
+            guard let service = SCNetworkServiceCopy(prefs, id as CFString), SCNetworkServiceGetEnabled(service),
+                  let interface = SCNetworkServiceGetInterface(service) else { return nil }
+            return SCNetworkInterfaceGetBSDName(interface) as String?
+        }
     }
 
     private func resolve(_ id: String, anyInterface: Bool, completion: ((Peer?) -> Void)?) {
@@ -327,7 +346,9 @@ public final class PeerBrowser: @unchecked Sendable {
         // IPv4, so the address shown is the one people recognise; the listener is dual-stack.
         let parameters = NWParameters.tcp
         (parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options)?.version = .v4
-        let chosen = anyInterface ? nil : Self.preferred(interfaces[id] ?? [])
+        let found = interfaces[id] ?? []
+        let name = anyInterface ? nil : Self.preferred(among: found.map(\.name), order: Self.serviceOrder())
+        let chosen = found.first { $0.name == name }
         parameters.requiredInterface = chosen
         let connection = NWConnection(to: endpoint, using: parameters)
         resolving[id] = connection

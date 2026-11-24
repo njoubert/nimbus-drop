@@ -32,8 +32,6 @@ struct SettingsView: View {
                         Text(n == Settings.defaultStreams ? "\(n) (default)" : "\(n)").tag(n)
                     }
                 }
-                Text("How many connections a drop you send is spread over. More helps on fast wired networks and with many small files. The receiving Mac takes however many the sender opens.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Receiving") {
                 Toggle("Only from the local network", isOn: Binding(get: { model.localOnly }, set: { model.setLocalOnly($0) }))
@@ -51,8 +49,6 @@ struct SettingsView: View {
                     Text("1 day").tag(86400.0)
                     Text("1 hour").tag(3600.0)
                 }
-                Text("When a key reaches its end this Mac makes a new one, and each Mac it is paired with is paired again, with two codes, the next time you send to it or it to you. A shorter time means pairing more often.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Let other Macs ask to pair", isOn: Binding(get: { !model.trust.requestsOff }, set: { model.setRequestsOff(!$0) }))
                     .help("Off: a pairing can only be started from this Mac.")
                 HStack {
@@ -113,8 +109,6 @@ struct SettingsView: View {
                     .disabled(Bundle.main.bundleIdentifier == nil)
                 Toggle("Show “\(Self.serviceName)” in Finder's Services menu", isOn: Binding(get: { serviceShown }, set: { serviceShown = $0; ServiceMenu.setShown($0) }))
                     .disabled(ServiceMenu.key == nil)
-                Text("Right-click files in Finder, then Services. The same switch is in System Settings › Keyboard › Keyboard Shortcuts › Services.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("History and log") {
                 HStack {

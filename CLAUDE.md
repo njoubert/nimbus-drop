@@ -164,7 +164,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  153 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  154 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -570,11 +570,15 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   the window is already key closes it, so the icon toggles.
 - **A peer's port changes when its copy restarts** (the preferred port is taken while the old
   socket lingers, or a second copy is running), so `AppModel.send` resolves again every time.
-- **A Mac found on several interfaces is resolved on its Thunderbolt Bridge when it has one**
-  (`PeerBrowser.preferred`: `NWBrowser` lists the interfaces of each result, and the resolve
-  sets `requiredInterface`; two seconds, then any interface). Left to macOS the Air, cabled by
-  Thunderbolt and also on a USB Ethernet adapter, resolved to the adapter, and the owner's
-  first speed test in the app read 300 Mbit/s beside a 37 Gbit/s cable (2026-11-23). A speed
+- **A Mac found on several interfaces is resolved on the one that comes first in this Mac's
+  service order** (System Settings › Network › Set Service Order; `PeerBrowser.preferred`,
+  `serviceOrder`: `NWBrowser` lists the interfaces of each result, and the resolve sets
+  `requiredInterface`; two seconds, then any interface). An interface that is no network
+  service comes last. A Thunderbolt cable between two Macs brings up two links: the
+  Thunderbolt Bridge, and USB networking (`en13` here, "type: USB Ethernet", in no service
+  order). Left to macOS the Air resolved over the second, and the owner's first speed test
+  in the app read 300 Mbit/s beside a 37 Gbit/s link (2026-11-23). The first fix preferred
+  any interface named `bridge…`; the owner asked for nothing hardcoded. A speed
   test's row and the command line name the interface it went over (`Transfer.linkInterface`,
   `LinkName.display`), which is how to tell.
 - **A Mac with two interfaces on one subnet** (Wi-Fi and Ethernet) shows whichever address the

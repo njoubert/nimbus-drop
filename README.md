@@ -290,15 +290,21 @@ and `scripts/mutate.py` breaks each guard in turn to check that a test notices. 
 a review by a professional cryptographer.
 
 **Checked by machine.** `formal/` holds models of the parts the security rests on, and
-`./build.sh verify` runs them: the handshake and the keys derived from it, and the pairing with
-its two spoken codes, proved in Tamarin against an attacker who owns the network (and, for the
-pairing, hears the codes); the pairing transaction, two Macs asking each other at once, a
-withdrawal of trust and a drop's rounds under a failing network, model-checked in TLA+. One
-piece of the code, the state machine that decides what each message of a pairing means, is
-checked to be the same machine as its specification, transition for transition; the rest of
-the models describe the code and are tied to it by tests, not by proof. `formal/README.md` says
-which is which, and what none of it claims. The first model run against the code found a way
-for a drop to begin in the moment its Mac was being forgotten; fixed in the same change.
+`./build.sh verify` runs them: the handshake, the keys derived from it and what they are used
+for, and the pairing with its two spoken codes, proved in Tamarin against an attacker who owns
+the network (and, for the pairing, hears the codes); the trust store and how trust is
+withdrawn, a key's end against a clock that lies, a drop's rounds under a failing network,
+who gets a place at the listener, and two Macs asking each other at once, model-checked in
+TLA+. Four pieces of the code, the state machines that decide what a pairing message means,
+what a key is to this Mac, what each message of a drop means and which connection gives way,
+are each checked to be the same machine as its specification, transition for transition; the
+classes around them are tied to the models by tests, not by proof. The code that holds keys
+cannot write to anything, and the code that writes cannot read a key: the compiler holds
+that. `docs/security/claims.md` lists every claim with the kind of evidence it has, and
+`formal/README.md` says what none of it claims. It is not an audit, and the app has not had
+one. The models, the tests written to hold them and an outside review between them found
+about thirty things, a crash on one accepted drop among them; all are fixed or written down.
+`SECURITY.md` says how to report another.
 
 ## Testing it against a bad network
 

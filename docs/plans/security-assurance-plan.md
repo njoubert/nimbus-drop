@@ -97,6 +97,29 @@ models assume. That stays "by reading, with a mutant on each side" (`formal/READ
 7. CI, `SECURITY.md`, CLAUDE.md, README, the report. `./build.sh verify`, `scripts/mutate.py`,
    loopback before and after.
 
-## Status
+## Status (2026-11-24): done, on the branch `security-assurance`
 
-(filled in as the work lands)
+| | |
+|---|---|
+| The four next steps | `TrustCore`, `RoundMachine` and `Admission` are pure machines in `NimbusCrypto`, each held equal to its TLA+ specification; `Expiry.tla` is new; thirteen handshake mutants are in the theory and run. Open: four more flags that did not settle. |
+| The work order | Findings 1, 2, 3, 4, 7, 8 and the trust machine: done as the table above says. One piece of 2 is left (`Trust.store` is still `public`). Nothing of 5 or 6 was done. |
+| Tests | 231 + 29 chaos + 74 in `NimbusCryptoTests` (168 + 29 + 9 before) |
+| Models | Tamarin: 43 lemmas in two theories, 15 mutants. TLC: four refinements and their system models, with mutants and reachability runs (`formal/README.md`). |
+| Mutation | 263 guards in `scripts/mutate.py` (85 before) |
+| Found | by the models and the tests written to hold them: nine (seven fixed, two stated as limits). By an independent review given the code and not the conclusions: twelve, one of them a crash on one accepted drop (all fixed, two in part). By the containment tests: ten, two of them the review's leads (all fixed). Listed in `formal/README.md`, `docs/security/filesystem-containment.md` and the commit messages. |
+| Data path | loopback, before and after, within noise on every line (CLAUDE.md, Measured) |
+| Not done | a run between two Macs; the Tamarin job seen to pass in CI; CryptoVerif; a Linux build of the core; content hashing (ruled out); the decisions in `docs/security/claims.md`, "Open for the owner" |
+
+What was built differs from the plan above in these ways:
+
+- The resume ledger was NOT bound to the boot (the work order rules out changing what a resume
+  believes). It is the first item of "Open for the owner".
+- Secret confinement went further than planned: `master` and the resume key are a type whose
+  bytes only `NimbusCrypto` can read, and the log, the lock and the last system error moved to
+  a module the pure one cannot import.
+- The trust machine does not include this Mac's own key running out on schedule (it shares
+  `rotate` with Reset, which is in it), and admission's equality is at four sets of small
+  limits, not the shipped ones.
+- Five agents worked in parallel in their own worktrees (the round machine, admission, the
+  containment tests, the pairing contract, Tamarin) and a sixth reviewed the code without
+  being told what anyone had concluded. Each branch was merged with the whole suite run.

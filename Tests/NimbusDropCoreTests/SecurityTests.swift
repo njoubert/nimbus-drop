@@ -417,4 +417,36 @@ final class SecurityTests: XCTestCase {
         XCTAssertEqual(asked.value, 0, "and nobody was asked anything")
         XCTAssertThrowsError(try Probe.identify(host: "127.0.0.1", port: l.port, timeout: 2), "not even who it is")
     }
+
+    // MARK: The uninstaller
+
+    /// The uninstaller deletes folders. It deletes only what is exactly a partial folder of
+    /// this app's, by name, and only where a drop was saved; never anything else there.
+    func testTheUninstallerRemovesOnlyWhatIsTheApps() throws {
+        let fm = FileManager.default
+        let home = root.appendingPathComponent("home"), downloads = home.appendingPathComponent("Downloads"), other = home.appendingPathComponent("Elsewhere")
+        let key = String(repeating: "0a", count: 16)
+        for dir in [downloads, other] {
+            for name in ["Photos.\(key).nimbusdrop-partial", "Photos", "Notes.nimbusdrop-partial", "x.\(key.dropLast()).nimbusdrop-partial", "y.\(key.uppercased()).nimbusdrop-partial"] {
+                try fm.createDirectory(at: dir.appendingPathComponent(name), withIntermediateDirectories: true)
+            }
+            try Data().write(to: dir.appendingPathComponent("file.\(key).nimbusdrop-partial"))   // a file of that name is not ours
+        }
+        let found = Leftovers.partials(near: [other.appendingPathComponent("Christmas").path], also: [downloads])
+        XCTAssertEqual(Set(found.map(\.path)), [downloads.appendingPathComponent("Photos.\(key).nimbusdrop-partial").path, other.appendingPathComponent("Photos.\(key).nimbusdrop-partial").path])
+        XCTAssertEqual(Leftovers.partials(near: [], also: [home.appendingPathComponent("not-there")]), [])
+
+        // What is kept under Library is named by the bundle, and a development copy does not
+        // claim the released app's files or the command line's identities.
+        let release = Leftovers.library(bundleID: "com.njoubert.nimbusdrop", bundleName: "Nimbus Drop", home: home).map { $0.path.replacingOccurrences(of: home.path, with: "~") }
+        let dev = Leftovers.library(bundleID: "com.njoubert.nimbusdrop.dev", bundleName: "Nimbus Drop Dev", home: home).map { $0.path.replacingOccurrences(of: home.path, with: "~") }
+        XCTAssertTrue(release.contains("~/Library/Application Support/com.njoubert.nimbusdrop"))
+        XCTAssertTrue(release.contains("~/Library/Application Support/com.njoubert.nimbusdrop.cli"))
+        XCTAssertTrue(release.contains("~/Library/Logs/Nimbus Drop"))
+        XCTAssertTrue(release.contains("~/Library/Preferences/com.njoubert.nimbusdrop.plist"))
+        XCTAssertTrue(dev.contains("~/Library/Logs/Nimbus Drop Dev"))
+        XCTAssertTrue(dev.allSatisfy { $0.contains("nimbusdrop.dev") || $0.hasSuffix("/Nimbus Drop Dev") }, "\(dev)")
+        XCTAssertTrue((release + dev).allSatisfy { $0.hasPrefix("~/Library/") && $0.split(separator: "/").count >= 4 }, "never a whole Library folder")
+        XCTAssertEqual(Leftovers.serviceKey(bundleID: "com.njoubert.nimbusdrop", bundleName: "Nimbus Drop"), "com.njoubert.nimbusdrop - Nimbus Drop To… - dropService")
+    }
 }

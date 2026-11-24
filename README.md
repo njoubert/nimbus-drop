@@ -24,7 +24,7 @@
 ./build.sh stop           # quit it
 ./build.sh test           # whole drops over loopback (swift test)
 ./build.sh install        # release build → /Applications/Nimbus Drop.app, register the Login Item, launch
-./build.sh uninstall      # unregister the Login Item, remove the app and its preferences
+./build.sh uninstall      # remove the app and everything it has kept (see Uninstalling)
 ./build.sh status         # running? installed? Login Item registered?
 ./build.sh app            # release build → dist/Nimbus Drop.app only
 ./build.sh dmg            # release build → dist/NimbusDrop-<version>.dmg, drag-to-Applications disk image
@@ -313,6 +313,17 @@ it works perfectly well without (an air-gapped network is a supported place to u
 unless *Check for Updates Automatically* is off, it asks `api.github.com` once a day for the
 newest release and downloads it from `release-assets.githubusercontent.com`. Your files never
 leave your network.
+
+## Uninstalling
+
+**Settings › Uninstall Nimbus Drop…** removes the app and everything it has kept on the Mac:
+its identity and pairings, the history, settings, logs, downloaded updates, Open at Login,
+the Finder service, and any drops that never finished. The Macs it was paired with are told
+to stop trusting it. Files you received stay where you saved them. macOS may go on listing
+the app under Privacy & Security › Local Network; only macOS can remove that entry.
+
+To keep the app but take "Nimbus Drop To…" out of Finder's Services menu, switch it off in
+Settings › General (or in System Settings › Keyboard › Keyboard Shortcuts › Services).
 
 ## Licence
 

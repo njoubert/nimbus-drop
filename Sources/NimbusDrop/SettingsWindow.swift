@@ -11,6 +11,8 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     let updater: Updater?
     @State private var automatic: Bool
+    @State private var serviceShown = ServiceMenu.isShown
+    static var serviceName: String { "\(Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "Nimbus Drop") To…" }
     /// For the picture of it: as tall as its contents. On screen it scrolls instead, since
     /// with a few Known Macs it is taller than a laptop's display.
     var whole = false
@@ -109,6 +111,10 @@ struct SettingsView: View {
             Section("General") {
                 Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
                     .disabled(Bundle.main.bundleIdentifier == nil)
+                Toggle("Show “\(Self.serviceName)” in Finder's Services menu", isOn: Binding(get: { serviceShown }, set: { serviceShown = $0; ServiceMenu.setShown($0) }))
+                    .disabled(ServiceMenu.key == nil)
+                Text("Right-click files in Finder, then Services. The same switch is in System Settings › Keyboard › Keyboard Shortcuts › Services.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("History and log") {
                 HStack {
@@ -135,6 +141,14 @@ struct SettingsView: View {
                     Text(updater == nil ? "Updates are for the installed app; this is a development build."
                                         : "Updates install only into /Applications, and this copy runs from somewhere else.")
                         .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Section("Uninstall") {
+                HStack {
+                    Text("Removes the app and everything it has kept on this Mac, as if it had never been installed.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Uninstall Nimbus Drop…", role: .destructive) { Uninstaller.ask(model: model) }.disabled(model.resetting)
                 }
             }
             Section("About") {

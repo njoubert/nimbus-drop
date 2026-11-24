@@ -371,7 +371,17 @@ case "$cmd" in
     ;;
 
   uninstall)
-    rm -rf "$HOME/Library/Caches/$BUNDLE_ID" "$HOME/Library/Application Support/$BUNDLE_ID"
+    # The same list as the app's own uninstaller (Settings › Uninstall; Leftovers in the core),
+    # done from outside so that it also works on a copy too old to know `--uninstall`. The
+    # paired Macs are not told from here: the app's Settings does that.
+    rm -rf "$HOME/Library/Caches/$BUNDLE_ID" "$HOME/Library/Application Support/$BUNDLE_ID" \
+      "$HOME/Library/Application Support/$BUNDLE_ID.cli" "$HOME/Library/Logs/$APP_NAME" \
+      "$HOME/Library/HTTPStorages/$BUNDLE_ID" "$HOME/Library/HTTPStorages/$BUNDLE_ID.binarycookies" \
+      "$HOME/Library/Cookies/$BUNDLE_ID.binarycookies" "$HOME/Library/WebKit/$BUNDLE_ID" \
+      "$HOME/Library/Saved Application State/$BUNDLE_ID.savedState"
+    defaults delete NimbusDrop >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c "Delete :NSServicesStatus:'$BUNDLE_ID - $APP_NAME To… - dropService'" \
+      "$HOME/Library/Preferences/pbs.plist" >/dev/null 2>&1 || true
     rm -rf "$INSTALL_DIR/.$NAME-old.app" "$INSTALL_DIR/.$NAME-update.app"
     if [ -e "$INSTALLED" ]; then
       stop_all
@@ -384,6 +394,8 @@ case "$cmd" in
       note "$INSTALLED is not installed"
     fi
     if defaults delete "$BUNDLE_ID" >/dev/null 2>&1; then note "removed preferences"; fi
+    tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
+    /System/Library/CoreServices/pbs -update >/dev/null 2>&1 || true
     ;;
 
   status)

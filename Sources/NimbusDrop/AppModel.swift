@@ -661,6 +661,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// For the uninstaller: tells every paired Mac that can be reached that this Mac's identity
+    /// is finished (as Reset Identity does, for at most ten seconds), stops listening, then
+    /// calls `done` on the main thread.
+    func retireEverything(then done: @escaping @MainActor () -> Void) {
+        var places: [PublicKey: (String, UInt16)] = [:]
+        for p in destinations { if let key = p.key, let a = p.address, let port = p.port { places[key] = (a, port) } }
+        let reach = places
+        let trust = trust, identity = identity
+        resetting = true
+        listener?.stop()
+        advertiser = nil
+        DispatchQueue.global().async {
+            if !trust.known.isEmpty { trust.reset(identity: identity, reach: { reach[$0].map { (host: $0.0, port: $0.1) } }) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { done() } }
+        }
+    }
+
     /// The stored identity is there and will not open. It is never replaced without asking,
     /// because the record of retired identities would go with it.
     private func askAboutDamagedIdentity() {

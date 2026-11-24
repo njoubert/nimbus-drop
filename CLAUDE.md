@@ -124,6 +124,7 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
   FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
                             extension to mean); ScannedDrop.keeping(kinds:) (send only some)
   Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
+  Leftovers.swift           everything a copy keeps on a Mac, for the uninstaller: one list
 Sources/NimbusDropChaos/    testing only, never in the app
   ChaosProxy.swift          a TCP proxy that throttles, stalls, cuts connections, refuses new
                             ones and flips bits, on triggers by bytes carried or by time. Knows
@@ -156,8 +157,10 @@ Sources/NimbusDrop/         the app
                             every stage; --dump-pairing writes all of them
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
+  Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
+                            Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  143 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  144 tests. ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -508,6 +511,24 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   `NSRegisterServicesProvider` under that same name. The development bundle's item is
   "Nimbus Drop Dev To…", so the two can be told apart. `/System/Library/CoreServices/pbs -update`
   then `pbs -dump | grep -A12 "Nimbus Drop"` shows whether macOS has picked it up.
+- **The Service cannot be removed from a signed app, only hidden**: it is declared in the
+  Info.plist. Whether macOS shows it is kept in the `pbs` preferences, `NSServicesStatus`,
+  under "<bundle id> - <menu item> - <message>" (`enabled_services_menu`,
+  `enabled_context_menu`, `presentation_modes`); no entry means shown. `ServiceMenu` writes
+  that and runs `pbs -update`: the same switch as System Settings › Keyboard › Keyboard
+  Shortcuts › Services. Checked 2026-11-23 by reading the preference back; nobody has yet
+  looked at Finder's menu after flipping it.
+- **Uninstalling** (`Uninstaller`; Settings › Uninstall, or `--uninstall [--yes]` from the
+  binary inside the app, which lists without `--yes`): tells the paired Macs (as Reset
+  Identity does; the app only), unregisters the Login Item, removes the Service's entry and
+  notifications, deletes what `Leftovers.library` lists and any partial folders beside saved
+  drops and in Downloads, then a detached `sh` waits for the process to exit and removes what
+  it rewrites on the way out (preferences, the log) and the app itself, with `lsregister -u`
+  and `tccutil reset All`. **Something new the app writes outside a drop's destination goes
+  in `Leftovers`**, and in `build.sh uninstall`, which repeats the list from outside. Not
+  removable by anyone but macOS: the entry under Privacy & Security › Local Network. Tested
+  on a throwaway copy with its own bundle id (planted files, then `--uninstall --yes`: all
+  gone, the other copies' files untouched); never run from the Settings button.
 - **A right-click on a status item that has no menu**: `sendAction(on: [.leftMouseUp,
   .rightMouseUp])`, and in the action, for a right-click, set `item.menu`, `performClick`, and
   unset it. A status item with a menu set shows it on every click.

@@ -293,6 +293,31 @@ final class ReviewTests: XCTestCase {
         guard case .renew = sender.trust.standing(of: receiver.key) else { return XCTFail("the tile would go on saying Paired: \(sender.trust.standing(of: receiver.key))") }
     }
 
+    /// Forget tells the other Mac when it can be reached (the owner, 2026-11-23: the forgotten
+    /// Mac went on showing "Paired" until its next drop failed). What it is told is something
+    /// only the forgetting Mac's own key can say, and only about itself.
+    func testForgetTellsTheOtherMacAndNobodyElseCanSayItForIt() throws {
+        let (sender, receiver) = try pairedMacs()
+        let third = Trust.inMemory()
+        third.adopt(receiver.trust, as: "receiver"); receiver.trust.adopt(third, as: "third")
+        // A stranger, and another paired Mac, each say "not paired": it is about themselves only.
+        _ = try? Channel.dial(host: "127.0.0.1", port: receiver.port, trust: Trust.inMemory(), name: "sender", purpose: nil, paired: false)
+        XCTAssertTrue(receiver.trust.standing(of: sender.key).isPaired)
+        XCTAssertTrue(receiver.trust.standing(of: third.publicKey).isPaired)
+        // A drop is waiting from the Mac that is about to forget; it goes with the pairing.
+        receiver.listener.onOffer = { [weak receiver] s in receiver?.offers.withLock { $0.append(s) } }
+        let s = send([try file("a.bin", bytes: chunk)], from: sender, to: receiver)
+        XCTAssertTrue(until { receiver.offers.withLock { $0.count } == 1 })
+        XCTAssertTrue(sender.trust.forget(receiver.key, telling: (host: "127.0.0.1", port: receiver.port), identity: sender.identity))
+        guard case .renew = receiver.trust.standing(of: sender.key) else { return XCTFail("the forgotten Mac still has \(receiver.trust.standing(of: sender.key))") }
+        XCTAssertTrue(until(3) { receiver.offers.withLock { $0[0] }.state.isFinal && s.state.isFinal })
+        XCTAssertTrue(receiver.trust.standing(of: third.publicKey).isPaired, "and nobody else's pairing was touched")
+        XCTAssertTrue(receiver.trust.tombstones.isEmpty, "forgotten is not retired: the two can pair again")
+        // Nowhere to reach it: forgotten here all the same.
+        XCTAssertFalse(third.forget(receiver.key, telling: nil, identity: sender.identity))
+        XCTAssertFalse(third.standing(of: receiver.key).isPaired)
+    }
+
     // MARK: Guards no test noticed the absence of
 
     /// A drop begun by hand, as far as the receiver's first plan, so that what follows can be
@@ -862,7 +887,8 @@ final class ReviewTests: XCTestCase {
                     try p.plain(Data([FrameType.hello.rawValue, 0]) + Crypto.random(5000))
                 case 6:
                     // A proper hello, then whatever comes to mind where the purpose's first message belongs.
-                    try p.hello([Purpose.drop, .pair, .verify, .resume, .retire][i / 10 % 5], paired: i % 20 < 10)
+                    // (The paired sender always says it is paired: saying otherwise is a Forget.)
+                    try p.hello([Purpose.drop, .pair, .verify, .resume, .retire][i / 10 % 5], paired: i % 2 == 1 || i % 20 < 10)
                     try p.message(type, body)
                     try p.message(type, body, more: 1, total: UInt32.random(in: 0...UInt32.max, using: &rng))
                 case 7:

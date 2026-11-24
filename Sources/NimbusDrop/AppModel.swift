@@ -599,8 +599,10 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let trust = trust
-        DispatchQueue.global().async { trust.forget(mac.key) }
+        // Forgotten here whatever happens; the other Mac is told if it is on the network now.
+        let place = destinations.first { $0.key == mac.key }.flatMap { p in p.address.flatMap { a in p.port.map { (host: a, port: $0) } } }
+        let trust = trust, identity = identity
+        DispatchQueue.global().async { trust.forget(mac.key, telling: place, identity: identity) }
     }
 
     func rename(_ mac: KnownMac) {

@@ -174,8 +174,10 @@ enum CLI {
             guard let mac = trust.known.first(where: { $0.key.tag.replacingOccurrences(of: "-", with: "").hasPrefix(tag.uppercased().replacingOccurrences(of: "-", with: "")) }) else {
                 fputs("no paired Mac has a key beginning \(tag)\n", stderr); return 1
             }
-            trust.forget(mac.key)
-            Swift.print("forgot \(mac.name)")
+            let found = browse(seconds: 3) { $0.contains { $0.key == mac.key && $0.address != nil } }
+            let place = found.first { $0.key == mac.key }.flatMap { p in p.address.flatMap { a in p.port.map { (host: a, port: $0) } } }
+            let told = trust.forget(mac.key, telling: place, identity: identity)
+            Swift.print("forgot \(mac.name)" + (told ? "; it was told" : "; it could not be told and will learn at its next drop"))
             return 0
 
         case .keyLifetime(let text):

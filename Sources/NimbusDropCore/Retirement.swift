@@ -42,6 +42,26 @@ public enum Retirement {
 }
 
 extension Trust {
+    /// Forget, with the other Mac told when it can be: the pairing goes here first, whatever
+    /// happens next, and then that Mac is reached (for at most `seconds`) with a hello that
+    /// proves this Mac's key and says `paired: false`. It drops its half at once instead of
+    /// showing "Paired" until its next drop fails. Best effort: a Mac that is off, asleep or
+    /// elsewhere learns at its next drop, as before. Returns whether it was told.
+    @discardableResult
+    public func forget(_ key: PublicKey, telling place: (host: String, port: UInt16)?, identity: Identity, seconds: Double = 3) -> Bool {
+        let mine = keyPair
+        forget(key)
+        guard let place, let socket = try? Socket.connect(host: place.host, port: place.port, timeout: seconds) else { return false }
+        defer { socket.shutdown() }
+        socket.setReadTimeout(Int(seconds.rounded(.up)))
+        guard let channel = try? Channel.initiate(socket, keys: mine, expect: key),
+              (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: remaining,
+                                                     paired: false, purpose: nil))) != nil,
+              let reply = try? channel.read(), reply.type == .hello else { return false }
+        DropLog.write("identity: told \(key.tag) that this Mac no longer has it paired")
+        return true
+    }
+
     /// Reset Identity, whole: tells every paired Mac that can be reached, for at most `seconds`
     /// in all, then makes a new key and destroys the old one whatever the outcome. Returns the
     /// pair-again list, each Mac marked with whether it was told.

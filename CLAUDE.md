@@ -160,7 +160,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  144 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  145 tests. ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -320,7 +320,11 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   then the store refuses the key, then every session it authenticated is ended and its keys
   wiped (`Transfer.withdrawn`), then listeners drop what it had waiting, and only then is a
   retire notice acknowledged. Retire and "It Replaces…" leave a tombstone (refused for good);
-  Forget does not, and tells nobody: the forgotten Mac learns at its next drop, when the key
+  Forget does not. It tells the other Mac when it can (`Trust.forget(_:telling:identity:)`: a
+  connection that proves this Mac's key, hello `paired: false`, no purpose; three seconds at
+  most, best effort), and a responder that has the proved key paired and reads
+  `paired: false` in its hello drops its half there and then, whatever the purpose
+  (`DropListener.serve`). Otherwise the forgotten Mac learns at its next drop, when the key
   it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
   withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
   2026-11-23 it stayed "Paired" and every drop failed). The same is read from the hello of a

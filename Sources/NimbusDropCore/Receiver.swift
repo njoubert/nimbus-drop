@@ -230,7 +230,7 @@ public final class DropListener: @unchecked Sendable {
         }
         // A key has been proved. What it is to this Mac decides everything from here.
         let key = channel.remote
-        let standing = trust.standing(of: key)
+        var standing = trust.standing(of: key)
         noLongerAStranger()
         switch standing {
         case .mine: socket.shutdown(); return
@@ -275,8 +275,17 @@ public final class DropListener: @unchecked Sendable {
         }
         defer { saidWhatItCameFor() }
 
-        guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body),
-              (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
+        guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body) else { socket.shutdown(); return }
+        // A Mac this one has paired proves its key and says it no longer has this Mac paired:
+        // someone there chose Forget (and it is telling us), or it is about to ask to pair
+        // again. This Mac's half is worth nothing from here on, and goes now rather than at
+        // the next drop. Only that key can say this, sealed under its own handshake, and only
+        // about itself; it is what answering a drop with `paired: false` has always done.
+        if standing.isPaired, !hello.paired {
+            trust.notePairingGone(key)
+            standing = trust.standing(of: key)
+        }
+        guard (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
                                                      paired: standing.isPaired, purpose: nil))) != nil else { socket.shutdown(); return }
         let name = Sanitize.label(hello.name, limit: 64)
 

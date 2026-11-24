@@ -54,13 +54,17 @@
 (*       << "unpaired", 1 >> if n is in m.unpaired, << "waiting", k >> if  *)
 (*       m.waiting gives n the key k, and << "nobody", 1 >> for every      *)
 (*       other number (never given out, or holding nothing any more).      *)
+(*   drops(count)              << "drops", count >>                        *)
 (*                                                                         *)
 (* An answer. admitted(n, displacing: d) is << "admitted", i >> where d is *)
 (* the i-th of m.strangers BEFORE the event (0: nobody gave way). Which    *)
 (* number n the arrival got is left out, except that the tests fail if it  *)
 (* was given before. moved(displacing: d) likewise with m.unattached.      *)
-(* close(why) and nothing are themselves. So an answer says WHICH          *)
-(* connection gives way, not only that one does.                           *)
+(* giveWay(ds) is << "giveWay", k >> when ds are the first k of            *)
+(* m.unattached before the event, in order (and something that is no       *)
+(* answer of the specification's when they are any others). close(why)     *)
+(* and nothing are themselves. So an answer says WHICH connections give    *)
+(* way, not only that some do.                                             *)
 (*                                                                         *)
 (* Why leaving those out is safe is not something TLC can say: one Swift   *)
 (* value was walked for each state here. It is tested instead.             *)
@@ -157,6 +161,7 @@ Events(s) ==
     \cup {<< "data", w, d >> : w \in Whos(s), d \in Drops}
     \cup {<< "proved", w, p >> : w \in Whos(s), p \in Standings \cup Keys}
     \cup {<< kind, w >> : kind \in {"attached", "purpose", "closed"}, w \in Whos(s)}
+    \cup {<< "drops", d >> : d \in Drops}
 
 Close(s, why) == << s, << "close", why >> >>
 Noted(s) == << s, << "nothing" >> >>
@@ -176,6 +181,12 @@ Step(s, e) ==
                    ELSE LET p == Place(s.strangers, e[2], Strangers, StrangersPerAddress)
                         IN << [t EXCEPT !.arrivals = Append(recent, [age |-> 0, from |-> e[2]]), !.strangers = p[1]],
                               << "admitted", p[2] >> >>
+    ELSE IF e[1] = "drops" THEN
+        \* << "drops", how many are in progress now >>: the places a drop gave end with it, and
+        \* those over what is left, the ones that have waited longest, give way
+        LET over == Len(s.unattached) - UnattachedPerDrop * e[2]
+        IN IF over > 0 THEN << [s EXCEPT !.unattached = SubSeq(@, over + 1, Len(@))], << "giveWay", over >> >>
+           ELSE Noted(s)
     ELSE LET who == e[2] IN
     IF e[1] = "data" THEN
         \* << "data", who, drops in progress >>

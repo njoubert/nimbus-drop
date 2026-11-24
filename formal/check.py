@@ -160,7 +160,8 @@ TLA_RUNS = [
 ADMISSION_INV = ["TypeOK", "PoolsWithinLimits", "TheRateHolds", "EveryPlaceIsHeldByItsConnection", "AnAddressDecidesOnlyWhoWaits",
                  "ANewcomerWithinTheRateGetsAPlace", "OverTheRateTheNewcomerIsClosed", "TheOldestGivesWay", "ElsewhereCountsForNothing",
                  "NoDropNoPlace", "AKeysPlacesAreItsOwn", "ARetiredKeyGetsNothing", "OneThatGaveWayGetsNothingMore",
-                 "GivesWayOnlyAfterAPoolOfNewcomers", "KeptOutByTheRateOnlyOnItsOwnAccount", "APairedMacIsNotTurnedAwayForOthers"]
+                 "GivesWayOnlyAfterAPoolOfNewcomers", "KeptOutByTheRateOnlyOnItsOwnAccount", "APairedMacIsNotTurnedAwayForOthers",
+                 "UnattachedWithinItsLimit", "WhenADropEndsItsPlacesEndWithIt"]
 
 
 def admission(**changes):
@@ -236,10 +237,6 @@ ADMISSION_RUNS = [
     ("AdmissionSystem (the rate, on a clock that is set back: nothing is counted from later than now, and nothing is lost count of)",
      "AdmissionSystem", admission_rate(SetBack="2", Arrivals="2", ArrivalsPerAddress="1"),
      ["TypeOK", "PoolsWithinLimits", "EveryPlaceIsHeldByItsConnection", "NothingIsCountedFromLaterThanNow", "AnAddressDecidesOnlyWhoWaits"], [], HOLDS, None),
-    # Found by this model, 2026-11-24: the pool of data connections has so many places for each drop in
-    # progress, and when a drop ended nobody gave any up.
-    ("AdmissionSystem / found: the pool of data connections is over its limit when a drop ends", "AdmissionSystem",
-     admission(), ["UnattachedWithinItsLimit"], [], "UnattachedWithinItsLimit", None),
     # The good outcome is reachable: an invariant that says it never happens, which must be violated.
     ("AdmissionSystem / reachable: the watched Mac proves its key and says what it came for", "AdmissionSystem",
      admission(), ["TheWatchedMacNeverSaysWhatItCameFor"], [], "TheWatchedMacNeverSaysWhatItCameFor", None),
@@ -275,6 +272,17 @@ ADMISSION_RUNS = [
     admission_mutant("an arrival is forgotten a tick early", "TheRateHolds", STILL, STILL.replace("<=", "<"), admission_rate()),
     admission_mutant("an arrival from later than now goes on counting (set back an hour, the clock kept everyone out for the hour)",
                      "NothingIsCountedFromLaterThanNow", STILL, "StillCounts(x) == x.age <= Window", admission_rate(SetBack="2")),
+    # Found by this model, 2026-11-24, and the first of these is the listener as it was: the pool of data
+    # connections has so many places for each drop in progress, and when a drop ended nobody gave any up.
+    admission_mutant("when a drop ends the places it gave are kept (the listener until 2026-11-24)", "UnattachedWithinItsLimit",
+                     "IN IF over > 0 THEN << [s EXCEPT !.unattached", "IN IF FALSE THEN << [s EXCEPT !.unattached"),
+    admission_mutant("when a drop ends every data connection gives way, whatever is still in progress", "WhenADropEndsItsPlacesEndWithIt",
+                     "LET over == Len(s.unattached) - UnattachedPerDrop * e[2]", "LET over == Len(s.unattached)"),
+    admission_mutant("when a drop ends the newest give way, not the ones that have waited longest", "EveryPlaceIsHeldByItsConnection",
+                     "!.unattached = SubSeq(@, over + 1, Len(@))]", "!.unattached = SubSeq(@, 1, Len(@) - over)]"),
+    admission_mutant("when a drop ends, a Mac whose own drop goes on is pushed out with fewer after it than the pool still holds",
+                     "GivesWayOnlyAfterAPoolOfNewcomers", "LET over == Len(s.unattached) - UnattachedPerDrop * e[2]",
+                     "LET over == Len(s.unattached) - UnattachedPerDrop * e[2] + 1", admission(UnattachedPerDrop="2")),
     admission_mutant("a connection from elsewhere is given a place", "ElsewhereCountsForNothing", 'IF e[3] # "local" THEN Close(s, "elsewhere")',
                      'IF FALSE THEN Close(s, "elsewhere")'),
     admission_mutant("a data connection gets a place with no drop in progress", "NoDropNoPlace", 'IN IF e[3] = 0 THEN Close(t, "noDrop")',

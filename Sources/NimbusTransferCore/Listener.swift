@@ -139,16 +139,32 @@ public final class DropListener: @unchecked Sendable {
     /// (formal/tla/AdmissionSystem.tla, the run on a clock that can be set back).
     static func elapsed() -> Double { SystemClock().continuous }
 
-    /// With the lock held. Tells `admission` what has happened to a connection; returns what it
-    /// says to do, and the connection that is to give way (for the caller to close, once the
-    /// lock is let go). Nothing else in this class decides who has a place.
-    private func ask(_ event: Admission.Event) -> (answer: Admission.Answer, displaced: Socket?) {
+    /// With the lock held. Tells `admission` what has happened; returns what it says to do, and
+    /// the connections that are to give way (for the caller to close, once the lock is let
+    /// go). Nothing else in this class decides who has a place.
+    private func ask(_ event: Admission.Event) -> (answer: Admission.Answer, displaced: [Socket]) {
         admission.limits = Self.limits
         let answer = admission.step(event)
         switch answer {
-        case .admitted(_, let out?), .moved(let out?): return (answer, connections[out])
-        default: return (answer, nil)
+        case .admitted(_, let out?), .moved(let out?): return (answer, [out].compactMap { connections[$0] })
+        case .giveWay(let out): return (answer, out.compactMap { connections[$0] })
+        default: return (answer, [])
         }
+    }
+
+    /// Changes which drops (and speed tests) are in progress, and tells `admission` how many
+    /// there are now: the data connections that have not attached have so many places for
+    /// each, and when one ends the places it gave end with it.
+    private func drops<T>(_ change: () -> T) -> T {
+        let (result, displaced) = lock.withLock { () -> (T, [Socket]) in
+            let result = change()
+            return (result, ask(.drops(sessions.count)).displaced)
+        }
+        if !displaced.isEmpty {
+            logCounted("ended", "closed \(displaced.count) data connections that had proved nothing: the drop they could have belonged to is over", .debug)
+        }
+        for gone in displaced { gone.shutdown() }
+        return result
     }
 
     /// Whether a connection is taken at all: from the local network (unless Settings says
@@ -157,16 +173,16 @@ public final class DropListener: @unchecked Sendable {
     private func admit(_ socket: Socket) -> UInt64? {
         let from = socket.peerAddress
         let local = allows.map { $0(from) } ?? (!localOnly || LocalNetwork.isLocal(from, among: LocalNetwork.current()))
-        let (answer, displaced) = lock.withLock { () -> (Admission.Answer, Socket?) in
+        let (answer, displaced) = lock.withLock { () -> (Admission.Answer, [Socket]) in
             let said = ask(.arrive(from: from, local: local, now: Self.elapsed()))
             if case .admitted(let ticket, _) = said.answer { connections[ticket] = socket }
             return said
         }
         switch answer {
         case .admitted(let ticket, _):
-            if let displaced {
+            for gone in displaced {
                 logCounted("displaced", "closed a connection that had proved nothing, to make room for one from \(from)", .debug)
-                displaced.shutdown()
+                gone.shutdown()
             }
             return ticket
         case .close(.elsewhere):
@@ -194,7 +210,7 @@ public final class DropListener: @unchecked Sendable {
         if kind == Opening.data {
             // A data connection: nothing until it proves it belongs to a drop in progress.
             let (answer, displaced) = lock.withLock { ask(.data(ticket, drops: sessions.count)) }
-            displaced?.shutdown()
+            for gone in displaced { gone.shutdown() }
             guard case .moved = answer else { socket.shutdown(); return }
             deadline.arm(Tuning.attachSeconds)
             let challenge = Crypto.random(16)
@@ -506,13 +522,13 @@ public final class DropListener: @unchecked Sendable {
         }
     }
 
-    func register(_ session: DataSession, id: Data) { lock.withLock { sessions[id] = session } }
-    func unregister(id: Data) { lock.withLock { sessions[id] = nil } }
+    func register(_ session: DataSession, id: Data) { drops { sessions[id] = session } }
+    func unregister(id: Data) { drops { sessions[id] = nil } }
 
     /// Trust in `key` was withdrawn. Its sessions have been ended by `Trust`; what is left here
     /// is what it had waiting on a person and what a finished drop of its left behind.
     private func withdraw(_ key: PublicKey) {
-        var pairings = lock.withLock { () -> [PairingSession] in
+        var pairings = drops { () -> [PairingSession] in
             completed = completed.filter { $0.value.key != key }
             sessions = sessions.filter { $0.value.peerKey != key }
             return ([showing].compactMap { $0 } + waitingRequests).filter { $0.peerKey == key }

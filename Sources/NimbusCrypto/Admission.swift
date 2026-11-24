@@ -19,7 +19,9 @@ import Foundation
 ///   the newcomer that was refused at first, and 64 silent connections from one host kept
 ///   every paired Mac out (the review of the code, F1);
 /// - the same for a data connection that has not yet proved which drop it belongs to, in a
-///   pool of its own whose size is so many for each drop in progress, and none when none is;
+///   pool of its own whose size is so many for each drop in progress, and none when none is.
+///   When a drop ends the places it gave end with it: the ones that have waited longest give
+///   way, as they would to a newcomer;
 /// - a connection that has proved a key is never the one that gives way. One nobody here has
 ///   paired is counted among so many at once, whoever they are; a paired one among so many of
 ///   ITS key that have not yet said what they came for. There the newcomer is the one refused;
@@ -100,6 +102,8 @@ package struct Admission: Sendable {
         case purpose(UInt64)
         /// It is gone, whatever it was.
         case closed(UInt64)
+        /// A drop (or a speed test) has begun or ended: this many are in progress now.
+        case drops(Int)
     }
 
     /// Why a connection is to be closed.
@@ -128,6 +132,8 @@ package struct Admission: Sendable {
         case moved(displacing: UInt64?)
         /// Close it.
         case close(Refusal)
+        /// Close these: they give way, and no newcomer takes their places.
+        case giveWay([UInt64])
         /// Noted; nothing to do.
         case nothing
     }
@@ -247,6 +253,17 @@ package struct Admission: Sendable {
             unpaired.remove(id)
             waiting[id] = nil
             return .nothing
+
+        case .drops(let drops):
+            // So many places for each drop in progress. A drop that ends takes its places with
+            // it, and with none left there is nothing a data connection could attach to. Until
+            // 2026-11-24 nobody gave way then: the pool stayed over its limit for as long as
+            // those in it cared to wait (formal/tla/AdmissionSystem.tla found it).
+            let over = unattached.count - limits.unattachedPerDrop * max(0, drops)
+            guard over > 0 else { return .nothing }
+            let out = unattached.prefix(over).map(\.id)
+            unattached.removeFirst(over)
+            return .giveWay(out)
         }
     }
 }

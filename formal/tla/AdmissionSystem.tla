@@ -248,11 +248,24 @@ LateFacts == {<< "data", << "nobody", 1 >>, d >> : d \in Drops}
              \cup {<< "proved", << "nobody", 1 >>, p >> : p \in Standings \cup Keys}
              \cup {<< kind, << "nobody", 1 >> >> : kind \in {"attached", "purpose", "closed"}}
 
-\* A drop begins, or ends.
+\* A drop begins, or ends, and the listener says how many are in progress now. The places a drop
+\* gave among the unattached end with it: whoever the machine says gives way is closed. (Until
+\* 2026-11-24 the machine was not told, and nobody gave way: UnattachedWithinItsLimit found it.)
 DropsChange(d) ==
-    /\ d \in Drops /\ d # drops
-    /\ drops' = d
-    /\ UNCHANGED << m, S, U, np, nw, w, log, back, broken >>
+    LET r      == Step(m, << "drops", d >>)
+        n      == IF r[2][1] = "giveWay" THEN r[2][2] ELSE 0
+        limit  == UnattachedPerDrop * d
+        pushed == w.st = "unattached" /\ Where(U) <= n
+        bad    == (IF n # (IF Len(m.unattached) > limit THEN Len(m.unattached) - limit ELSE 0) THEN {"ended"} ELSE {})
+                  \cup (IF pushed /\ w.later < limit THEN {"enough"} ELSE {})
+    IN /\ d \in Drops /\ d # drops
+       /\ (Quick /\ w.st = "unattached" => w.later < limit)
+       /\ drops' = d
+       /\ m' = r[1]
+       /\ U' = IF n <= Len(U) THEN SubSeq(U, n + 1, Len(U)) ELSE << >>
+       /\ w' = IF pushed THEN Went("displaced") ELSE w
+       /\ broken' = broken \cup bad
+       /\ UNCHANGED << S, np, nw, log, back >>
 
 Next == \/ \E who \in {"w", "x"}, a \in Addresses, g \in Gaps, j \in 0..SetBack: Arrive(who, a, g, j)
         \/ \E i \in 1..Len(S): SaysData(i) \/ \E as \in Standings \cup Keys: Proves(i, as)
@@ -279,8 +292,14 @@ PoolsWithinLimits ==
     /\ m.unpaired <= Unpaired
     /\ \A k \in Keys: m.waiting[k] <= PairedWaiting
 
-\* The pool of data connections has so many places for each drop in progress: now.
+\* The pool of data connections has so many places for each drop in progress: now, not when
+\* each of them arrived. With no drop in progress it is empty.
 UnattachedWithinItsLimit == Len(m.unattached) <= UnattachedPerDrop * drops
+
+\* When a drop ends, exactly those over what is left give way, and they are the ones that have
+\* waited longest (the listener closes the first so many: EveryPlaceIsHeldByItsConnection
+\* fails if the machine dropped any others).
+WhenADropEndsItsPlacesEndWithIt == "ended" \notin broken
 
 \* By the true time: no more arrivals taken within a window than the rate, in all and from one address.
 TheRateHolds == Len(log) <= Arrivals /\ \A a \in Addresses: Taken(log, a) <= ArrivalsPerAddress
@@ -358,9 +377,10 @@ OneThatGaveWayGetsNothingMore == "gone" \notin broken
 (* The watched Mac                                                         *)
 (***************************************************************************)
 
-\* It loses its place among those that have proved nothing only to a newcomer, and only when,
-\* counting that newcomer, as many connections were given places after it as the pool holds,
-\* or as many from its own address as one address may hold.
+\* It loses its place among those that have proved nothing only when as many connections were
+\* given places after it as the pool holds (counting the newcomer it gives way to), or as many
+\* from its own address as one address may hold. What the pool of data connections holds is so
+\* many for each drop in progress AT THAT MOMENT: a drop that ends makes fewer newcomers enough.
 GivesWayOnlyAfterAPoolOfNewcomers == "enough" \notin broken
 
 \* So one that moves on before that (Quick) is never the one that gives way.

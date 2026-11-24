@@ -170,6 +170,8 @@ final class AdmissionTests: XCTestCase {
         case attached(Who)
         case purpose(Who)
         case closed(Who)
+        /// So many drops are in progress now.
+        case drops(Int)
 
         var tla: String {
             switch self {
@@ -179,6 +181,7 @@ final class AdmissionTests: XCTestCase {
             case .attached(let who): return "<< \"attached\", \(who.tla) >>"
             case .purpose(let who): return "<< \"purpose\", \(who.tla) >>"
             case .closed(let who): return "<< \"closed\", \(who.tla) >>"
+            case .drops(let n): return "<< \"drops\", \(n) >>"
             }
         }
     }
@@ -230,6 +233,7 @@ final class AdmissionTests: XCTestCase {
         case .attached(let id): return .attached(who(id, in: m, n))
         case .purpose(let id): return .purpose(who(id, in: m, n))
         case .closed(let id): return .closed(who(id, in: m, n))
+        case .drops(let count): return walk.drops.contains(count) ? .drops(count) : nil
         }
     }
 
@@ -240,6 +244,10 @@ final class AdmissionTests: XCTestCase {
         case .admitted(_, let out): return "<< \"admitted\", \(out.map { id in m.strangers.firstIndex { $0.id == id }! + 1 } ?? 0) >>"
         case .moved(let out): return "<< \"moved\", \(out.map { id in m.unattached.firstIndex { $0.id == id }! + 1 } ?? 0) >>"
         case .close(let why): return "<< \"close\", \"\(why.rawValue)\" >>"
+        case .giveWay(let out):
+            // The specification says how many give way, and means the ones that have waited longest.
+            guard out == m.unattached.prefix(out.count).map(\.id) else { return "<< \"giveWay\", \"not the oldest\" >>" }
+            return "<< \"giveWay\", \(out.count) >>"
         case .nothing: return "<< \"nothing\" >>"
         }
     }
@@ -288,6 +296,7 @@ final class AdmissionTests: XCTestCase {
                 all.append(.purpose(who))
                 all.append(.closed(who))
             }
+            for drops in walk.drops { all.append(.drops(drops)) }
             return all
         }
 
@@ -317,6 +326,7 @@ final class AdmissionTests: XCTestCase {
             case .attached(let who): return .attached(number(who))
             case .purpose(let who): return .purpose(number(who))
             case .closed(let who): return .closed(number(who))
+            case .drops(let n): return .drops(n)
             }
         }
 
@@ -480,7 +490,7 @@ final class AdmissionTests: XCTestCase {
                     let stranger = { (rng: inout Seeded) -> UInt64 in d.m.strangers.randomElement(using: &rng)?.id ?? anyone(&rng) }
                     let event: Admission.Event
                     // Mostly arrivals and what a stranger does next, so that the pools fill.
-                    switch Int.random(in: 0..<16, using: &rng) {
+                    switch Int.random(in: 0..<17, using: &rng) {
                     case 0..<6:
                         let ticks = [0, 0, 0, 1, 1, 2, 3, 17, 100_000, -1, -1, -2, -3, -40_000].randomElement(using: &rng)!
                         event = .arrive(from: addresses.randomElement(using: &rng)!, local: Int.random(in: 0..<8, using: &rng) > 0,
@@ -492,6 +502,7 @@ final class AdmissionTests: XCTestCase {
                     case 12: event = .attached(d.m.unattached.randomElement(using: &rng)?.id ?? anyone(&rng))
                     case 13: event = .purpose(anyone(&rng))
                     case 14: event = .closed(anyone(&rng))
+                    case 15: event = .drops(walk.drops.randomElement(using: &rng)!)
                     default: event = .data(anyone(&rng), drops: walk.drops.randomElement(using: &rng)!)
                     }
                     guard let happening = Self.label(event, in: d.m, walk, d.naming) else { XCTFail("an event with no name: \(event)"); return }
@@ -592,6 +603,13 @@ final class AdmissionTests: XCTestCase {
             case .closed(let id):
                 place[id] = nil
                 return .nothing
+            case .drops(let drops):
+                // The pool has so many places for each drop in progress; those over that, the
+                // ones that have waited longest, give way.
+                let pool = those(.unattached)
+                let out = Array(pool.prefix(max(0, pool.count - l.unattachedPerDrop * drops)))
+                for id in out { place[id] = nil }
+                return out.isEmpty ? .nothing : .giveWay(out)
             }
         }
 
@@ -647,7 +665,7 @@ final class AdmissionTests: XCTestCase {
                 }
                 let stranger = { (rng: inout Seeded) -> UInt64 in world.those(.stranger).randomElement(using: &rng) ?? anyone(&rng) }
                 let event: Admission.Event
-                switch Int.random(in: 0..<16, using: &rng) {
+                switch Int.random(in: 0..<17, using: &rng) {
                 case 0..<6:
                     let w = m.limits.window
                     now += [0, 0, 0.001, w / 2, w, w, w + 0.001, 3 * w + 1, Double.random(in: 0...2, using: &rng),
@@ -660,6 +678,7 @@ final class AdmissionTests: XCTestCase {
                 case 12: event = .attached(world.those(.unattached).randomElement(using: &rng) ?? anyone(&rng))
                 case 13: event = .purpose(anyone(&rng))
                 case 14: event = .closed(anyone(&rng))
+                case 15: event = .drops(Int.random(in: 0...3, using: &rng))
                 default: event = .data(anyone(&rng), drops: Int.random(in: 0...3, using: &rng))
                 }
                 var expected = world.expect(event, m.limits)
@@ -870,6 +889,28 @@ final class AdmissionTests: XCTestCase {
         XCTAssertEqual(g.out, b.id, "the pool is full and f has one place of its two: the oldest of all")
         XCTAssertEqual(h.out, f.id, "f holds two: its own oldest, and not the oldest of all")
         XCTAssertEqual(d.m.unattached.map(\.id), [c.id, e.id, g.id, h.id])
+    }
+
+    /// Found by the model (AdmissionSystem.tla, UnattachedWithinItsLimit), 2026-11-24. The pool
+    /// has so many places for each drop in progress, and when a drop ended nobody gave any up:
+    /// with two drops' worth of connections waiting and one drop left, or none (when there is
+    /// nothing any of them could attach to), they all stayed for as long as they cared to. Now
+    /// the places a drop gave end with it, and the ones that have waited longest give way.
+    func testWhenADropEndsThePlacesItGaveAreGivenUp() {
+        var d = Desk()
+        var waiting: [UInt64] = []
+        for from in ["a", "b", "c", "e"] {
+            let c = d.arrive(from).id
+            XCTAssertEqual(d.m.step(.data(c, drops: 2)), .moved(displacing: nil), "two drops, four places")
+            waiting.append(c)
+        }
+        XCTAssertEqual(d.m.step(.drops(2)), .nothing)
+        XCTAssertEqual(d.m.step(.drops(3)), .nothing, "a drop that begins costs nobody a place")
+        XCTAssertEqual(d.m.step(.drops(1)), .giveWay([waiting[0], waiting[1]]), "one drop left, two places: the two that have waited longest")
+        XCTAssertEqual(d.m.unattached.map(\.id), [waiting[2], waiting[3]])
+        XCTAssertEqual(d.m.step(.drops(1)), .nothing)
+        XCTAssertEqual(d.m.step(.drops(0)), .giveWay([waiting[2], waiting[3]]), "no drop left: nothing they could belong to")
+        XCTAssertTrue(d.held.isEmpty)
     }
 
     /// A data connection that has proved its drop is the drop's to count, and leaves its place

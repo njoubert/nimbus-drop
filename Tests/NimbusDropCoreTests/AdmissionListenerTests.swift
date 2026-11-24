@@ -49,6 +49,38 @@ extension ReviewTests {
         waiting.cancel()
     }
 
+    /// Found by the model of admission (formal/tla/AdmissionSystem.tla, UnattachedWithinItsLimit),
+    /// 2026-11-24. Data connections that have not yet proved their drop have so many places for
+    /// each drop in progress. When a drop ended, the connections waiting on the places it had
+    /// given were left where they were: more of them than the listener says it holds, and with
+    /// no drop left, connections with nothing they could ever attach to, each for as long as it
+    /// is given to attach. Now the ones that have waited longest are closed with the drop.
+    func testDataConnectionsWaitingWhenADropEndsAreClosed() throws {
+        Tuning.unattachedPerDrop = 3
+        Tuning.unattachedPerAddress = 100
+        Tuning.attachSeconds = 30
+        let (sender, receiver) = try pairedMacs()
+        let first = try handDrop(from: sender, to: receiver, bytes: chunk * 3)
+        let second = try handDrop(from: sender, to: receiver, bytes: chunk * 4)
+        var held: [Socket] = []
+        for _ in 0..<6 {
+            let k = try knock(receiver.port)
+            XCTAssertTrue(k.challenged)
+            held.append(k.socket)
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(open(held), 6, "two drops in progress: six places")
+        let drops = receiver.offers.withLock { $0 }
+        XCTAssertEqual(drops.count, 2)
+        drops[0].cancel()
+        XCTAssertTrue(until(3) { self.open(held) == 3 }, "one drop ended, and \(open(held)) connections that have proved nothing are still held, where three may be")
+        XCTAssertEqual(open(Array(held.suffix(3))), 3, "the three that have waited longest gave way")
+        drops[1].cancel()
+        XCTAssertTrue(until(3) { self.open(held) == 0 }, "no drop is in progress, and \(open(held)) data connections are still held")
+        first.peer.socket.shutdown()
+        second.peer.socket.shutdown()
+    }
+
     /// Found on the way to the model of admission (2026-11-24). The rate is so many arrivals in
     /// a second, and the listener read the second off the calendar: set back, the calendar left
     /// the arrivals of the moment counted until it came round to them again, and with the rate

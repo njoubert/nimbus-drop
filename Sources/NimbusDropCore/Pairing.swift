@@ -134,6 +134,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
     private var replacing: PublicKey?
     private var localName: String?
     private var deadline = Date.distantFuture
+    private let dialDelay = Tuning.pairDialDelay
     /// A responder's request, when it ends: whether it went well (for the rationing).
     var onEnd: ((Bool) -> Void)?
 
@@ -292,6 +293,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
 
     private func initiate(host: String, port: UInt16, expect: PublicKey?) throws {
         guard trust.gate.begin(self) else { throw DropError("This Mac is in the middle of another pairing") }
+        if dialDelay > 0 { Thread.sleep(forTimeInterval: dialDelay) }
         let s = try Socket.connect(host: host, port: port)
         s.setNoDelay()
         s.setReadTimeout(Int(Tuning.connectTimeout.rounded(.up)))

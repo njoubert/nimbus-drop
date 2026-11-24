@@ -449,7 +449,15 @@ public final class DropListener: @unchecked Sendable {
             _ = channel
         }
         if trust.requestsOff { return busy("\(identity.name) is not taking requests to pair; start the pairing from that Mac", log: "requests are off in Settings") }
-        // Both asked at the same moment: the request from the lower key goes ahead.
+        // Both asked at the same moment: the request from the lower key goes ahead. This Mac's
+        // own request may be so new that it has not yet proved who it is talking to, in which
+        // case it cannot be told whether the two are the same pairing: wait a moment for it.
+        // Without the wait, on a slow machine, this request was answered "in the middle of
+        // another pairing" and both people ended with nothing (seen in CI, 2026-11-23).
+        if let mine = trust.gate.active, mine.initiator, mine.peerKey == nil {
+            let patience = Date().addingTimeInterval(2)
+            while mine.peerKey == nil, !mine.state.isFinal, Date() < patience { Thread.sleep(forTimeInterval: 0.02) }
+        }
         if let mine = trust.gate.active, mine.initiator, mine.peerKey == pairing.peerKey, mine.state == .asking || mine.state == .connecting,
            let theirs = pairing.peerKey {
             if trust.publicKey.raw.lexicographicallyPrecedes(theirs.raw) { return busy("Both Macs asked at once; carry on with the request from \(identity.name)", log: "this Mac asked first") }

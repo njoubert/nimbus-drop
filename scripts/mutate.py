@@ -75,6 +75,7 @@ M=[
  ("a speed test's count is shown whatever time it claims",'Sources/NimbusDropCore/SpeedTest.swift','c.bytes >= 0, c.bytes <= sent, SpeedWire.plausible(c.seconds, for: seconds) {','c.bytes >= 0, c.bytes <= sent, c.seconds > 0 {','SpeedReviewTests/testTheAskedMacDoesNotShowARateNoLinkCouldCarry'),
  ('any number of speed tests at once','Sources/NimbusDropCore/Receiver.swift','                guard !speedTesting else { return "\\(identity.name) is in the middle of another speed test" }\n','','SpeedTests/testOneAtATimeAndNoMoreThanAMacGives'),
  ('a speed test lets the next in before it has ended','Sources/NimbusDropCore/Receiver.swift','            test.run()\n            // Free for the next only now','            lock.withLock { speedTesting = false }\n            test.run()\n            // Free for the next only now','SpeedReviewTests/testOneSpeedTestAtATimeHoldsWhileAnEarlierOneLingers'),
+ ('two Macs that ask each other at once end with nothing','Sources/NimbusDropCore/Receiver.swift','while mine.peerKey == nil, !mine.state.isFinal, Date() < patience { Thread.sleep(forTimeInterval: 0.02) }','','PairingTests/testBothAskingAtOnceWhenOneHasNotYetProvedTheOther'),
  # Not here: removing the all-zero check in KeyPair.agree. CryptoKit refuses that agreement
  # before the check is reached, so no test can tell (the review of 2026-11-23).
 ]

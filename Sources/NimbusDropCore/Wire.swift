@@ -70,6 +70,9 @@ enum Tuning {
     nonisolated(unsafe) static var arrivalsPerAddress = 200
     /// Of `unattachedPerDrop`, from one address.
     nonisolated(unsafe) static var unattachedPerAddress = 4
+    /// Tests only: how long a pairing this Mac starts waits before it connects, as a slow
+    /// machine would.
+    nonisolated(unsafe) static var pairDialDelay: Double = 0
     /// After a speed test from a key is answered (run, or declined): no other from that key
     /// for this long.
     nonisolated(unsafe) static var speedPauseSeconds: Double = 10

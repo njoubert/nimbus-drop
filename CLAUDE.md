@@ -175,7 +175,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  164 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  165 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle

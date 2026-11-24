@@ -355,6 +355,27 @@ final class PairingTests: XCTestCase {
         winner.cancel()
     }
 
+    /// The same, when one Mac's own request is so new that it has not yet proved who it is
+    /// talking to (a slow machine; CI, 2026-11-23). The other's request must not be turned
+    /// away as "another pairing": it is the same one, and the lower key's goes ahead.
+    func testBothAskingAtOnceWhenOneHasNotYetProvedTheOther() throws {
+        defer { Tuning.pairDialDelay = 0 }
+        let x = try TestMac("x"), y = try TestMac("y")
+        let (low, high) = x.key.raw.lexicographicallyPrecedes(y.key.raw) ? (x, y) : (y, x)
+        low.onRequest = { $0.proceed() }
+        high.onRequest = { $0.proceed() }
+        // The higher key's Mac asks first, and is slow to connect; the lower's request reaches it meanwhile.
+        Tuning.pairDialDelay = 0.8
+        let fromHigh = high.pair(with: low)
+        Tuning.pairDialDelay = 0
+        Thread.sleep(forTimeInterval: 0.1)
+        let fromLow = low.pair(with: high)
+        XCTAssertTrue(until { fromHigh.state.isFinal }, "\(fromHigh.state)")
+        XCTAssertFalse(fromLow.state.isFinal, "the lower key's request was turned away: \(fromLow.state)")
+        XCTAssertNotNil(fromLow.code(), "and it gets as far as the codes")
+        fromLow.cancel()
+    }
+
     func testAMacThatDoesNotKeepToThePairingIsDropped() throws {
         // A modified copy sends the exchange's messages out of order, twice, or the wrong ones.
         // The transaction ends at the first; no code is ever shown for it.

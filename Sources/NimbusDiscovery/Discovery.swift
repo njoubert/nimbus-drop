@@ -5,6 +5,7 @@ import Foundation
 import Network
 import SystemConfiguration
 import NimbusBase
+import NimbusRuntime
 import NimbusCrypto
 import NimbusNet
 import NimbusSecurityCore

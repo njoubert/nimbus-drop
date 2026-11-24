@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import NimbusBase
+import NimbusRuntime
 import NimbusCrypto
 import NimbusNet
 import NimbusSafeStorageCore

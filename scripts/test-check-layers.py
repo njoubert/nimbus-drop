@@ -67,6 +67,18 @@ class Layers(unittest.TestCase):
         self.refuses("NimbusSafeStorageCore", "import NimbusSecurityCore", "may not import NimbusSecurityCore")
         self.refuses("NimbusBase", "import NimbusCrypto", "NimbusBase may not import NimbusCrypto")
 
+    def test_the_pure_module_may_not_import_the_runtime_beside_it(self):
+        # The log, the lock and the last system error are in a module of their own, and the pure
+        # one cannot have them: the compiler would refuse the same import, since Package.swift
+        # does not list it.
+        self.refuses("NimbusCrypto", "import NimbusRuntime", "NimbusCrypto may not import NimbusRuntime")
+        self.refuses("NimbusBase", "import NimbusRuntime", "NimbusBase may not import NimbusRuntime")
+
+    def test_the_module_under_the_pure_one_is_held_to_the_same(self):
+        self.refuses("NimbusBase", "let l = NSLock()", "NimbusBase is pure and this is a lock")
+        self.refuses("NimbusBase", "public enum Log { nonisolated(unsafe) public static var sink: Int? }", "NimbusBase is pure and this is a mutable global")
+        self.refuses("NimbusBase", 'let e = String(cString: strerror(errno))', "NimbusBase is pure and this is the last system error")
+
     def test_an_import_of_a_framework_the_layer_has_no_business_with_is_refused(self):
         self.refuses("NimbusSafeStorageCore", "import Network", "may not import Network")
         self.refuses("NimbusTransferCore", "import AppKit", "may not import AppKit")

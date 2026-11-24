@@ -36,18 +36,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # module: (modules of ours it may import, system frameworks it may import)
 LAYERS = {
-    "NimbusBase": ([], ["Foundation", "Darwin"]),
+    # Values only: nothing in it reads or writes anything. The pure module stands on this alone.
+    "NimbusBase": ([], ["Foundation"]),
+    # What a value is not: the log and its file, a lock, the last system error. No layer under
+    # NimbusCrypto may reach it, and NimbusCrypto may not import it.
+    "NimbusRuntime": (["NimbusBase"], ["Foundation", "Darwin"]),
     "NimbusCrypto": (["NimbusBase"], ["Foundation", "CryptoKit"]),
-    "NimbusNet": (["NimbusBase"], ["Foundation", "Darwin", "SystemConfiguration"]),
-    "NimbusSafeStorageCore": (["NimbusBase"], ["Foundation", "Darwin", "CryptoKit"]),
-    "NimbusSecurityCore": (["NimbusBase", "NimbusCrypto", "NimbusNet"], ["Foundation", "Darwin", "CryptoKit", "IOKit"]),
-    "NimbusDiscovery": (["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSecurityCore"],
+    "NimbusNet": (["NimbusBase", "NimbusRuntime"], ["Foundation", "Darwin", "SystemConfiguration"]),
+    "NimbusSafeStorageCore": (["NimbusBase", "NimbusRuntime"], ["Foundation", "Darwin", "CryptoKit"]),
+    "NimbusSecurityCore": (["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet"], ["Foundation", "Darwin", "CryptoKit", "IOKit"]),
+    "NimbusDiscovery": (["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet", "NimbusSecurityCore"],
                         ["Foundation", "Network", "SystemConfiguration", "dnssd"]),
-    "NimbusTransferCore": (["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore"],
+    "NimbusTransferCore": (["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore"],
                            ["Foundation", "Darwin"]),
-    "NimbusDropCore": (["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore", "NimbusDiscovery",
+    "NimbusDropCore": (["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore", "NimbusDiscovery",
                         "NimbusTransferCore"], ["Foundation", "UniformTypeIdentifiers"]),
 }
+
+# The modules that must be pure, and why each pattern below would break that. NimbusBase is
+# under the pure module, so it is held to the same.
+PURE = ["NimbusCrypto", "NimbusBase"]
 
 # What may not appear in the pure module, and why it would not be pure with it.
 IMPURE = [
@@ -138,10 +146,10 @@ def problems_in(root, layers=None):
                 imp = re.match(r"\s*(?:@\w+\s+)*import\s+(?:(?:struct|class|enum|protocol|func|var|let|typealias)\s+)?(\w+)", code)
                 if imp and imp.group(1) not in ours + system:
                     problems.append(f"{rel}:{n}: {module} may not import {imp.group(1)}")
-                if module == "NimbusCrypto":
+                if module in PURE:
                     for pattern, what in IMPURE:
                         if re.search(pattern, code) and not any(rel.endswith(f) and text in code for f, text in PURE_EXCEPTIONS):
-                            problems.append(f"{rel}:{n}: NimbusCrypto is pure and this is {what}: {code.strip()[:90]}")
+                            problems.append(f"{rel}:{n}: {module} is pure and this is {what}: {code.strip()[:90]}")
     # The pure module's own dependencies must be pure in what they offer it: it may not call a
     # wrapper around what it may not call itself. NimbusBase's wrappers are named in IMPURE
     # (DropLog, LogFile, Locked, errnoError); a new one there is a new line there.
@@ -168,7 +176,7 @@ def main():
         print(p)
     if problems:
         sys.exit(1)
-    print(f"layers: {len(LAYERS)} modules as declared, each reaching only what it may; NimbusCrypto is pure; no secret named where it may not be")
+    print(f"layers: {len(LAYERS)} modules as declared, each reaching only what it may; {' and '.join(PURE)} are pure; no secret named where it may not be")
 
 
 if __name__ == "__main__":

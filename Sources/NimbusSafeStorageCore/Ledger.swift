@@ -3,6 +3,7 @@
 import Darwin
 import Foundation
 import NimbusBase
+import NimbusRuntime
 
 /// Which chunks of a drop are already on the receiver's disk. An append-only file of
 /// `(file, chunk)` pairs beside the partial data, written after each chunk lands, so a drop that

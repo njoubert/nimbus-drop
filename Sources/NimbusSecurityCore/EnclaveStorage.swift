@@ -5,6 +5,7 @@ import Darwin
 import Foundation
 import IOKit
 import NimbusBase
+import NimbusRuntime
 import NimbusCrypto
 import NimbusNet
 

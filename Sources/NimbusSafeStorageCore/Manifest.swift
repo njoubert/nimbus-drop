@@ -4,6 +4,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import NimbusBase
+import NimbusRuntime
 
 /// Everything in a drop: every folder, file and symlink with its size, time and mode. Folders
 /// come before what they hold.

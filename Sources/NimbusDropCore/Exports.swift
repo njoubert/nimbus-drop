@@ -11,6 +11,7 @@
 @_exported import NimbusCrypto
 @_exported import NimbusDiscovery
 @_exported import NimbusNet
+@_exported import NimbusRuntime
 @_exported import NimbusSafeStorageCore
 @_exported import NimbusSecurityCore
 @_exported import NimbusTransferCore

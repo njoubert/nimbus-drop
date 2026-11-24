@@ -100,6 +100,12 @@ def drop(**changes):
     return c
 
 
+def gate(**changes):
+    c = {"Waits": "TRUE", "PatienceRunsOut": "FALSE", "StartsBesideARequest": "FALSE"}
+    c.update(changes)
+    return c
+
+
 def trust(**changes):
     c = {"ForGood": "TRUE", "Eviction": "FALSE"}
     c.update(changes)
@@ -141,17 +147,27 @@ TLA_RUNS = [
      ("PairingSystem.tla", "/\\ \\A a \\in Sides: WF_vars(Deliver(a)) /\\ WF_vars(Timeout(a))", "/\\ \\A a \\in Sides: WF_vars(Deliver(a))")),
 
     # Two people asking each other at once.
-    ("PairingGate", "PairingGate", {"Waits": "TRUE", "PatienceRunsOut": "FALSE"}, GATE_INV, ["EveryRequestIsAnswered"], HOLDS, None),
+    ("PairingGate", "PairingGate", gate(), GATE_INV, ["EveryRequestIsAnswered", "NeverShownBesideAPairingUnderWay"], HOLDS, None),
+    ("PairingGate / reachable: a pairing goes ahead at both ends", "PairingGate", gate(), ["NeverGoesAhead"], [], "NeverGoesAhead", None),
+    ("PairingGate (a person starts a pairing with a request on screen): the gate still holds one", "PairingGate", gate(StartsBesideARequest="TRUE"),
+     ["TypeOK", "OnePairingAtATime"], ["EveryRequestIsAnswered", "NeverShownBesideAPairingUnderWay"], HOLDS, None),
+    ("PairingGate / reachable: a person starts a pairing with a request on screen", "PairingGate", gate(StartsBesideARequest="TRUE"),
+     ["NeverStartsWithARequestOnScreen"], [], "NeverStartsWithARequestOnScreen", None),
+    ("PairingGate / known limit: a yes to a request, given in the instant this Mac's own pairing with that Mac is being turned away", "PairingGate",
+     gate(StartsBesideARequest="TRUE"), ["NotBothTurnedAway"], [], "NotBothTurnedAway", None),
     ("PairingGate / mutant: a request does not wait for this Mac's own pairing (the code before cac7dd2)", "PairingGate",
-     {"Waits": "FALSE", "PatienceRunsOut": "FALSE"}, GATE_INV, [], "NotBothTurnedAway", None),
+     gate(Waits="FALSE"), GATE_INV, [], "NotBothTurnedAway", None),
     ("PairingGate / known limit: the two-second wait runs out first", "PairingGate",
-     {"Waits": "TRUE", "PatienceRunsOut": "TRUE"}, GATE_INV, [], "NotBothTurnedAway", None),
-    ("PairingGate / mutant: the higher key does not give way", "PairingGate", {"Waits": "TRUE", "PatienceRunsOut": "FALSE"}, GATE_INV, [],
+     gate(PatienceRunsOut="TRUE"), ["NotBothTurnedAway"], [], "NotBothTurnedAway", None),
+    ("PairingGate / mutant: the higher key does not give way", "PairingGate", gate(), GATE_INV, [],
      "NotBothTurnedAway",
      ("PairingGate.tla", "IF samePairing /\\ Lower(y)", "IF samePairing")),
-    ("PairingGate / mutant: a request is shown beside this Mac's own pairing (F5)", "PairingGate", {"Waits": "TRUE", "PatienceRunsOut": "FALSE"},
-     GATE_INV, [], "OnePairingAtATime",
+    ("PairingGate / mutant: a request is shown beside this Mac's own pairing (F5)", "PairingGate", gate(),
+     [], ["NeverShownBesideAPairingUnderWay"], "NeverShownBesideAPairingUnderWay",
      ("PairingGate.tla", "          ELSE IF Active(y)\n", "          ELSE IF FALSE\n")),
+    ("PairingGate / mutant: a yes takes the gate without asking whether it is free", "PairingGate", gate(StartsBesideARequest="TRUE"),
+     ["OnePairingAtATime"], [], "OnePairingAtATime",
+     ("PairingGate.tla", "          /\\ IF Mine(y)\n", "          /\\ IF FALSE\n")),
 
     # The trust core: the Swift code is the specification's machine.
     ("TrustRefinement (the Swift trust core is Step)", "TrustRefinement", {}, ["SpecIsImpl"], [], HOLDS, None),

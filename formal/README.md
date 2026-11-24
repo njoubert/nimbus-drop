@@ -32,7 +32,10 @@ whole, and what it says is exactly what was required.
   A lemma is added or retired in the register in the same change as the theory.
 - TLC's exit code must agree with what it printed. Asking for something that matches nothing
   is an error.
-- `test_check.py` is the list of ways the runner must refuse (36 cases, no prover).
+- A run that must fail is asked for the one thing it must fail on. Where a model can fail in two
+  ways, which one TLC reports first depends on the machine: a mutant that deadlocks on a Mac
+  was reported on CI by a liveness property it also breaks.
+- `test_check.py` is the list of ways the runner must refuse (41 cases, no prover).
 - Every run's raw output, command, tool versions, source revision and input hashes are kept
   under `formal/.results/` (not in git).
 - A theory's lemmas are asked for six at a time: all at once, the handshake theory passed

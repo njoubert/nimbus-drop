@@ -748,9 +748,32 @@ def judge_tlc(out, code, timed_out, expected, properties, assumption_name=lambda
     return False, f"fails on {name}; it was to fail on {expected}"
 
 
+def asked_for(invariants, properties, expected):
+    """What one run asks TLC to check: (invariants, properties, whether deadlock is looked for).
+
+    A run that must hold is asked for everything. A run that must fail is asked for the one
+    thing it must fail on, and for nothing else: where a model can fail in two ways, which one
+    TLC reports first depends on the machine it runs on (four workers, and liveness is looked
+    at as the states come), and the same mutant that reports a deadlock on a Mac reported a
+    liveness property on CI. The question a mutant puts is whether the property named for it
+    notices, and this is that question alone. An assumption is judged before any state is
+    made, so a run that must fail on one is left as it is."""
+    if expected == HOLDS:
+        return list(invariants), list(properties), True
+    if expected == "deadlock":
+        return [], [], True
+    if expected in invariants:
+        return [expected], [], False
+    if expected in properties:
+        return [], [expected], False
+    return list(invariants), list(properties), True
+
+
 def run_tlc(java, jar, name, module, constants, invariants, properties, expected, mutation, keep=None):
     work = tempfile.mkdtemp(prefix="nimbus-tlc-")
-    command = [java, "-XX:+UseParallelGC", "-cp", jar, "tlc2.TLC", "-workers", "4", "-config", "run.cfg", module + ".tla"]
+    invariants, properties, deadlock = asked_for(invariants, properties, expected)
+    command = ([java, "-XX:+UseParallelGC", "-cp", jar, "tlc2.TLC", "-workers", "4"] + ([] if deadlock else ["-deadlock"])
+               + ["-config", "run.cfg", module + ".tla"])
     out, code, timed_out = "", None, False
     try:
         for f in os.listdir(TLA):

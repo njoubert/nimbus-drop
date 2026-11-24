@@ -464,7 +464,10 @@ final class RoundMachineTests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         let extra = Int(environment["NIMBUS_WALK_SEEDS"] ?? "") ?? 1
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        let seeds = environment["NIMBUS_SEED"].flatMap { UInt64($0) }.map { [$0] } ?? [1, 2, 3, 0x5EED] + (0..<extra).map { now &+ UInt64($0) &* 7919 }
+        // Each with its type written out: the compiler CI builds with took the one expression for [Any]?.
+        let named: [UInt64]? = environment["NIMBUS_SEED"].flatMap { UInt64($0) }.map { [$0] }
+        let fresh: [UInt64] = (0..<extra).map { now &+ UInt64($0) &* 7919 }
+        let seeds: [UInt64] = named ?? ([1, 2, 3, 0x5EED] + fresh)
         var steps = 0
         for seed in seeds {
             guard walk(seed: seed, steps: &steps) else { return }

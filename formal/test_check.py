@@ -194,6 +194,26 @@ class Register(unittest.TestCase):
 HOLDS_OUT = "Model checking completed. No error has been found.\n1249 states generated, 442 distinct states found, 0 states left on queue.\n"
 
 
+class WhatARunAsksFor(unittest.TestCase):
+    """A run that must fail is asked for the one thing it must fail on: with two ways to fail,
+    which TLC reports first depends on the machine (a Mac said deadlock, CI a liveness property)."""
+
+    def test_a_run_that_must_hold_is_asked_for_everything(self):
+        self.assertEqual(check.asked_for(["A", "B"], ["L"], check.HOLDS), (["A", "B"], ["L"], True))
+
+    def test_a_mutant_named_for_an_invariant_is_asked_for_that_invariant_alone(self):
+        self.assertEqual(check.asked_for(["A", "B"], ["L"], "B"), (["B"], [], False))
+
+    def test_a_mutant_named_for_a_property_is_asked_for_that_property_alone(self):
+        self.assertEqual(check.asked_for(["A", "B"], ["L"], "L"), ([], ["L"], False))
+
+    def test_a_mutant_that_must_deadlock_is_asked_for_nothing_else(self):
+        self.assertEqual(check.asked_for(["A"], ["L"], "deadlock"), ([], [], True))
+
+    def test_a_run_that_must_fail_on_an_assumption_is_left_as_it_is(self):
+        self.assertEqual(check.asked_for(["A"], [], "ImplIsSpec"), (["A"], [], True))
+
+
 class TLC(unittest.TestCase):
     def test_a_clean_run_holds(self):
         self.assertEqual(check.judge_tlc(HOLDS_OUT, 0, False, check.HOLDS, []), (True, "442 states"))

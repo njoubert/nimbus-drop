@@ -89,6 +89,13 @@ public final class SendSession: Transfer, @unchecked Sendable {
     private typealias Frame = (type: FrameType, body: Data)
     private var inboxError: Error?
     private var generation = 0
+    /// Messages from the receiver that have been read and not yet taken by the drop's thread.
+    var unread: Int { inbox.withLock { frames.count } }
+    /// How many of them there may be. An honest receiver says one thing for each thing it is
+    /// asked, so there is never more than one waiting; the second is slack. Until 2026-11-24
+    /// there was no limit, and a receiver that said "plan" over and over in the middle of a
+    /// round had every one of them kept until the round ended.
+    private static let unreadLimit = 2
 
     /// One per live data connection, for the stall watch.
     private final class Stream {
@@ -523,9 +530,18 @@ public final class SendSession: Transfer, @unchecked Sendable {
                         return
                     }
                     inbox.lock()
-                    if generation == mine { frames.append(frame) }
+                    let current = generation == mine
+                    let room = frames.count < SendSession.unreadLimit
+                    if current, room { frames.append(frame) }
                     inbox.broadcast()
                     inbox.unlock()
+                    if current, !room {
+                        // More waiting unread than a conversation that is being kept to can
+                        // have. It is not kept: it is anything but an answer, and what that
+                        // means now is the machine's to say (out of turn, the end of the drop).
+                        conclude(step(.received(.other)), with: DropError("Unexpected answer from \(peerName)"))
+                        continue
+                    }
                     if frame.type == .complete || frame.type == .decline { return }
                 } catch {
                     // Not the end of the drop: the main thread hears of it and reconnects. The

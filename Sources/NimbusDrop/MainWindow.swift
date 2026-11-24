@@ -610,7 +610,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             for (i, p) in peers.enumerated() {
                 // Mostly paired, with a few of the other states among them.
                 // swiftlint:disable:next force_try
-                model.demoStandings[p.id] = i % 7 == 3 ? .new : (i % 11 == 6 ? .renew(p.name) : .paired(try! model.trust.store(pairing: KeyPair().publicKey, announced: p.name, method: "codes", remaining: 80 * 86400)))
+                model.demoStandings[p.id] = i % 7 == 3 ? .new : (i % 11 == 6 ? .renew(p.name) : .paired(try! model.trust.store(pairing: PublicKey.madeUp(), announced: p.name, method: "codes", remaining: 80 * 86400)))
             }
             let host = NSHostingView(rootView: MainView(model: model).background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
@@ -644,7 +644,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         func demo(_ model: AppModel) -> AppModel {
             func mac(_ name: String) -> KnownMac {
                 // swiftlint:disable:next force_try
-                try! model.trust.store(pairing: KeyPair().publicKey, announced: name, method: "codes", remaining: 80 * 86400)
+                try! model.trust.store(pairing: PublicKey.madeUp(), announced: name, method: "codes", remaining: 80 * 86400)
             }
             let studio = mac("macstudio")
             model.demoStandings = ["1": .paired(mac("My MacBook Air")), "2": .paired(studio), "3": .new, "6": .renew("macmini"),

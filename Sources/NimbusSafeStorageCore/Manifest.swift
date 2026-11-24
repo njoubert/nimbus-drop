@@ -67,6 +67,11 @@ public struct Manifest: Codable, Equatable, Sendable {
     /// numbers from overflowing the arithmetic done with them, far above any real drop.
     public static let maxEntries = 2_000_000
     public static let maxFileSize: Int64 = 1 << 50
+    /// And the most bytes in all. Without it the sum itself overflowed: 8,192 files of the
+    /// largest size come to 2^63, and adding them up trapped. One accepted drop (or none, for
+    /// a key with a standing grant) crashed the receiver (found by an independent review,
+    /// 2026-11-24; the comment that said it could not happen had multiplied wrongly).
+    public static let maxTotalBytes: Int64 = 1 << 60
 
     /// What the disk will take two names to be the same by: a Mac's volume is, by default,
     /// insensitive to case and to how accents are composed.
@@ -131,7 +136,9 @@ public struct Manifest: Codable, Equatable, Sendable {
                 guard e.size >= 0, e.size <= Self.maxFileSize else { throw DropError("The drop has an impossible size for \(Sanitize.label(e.path, limit: 120))") }
                 // A chunk is named on the wire by 32 bits; a file of more chunks than that cannot be sent.
                 guard e.size / Int64(chunkSize) < Int64(UInt32.max) else { throw DropError("The drop has a file of more chunks than can be numbered: \(Sanitize.label(e.path, limit: 120))") }
-                total += e.size   // cannot overflow: at most 2^21 entries of 2^50 bytes
+                // Both are at most 2^60 here, so neither the test nor the sum can overflow.
+                guard e.size <= Self.maxTotalBytes - total else { throw DropError("The drop is larger than can be accepted") }
+                total += e.size
             case .symlink:
                 guard let l = e.link, !l.isEmpty, !l.utf8.contains(0), l.utf8.count <= Int(PATH_MAX) else {
                     throw DropError("The drop has an unusable link at \(Sanitize.label(e.path, limit: 120))")

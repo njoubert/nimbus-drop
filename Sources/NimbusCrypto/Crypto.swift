@@ -129,14 +129,22 @@ public struct PublicKey: Hashable, Sendable, Codable, CustomStringConvertible {
     public static func digits(_ text: String) -> String { String(text.unicodeScalars.filter { $0.value >= 48 && $0.value <= 57 }.map(Character.init)) }
 
     public var description: String { tag }
+
+    /// A key nobody holds the other half of: for made-up data (the windows rendered for a
+    /// screenshot) and for tests. The secret is made and dropped here.
+    public static func madeUp() -> PublicKey { KeyPair().publicKey }
 }
 
-/// A static key pair. The private half never leaves this type except to be stored (`raw`).
-public struct KeyPair: Sendable {
+/// A static key pair. The private half never leaves this module: other modules can hold a
+/// `KeyPair` and hand it to a handshake, and cannot read it. The one way out is the trust
+/// file's plaintext (`TrustCore.encoded`), which goes to be sealed and stored.
+///
+/// `package`, not `public`: nothing outside the engine can so much as name it.
+package struct KeyPair: Sendable {
     let secret: Curve25519.KeyAgreement.PrivateKey
-    public let publicKey: PublicKey
+    package let publicKey: PublicKey
 
-    public init() {
+    package init() {
         // A fresh key is canonical except, about once in 2^250, by value; make another then.
         while true {
             let k = Curve25519.KeyAgreement.PrivateKey()
@@ -144,14 +152,16 @@ public struct KeyPair: Sendable {
         }
     }
 
-    public init?(raw: Data) {
+    /// From stored bytes. Within this module only: the trust core reads the file.
+    init?(raw: Data) {
         guard let k = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw),
               let p = PublicKey(k.publicKey.rawRepresentation) else { return nil }
         secret = k
         publicKey = p
     }
 
-    public var raw: Data { secret.rawRepresentation }
+    /// The private key's bytes. Within this module only.
+    var raw: Data { secret.rawRepresentation }
 
     /// X25519. A result of all zeros (a key of low order) is refused.
     func agree(with other: Data) throws -> Data {

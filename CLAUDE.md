@@ -46,11 +46,38 @@ rest: how to work here, how the engine is put together, and what was measured.
   trust, the rounds of a drop, the tie-break when two Macs ask at once, the handshake and the
   keys derived from it. Then `./build.sh verify`. A new guard gets a mutant in
   `formal/check.py` as well as a line in `scripts/mutate.py`: a model that holds with the
-  guard removed was saying nothing about it.
+  guard removed was saying nothing about it. A new Tamarin lemma gets an entry in
+  `formal/tamarin/lemmas.json` (what it claims, under what, about which code): the runner
+  refuses a run whose lemmas are not exactly the register's, and it fails closed on anything
+  it cannot read (`formal/test_check.py` is the list of ways it must refuse).
+- **A claim is in the register with its kind of evidence** (`docs/security/claims.md`):
+  proved in a symbolic model, checked at stated bounds, the same machine as its model,
+  argued, tested, the compiler's, by reading, or not established. Do not write "verified" of
+  the Swift application anywhere; say which of those it is.
 - **The layers hold.** A module imports only what is under it; `NimbusCrypto` stays pure
   (decisions about a protocol go there as functions of their inputs, and whoever owns the
   socket and the clock calls them); the trust store knows a session only as a
-  `TrustedSession`. `scripts/check-layers.py` says no; do not teach it to say yes.
+  `TrustedSession`. `scripts/check-layers.py` says no; do not teach it to say yes. A new way
+  of not being pure is a new pattern there and a new case in `scripts/test-check-layers.py`.
+- **The secrets must not flow** (after Diodon; `docs/plans/security-assurance-plan.md`). A
+  key's bytes are `internal` to `NimbusCrypto`, which does no I/O, so no other module can
+  write them anywhere; the types that hold them are `package`, so nothing outside the engine
+  can name them. The one way out is the trust file's plaintext (`TrustCore.encoded`), asked
+  for in `Trust.swift` alone. Do not widen an access level to get at a key: add the operation
+  to the pure module and hand back what is public. `scripts/test-capabilities.py` is the list
+  of programs that must not compile; a new type that carries a secret or an authority gets a
+  line there. Nothing that is logged or said to the other Mac names a secret (the lint, and
+  `SecretsTests`, which searches a whole session's log).
+- **A decision is a machine; a machine is tied to its model.** Pairing, trust, a drop's
+  conversation and admission are each a pure value type in `NimbusCrypto`
+  (`(state, event) -> effects`) with a class around it that owns the lock, the clock and the
+  sockets and does what the machine says. A new protocol decision goes in the machine, not in
+  the class. Each machine's test writes its transition relation to `formal/tla/*Impl.tla`
+  and TLC holds that EQUAL to the specification's `Step`. The abstraction a machine is
+  compared under is written at the top of its `.tla`, and its random walks vary what the
+  abstraction leaves out, with a seed that is printed: one concrete machine per abstract
+  state proves equality only if nothing else matters, and twice in this work something else
+  did (a session of an earlier pairing, found after some 1,500 walks).
 - **No cryptography of our own making.** Primitives from CryptoKit only. Speed is never a
   reason to write a cipher or call a private API.
 - **Never write outside what the person chose.** A manifest is input from another machine and
@@ -252,6 +279,12 @@ swift build -c release       measure with this, never the debug build
 .build/release/NimbusDrop --peers | --print | --identity | --known | --forget TAG | --reset-identity
 python3 scripts/mutate.py [word…]                                   break each guard, expect a test to fail
 ./build.sh verify [word…]    the layers, every formal model and its mutants, the tests (see Verification)
+./build.sh verify quick      the part that takes about a minute: no Tamarin, and of the tests the pure core's
+python3 formal/check.py register | tla | tamarin | WORD            the lemma register; the models; whatever has WORD in its name
+python3 formal/test_check.py; python3 scripts/test-check-layers.py   the runner's and the layer checker's own tests
+python3 scripts/test-capabilities.py                                programs that must not compile (needs a build)
+NIMBUS_WALK_SEEDS=300 swift test --filter TrustCoreTests            a long hunt with the machines' random walks
+swift test --sanitize=thread --build-path .build-tsan               the suite under ThreadSanitizer (address likewise)
 python3 scripts/bench-loopback.py BIN [BIN…]                        the data path over loopback, builds side by side
 .build/debug/NimbusDrop --dump-window P     the window with made-up data → P, P-light, P-empty
 .build/debug/NimbusDrop --dump-bar P        the status item's three looks, light and dark

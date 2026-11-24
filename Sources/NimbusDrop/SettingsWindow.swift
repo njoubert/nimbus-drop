@@ -188,9 +188,9 @@ final class SettingsWindowController {
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
         let model = AppModel(demoPeers: [], manual: [], rows: [])
-        _ = try? model.trust.store(pairing: KeyPair().publicKey, announced: "macbookairm4", method: "codes", remaining: 88 * 86400, name: "My MacBook Air")
-        _ = try? model.trust.store(pairing: KeyPair().publicKey, announced: "dads-imac", method: "identity number", remaining: 60 * 86400, name: "Dad's iMac")
-        if let studio = try? model.trust.store(pairing: KeyPair().publicKey, announced: "macstudio", method: "codes", remaining: 40 * 86400) {
+        _ = try? model.trust.store(pairing: PublicKey.madeUp(), announced: "macbookairm4", method: "codes", remaining: 88 * 86400, name: "My MacBook Air")
+        _ = try? model.trust.store(pairing: PublicKey.madeUp(), announced: "dads-imac", method: "identity number", remaining: 60 * 86400, name: "Dad's iMac")
+        if let studio = try? model.trust.store(pairing: PublicKey.madeUp(), announced: "macstudio", method: "codes", remaining: 40 * 86400) {
             model.trust.noteImpostor(of: studio.key, at: "192.168.1.166")
         }
         let host = NSHostingView(rootView: SettingsView(model: model, updater: nil, whole: true).background(Color(nsColor: .windowBackgroundColor)))

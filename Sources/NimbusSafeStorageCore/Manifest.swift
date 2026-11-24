@@ -4,6 +4,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import NimbusBase
+import NimbusRuntime
 
 /// Everything in a drop: every folder, file and symlink with its size, time and mode. Folders
 /// come before what they hold.
@@ -67,10 +68,35 @@ public struct Manifest: Codable, Equatable, Sendable {
     /// numbers from overflowing the arithmetic done with them, far above any real drop.
     public static let maxEntries = 2_000_000
     public static let maxFileSize: Int64 = 1 << 50
+    /// And the most bytes in all. Without it the sum itself overflowed: 8,192 files of the
+    /// largest size come to 2^63, and adding them up trapped. One accepted drop (or none, for
+    /// a key with a standing grant) crashed the receiver (found by an independent review,
+    /// 2026-11-24; the comment that said it could not happen had multiplied wrongly).
+    public static let maxTotalBytes: Int64 = 1 << 60
 
     /// What the disk will take two names to be the same by: a Mac's volume is, by default,
     /// insensitive to case and to how accents are composed.
     static func folded(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
+
+    /// How the name of a partial folder ends: `<first item>.<32 hex digits of the drop's key>`
+    /// and this. (`ReceiveSession` makes that name; `Leftovers` looks for it.)
+    package static let partialSuffix = ".nimbusdrop-partial"
+
+    /// Whether `name` ends as a partial folder's name does, in any spelling a Mac's disk takes
+    /// for it (it folds case in full: capitals, and the long s for s).
+    ///
+    /// No entry of a drop may. A partial folder is found by its name alone, and the name can
+    /// be worked out by another paired Mac (a drop's key is its manifest under the sender's
+    /// public key, which is no secret). So one Mac could send a folder with the name another
+    /// Mac's drop would look for, holding a tree of its own bytes and a ledger saying all of
+    /// it had arrived; that folder was put in the destination like any other, and the other
+    /// Mac's drop, when it came, "continued" from it: wrong bytes in place, reported complete,
+    /// under an honest sender's name.
+    static func endsAsPartialFolder(_ name: Substring) -> Bool {
+        // (Only a name ending in l or L can; the rest are spared the folding.)
+        guard let last = name.utf8.last, last == UInt8(ascii: "l") || last == UInt8(ascii: "L") else { return false }
+        return name.folding(options: [.caseInsensitive], locale: nil).hasSuffix(partialSuffix)
+    }
 
     /// Whether a symlink at `path` pointing to `link` stays inside its own top-level item.
     /// A link that does not (an absolute one, or one that climbs out with "..") is not
@@ -112,6 +138,10 @@ public struct Manifest: Codable, Equatable, Sendable {
                   parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && $0.utf8.count <= 255 }) else {
                 throw DropError("The drop contains an unsafe path: \(Sanitize.label(e.path, limit: 120))")
             }
+            // Nothing in a drop is named as a partial folder is: a later drop would take it for one.
+            guard !parts.contains(where: Self.endsAsPartialFolder) else {
+                throw DropError("The drop contains something named as an unfinished drop is (\(Sanitize.label(e.path, limit: 120))); it was refused")
+            }
             // Unique as the disk sees names, not only as text: "x" and "X" are one file here, and
             // a drop that used both for different things could aim a write through a symlink.
             guard seen.insert(Self.folded(e.path)).inserted else {
@@ -131,7 +161,9 @@ public struct Manifest: Codable, Equatable, Sendable {
                 guard e.size >= 0, e.size <= Self.maxFileSize else { throw DropError("The drop has an impossible size for \(Sanitize.label(e.path, limit: 120))") }
                 // A chunk is named on the wire by 32 bits; a file of more chunks than that cannot be sent.
                 guard e.size / Int64(chunkSize) < Int64(UInt32.max) else { throw DropError("The drop has a file of more chunks than can be numbered: \(Sanitize.label(e.path, limit: 120))") }
-                total += e.size   // cannot overflow: at most 2^21 entries of 2^50 bytes
+                // Both are at most 2^60 here, so neither the test nor the sum can overflow.
+                guard e.size <= Self.maxTotalBytes - total else { throw DropError("The drop is larger than can be accepted") }
+                total += e.size
             case .symlink:
                 guard let l = e.link, !l.isEmpty, !l.utf8.contains(0), l.utf8.count <= Int(PATH_MAX) else {
                     throw DropError("The drop has an unusable link at \(Sanitize.label(e.path, limit: 120))")

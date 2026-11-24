@@ -281,7 +281,10 @@ enum CLI {
                     }
                     guard ok else { Swift.print("declined: not covered by --unattended-from"); session.decline("Not accepted unattended"); return }
                 } else {
-                    guard ["y", "yes"].contains(ask("accept into \(destination.path)? [y/N]").lowercased()) else { session.decline(); return }
+                    // The question names the drop: with two offers at once, the line printed above
+                    // for the second came between the first one's question and its answer, and a
+                    // "y" meant for one accepted the other.
+                    guard ["y", "yes"].contains(ask("accept “\(session.title)” (\(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))) from \(session.peerName) [\(session.sender.key.tag)] into \(destination.path)? [y/N]").lowercased()) else { session.decline(); return }
                 }
                 session.accept(destination: destination)
                 Thread.detachNewThread {
@@ -305,7 +308,7 @@ enum CLI {
             listener.start()
             if unattended != nil {
                 guard !anyNetwork else { fputs("--unattended-from cannot be combined with --any-network\n", stderr); return 1 }
-                Swift.print("UNATTENDED: drops from the paired key \(unattendedFrom ?? "") are accepted without asking, up to \(Format.bytes(limit)) each, while this runs")
+                Swift.print("UNATTENDED: drops from the paired key \(unattendedFrom ?? "") are accepted without asking, up to \(Format.bytes(limit)) each, and its speed tests are allowed without asking, while this runs")
             }
             Swift.print("receiving as \(identity.name) [\(trust.publicKey.tag)] on port \(listener.port)\(advertiser == nil ? " (not announced)" : "")\(anyNetwork ? ", from any address" : ""), saving to \(destination.path)")
             withExtendedLifetime(advertiser) { RunLoop.main.run() }

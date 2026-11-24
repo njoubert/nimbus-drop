@@ -51,7 +51,7 @@ final class CryptoTests: XCTestCase {
         XCTAssertEqual(try aReceive.open(hex(messages[3].1)).hex, messages[3].0)
         XCTAssertEqual(try aSend.seal(hex(messages[4].0)).hex, messages[4].1)
         XCTAssertEqual(try bReceive.open(hex(messages[4].1)).hex, messages[4].0)
-        XCTAssertEqual(aMaster, bMaster)
-        XCTAssertEqual(aMaster.count, 32)
+        XCTAssertEqual(aMaster.bytes, bMaster.bytes)
+        XCTAssertEqual(aMaster.bytes.count, 32)
     }
 }

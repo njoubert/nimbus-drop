@@ -8,7 +8,9 @@
 formal/tamarin/NimbusPairing.spthy proves that someone in the middle cannot make the codes
 agree by CHOOSING: every value they could steer a code with is either fixed before they see
 what they would need (their own commitment) or does not exist yet (the responder's value).
-What a proof with perfect hashes cannot say is how often the codes agree by LUCK. This plays
+What a proof with perfect hashes cannot say is how often the codes agree by LUCK. The argument
+for the number is formal/computational/pairing-bound.md; this checks its arithmetic two ways.
+It counts exactly how far a code is from uniform (a 64-bit number modulo 10^6). And it plays
 the game, with the real derivation (SHA-256 commitment, HKDF-SHA-256 codes, as in PairCodes
 and scripts/vectors.py), against an attacker with a budget of hash evaluations per pairing:
 
@@ -109,9 +111,32 @@ def same_derivation_as_the_code():
     return commitment(h, ns).hex() == "964d0d99aa5dab8bcee9d8109aa177dee98b8b3f38aa182b717bcd5bee17fc18" and six == (759656, 893228)
 
 
+def exact():
+    """What needs no simulation: how far a code is from uniform, counted exactly.
+
+    A code is a 64-bit number modulo 10^6, and 2^64 is not a multiple of 10^6, so the first
+    2^64 mod 10^6 codes are each one part in about 1.8e13 likelier than the rest. Two codes
+    drawn independently that way agree with probability sum(p_i^2). Both as exact fractions.
+    """
+    from fractions import Fraction
+    n, m = 2 ** 64, 10 ** 6
+    q, r = divmod(n, m)
+    likeliest = Fraction(q + 1, n)
+    agree = Fraction(r * (q + 1) ** 2 + (m - r) * q ** 2, n ** 2)
+    uniform = Fraction(1, m)
+    assert uniform <= agree <= likeliest < uniform * (1 + Fraction(1, 10 ** 13))
+    # One guess at one code succeeds at most as often as the likeliest code comes up; a pairing
+    # has two codes, so two such guesses.
+    per_pairing = 2 * likeliest
+    assert per_pairing < Fraction(2, m) * (1 + Fraction(1, 10 ** 13))
+    return float(likeliest / uniform - 1), float(per_pairing)
+
+
 def main():
     if not same_derivation_as_the_code():
         sys.exit("this script no longer derives the codes as PairCodes does")
+    excess, per_pairing = exact()
+    print(f"by counting: a six-digit code is within {excess:.1e} of uniform; one pairing is won with at most {per_pairing:.15e}")
     expected = 1 - (1 - 1 / SPACE) ** 2
     won = sum(attack(True, BUDGET) for _ in range(TRIALS))
     rate = won / TRIALS

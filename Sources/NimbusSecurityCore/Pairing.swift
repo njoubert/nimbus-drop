@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import NimbusBase
+import NimbusRuntime
 import NimbusCrypto
 import NimbusNet
 
@@ -262,7 +263,7 @@ public final class PairingSession: @unchecked Sendable, Identifiable {
         guard ready, let key, let hello else { return }
         do {
             let mac = try trust.store(pairing: key, announced: hello.name, method: byNumber ? "identity number" : "codes", remaining: hello.remaining,
-                                      replacing: replacing, name: name)
+                                      replacing: replacing, name: name, under: channel?.local)
             end(.paired(mac))
         } catch { end(.failed((error as? DropError)?.message ?? "\(error)")) }
     }

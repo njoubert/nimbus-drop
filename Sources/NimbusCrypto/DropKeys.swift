@@ -10,18 +10,21 @@ package struct DropKeys {
     package let sessionID: Data
     private let master: Data
     let attachKey: Data
-    package let resumeKey: Data
+    /// The one key of a drop that outlives it (for a few minutes: a sender that asks "did it
+    /// arrive?" must prove it is that drop's sender). Held outside this module, read only in it.
+    package let resumeKey: Secret
 
     /// At most this many bytes and this many seals under one stream key; then the sender moves
     /// to a new connection, and so to a new key. Far inside what the cipher allows.
     package nonisolated(unsafe) static var streamBytes: Int64 = 1 << 38
     static let streamSeals: UInt64 = 1 << 24
 
-    package init(master: Data) {
+    package init(master secret: Secret) {
+        let master = secret.bytes
         self.master = master
         sessionID = Crypto.kdf(master, "nimbus-drop session id v1", 16)
         attachKey = Crypto.kdf(master, "nimbus-drop attach v1", 32)
-        resumeKey = Crypto.kdf(master, "nimbus-drop resume v1", 32)
+        resumeKey = Secret(Crypto.kdf(master, "nimbus-drop resume v1", 32))
     }
 
     /// The key of data connection number `conn`. A number is used once in a drop, so a key is too.
@@ -33,7 +36,7 @@ package struct DropKeys {
         Crypto.hmac(attachKey, sessionID + Crypto.be64(conn) + challenge).prefix(16)
     }
 
-    package static func resumeProof(_ resumeKey: Data, _ label: String, h: Data) -> Data { Crypto.hmac(resumeKey, Data(label.utf8) + h) }
+    package static func resumeProof(_ resumeKey: Secret, _ label: String, h: Data) -> Data { Crypto.hmac(resumeKey.bytes, Data(label.utf8) + h) }
 }
 
 /// The twelve bytes sealed before every chunk on a data connection: which file, which chunk,

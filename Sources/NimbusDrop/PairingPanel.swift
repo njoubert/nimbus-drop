@@ -176,9 +176,9 @@ final class PairingPanel: NSObject, NSWindowDelegate {
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
         let trust = Trust.inMemory()
-        let known = KeyPair().publicKey
+        let known = PublicKey.madeUp()
         _ = try? trust.store(pairing: known, announced: "macbookairm4", method: "codes", remaining: 80 * 86400)
-        let clash = trust.nameClash("macbookairm4", key: KeyPair().publicKey)
+        let clash = trust.nameClash("macbookairm4", key: PublicKey.madeUp())
         let stages: [(String, PairingStage)] = [
             ("request", .request(name: "macbookpro", address: "192.168.1.107", clash: nil, renewal: false)),
             ("clash", .request(name: "macbookairm4", address: "192.168.1.166", clash: clash, renewal: false)),

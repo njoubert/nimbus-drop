@@ -98,8 +98,8 @@ rule S_Reveal:
       expect = sas('receiver', ~ns, nr, 'none')
   in
     [ S_1($S, $R, X, hh, ~ns), In(nr) ]
-  --[ SCodes($S, $R, X, mine, expect) ]->
-    [ S_2($S, $R, X, expect), !Shows($S, mine), Out(~ns) ]
+  --[ SCodes($S, $R, X, mine, expect), Showed('asked', $S, hh, ~ns, nr) ]->
+    [ S_2($S, $R, X, expect, hh, ~ns, nr), !Shows($S, mine), Out(~ns) ]
 #else
 rule S_Commit:
   let hh = h(<'handshake', pk(~sk), X, ~e, fr>)
@@ -114,14 +114,14 @@ rule S_Reveal:
       expect = sas('receiver', ~ns, nr, hh)
   in
     [ S_1($S, $R, X, hh, ~ns), In(nr) ]
-  --[ SCodes($S, $R, X, mine, expect) ]->
-    [ S_2($S, $R, X, expect), !Shows($S, mine), Out(~ns) ]
+  --[ SCodes($S, $R, X, mine, expect), Showed('asked', $S, hh, ~ns, nr) ]->
+    [ S_2($S, $R, X, expect, hh, ~ns, nr), !Shows($S, mine), Out(~ns) ]
 #endif
 
 /* The person at S types what the Mac they mean to pair with shows. */
 rule S_Typed:
-    [ S_2($S, $R, X, expect), !Shows($R, code) ]
-  --[ Eq(code, expect), Stored($S, $R, X) ]->
+    [ S_2($S, $R, X, expect, hh, ns, nr), !Shows($R, code) ]
+  --[ Eq(code, expect), Stored($S, $R, X), StoredFor('asked', $S, $R, hh, ns, nr) ]->
     [ ]
 
 /* ---- The Mac that is asked (the responder; "R") --------------------------------------------- */
@@ -146,8 +146,8 @@ rule R_Codes:
       opened = h(<'commit', ns>)
   in
     [ R_1($R, $S, Y, hh, commit, ~nr), In(ns) ]
-  --[ Eq(commit, opened), RCodes($R, $S, Y, mine, expect) ]->
-    [ R_2($R, $S, Y, expect), !Shows($R, mine) ]
+  --[ Eq(commit, opened), RCodes($R, $S, Y, mine, expect), Showed('was asked', $R, hh, ns, ~nr) ]->
+    [ R_2($R, $S, Y, expect, hh, ns, ~nr), !Shows($R, mine) ]
 #endif
 
 #ifdef NoCommitCheck
@@ -156,8 +156,8 @@ rule R_Codes:
       expect = sas('sender',   ns, ~nr, hh)
   in
     [ R_1($R, $S, Y, hh, commit, ~nr), In(ns) ]
-  --[ RCodes($R, $S, Y, mine, expect) ]->
-    [ R_2($R, $S, Y, expect), !Shows($R, mine) ]
+  --[ RCodes($R, $S, Y, mine, expect), Showed('was asked', $R, hh, ns, ~nr) ]->
+    [ R_2($R, $S, Y, expect, hh, ns, ~nr), !Shows($R, mine) ]
 #endif
 
 #ifdef not NoHashBinding & not NoCommitCheck
@@ -167,13 +167,13 @@ rule R_Codes:
       opened = h(<'commit', hh, ns>)
   in
     [ R_1($R, $S, Y, hh, commit, ~nr), In(ns) ]
-  --[ Eq(commit, opened), RCodes($R, $S, Y, mine, expect) ]->
-    [ R_2($R, $S, Y, expect), !Shows($R, mine) ]
+  --[ Eq(commit, opened), RCodes($R, $S, Y, mine, expect), Showed('was asked', $R, hh, ns, ~nr) ]->
+    [ R_2($R, $S, Y, expect, hh, ns, ~nr), !Shows($R, mine) ]
 #endif
 
 rule R_Typed:
-    [ R_2($R, $S, Y, expect), !Shows($S, code) ]
-  --[ Eq(code, expect), Stored($R, $S, Y) ]->
+    [ R_2($R, $S, Y, expect, hh, ns, nr), !Shows($S, code) ]
+  --[ Eq(code, expect), Stored($R, $S, Y), StoredFor('was asked', $R, $S, hh, ns, nr) ]->
     [ ]
 
 /* ---- Pairing by identity number (purpose `verify`): no exchange; each person enters the
@@ -187,7 +187,7 @@ rule Shows_Number:
 
 rule Typed_Number:
     [ !Ltk($A, ~sk), In(X), !ShowsNumber($B, number) ]
-  --[ Neq($A, $B), Eq(number, idnum(X)), Stored($A, $B, X) ]->
+  --[ Neq($A, $B), Eq(number, idnum(X)), Stored($A, $B, X), ByNumber($A, $B) ]->
     [ ]
 
 /* ================================== Lemmas ================================================ */
@@ -199,11 +199,31 @@ lemma two_people_can_pair: exists-trace
       & (Ex mine expect #c. SCodes(S, R, kr, mine, expect) @ c)
       & (Ex mine expect #c. RCodes(R, S, ks, mine, expect) @ c)"
 
+/* And by identity number: each enters the other's, and both store. (The lemma above asks for
+   the codes, so it said nothing of this flow.)                                               */
+lemma two_people_can_pair_by_number: exists-trace
+  "Ex A B ka kb #i #j #a #b.
+      Stored(A, B, kb) @ i & ByNumber(A, B) @ i & Stored(B, A, ka) @ j & ByNumber(B, A) @ j
+      & Key(A, ka) @ a & Key(B, kb) @ b"
+
 /* THE RESULT. Whatever a Mac stores as "the Mac my person was pairing with" is that Mac's
    own key: in either role, with any number of pairings going on at once, with the attacker
    in the middle of all of them, hearing every code and able to steer a code whenever it
    holds the last input to it.                                                                */
 lemma a_stored_pairing_is_with_the_mac_the_person_meant:
   "All A B X #i. Stored(A, B, X) @ i ==> Ex #j. Key(B, X) @ j"
+
+/* THE EXCHANGE. A pairing made with codes is stored for one exchange, and the Mac it names
+   took part in that same exchange in the other role: the same handshake hash (so, by
+   NimbusHandshake.spthy, each held the other's real key), the same Ns, the same Nr. Nothing
+   is put together from two pairings, and the code a person typed was shown for this one.
+   Both mutants falsify the first of these as well.                                           */
+lemma the_mac_that_asked_stores_one_exchange:
+  "All S R hh ns nr #i. StoredFor('asked', S, R, hh, ns, nr) @ i
+      ==> Ex #j. Showed('was asked', R, hh, ns, nr) @ j & #j < #i"
+
+lemma the_mac_that_was_asked_stores_one_exchange:
+  "All R S hh ns nr #i. StoredFor('was asked', R, S, hh, ns, nr) @ i
+      ==> Ex #j. Showed('asked', S, hh, ns, nr) @ j & #j < #i"
 
 end

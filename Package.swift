@@ -18,7 +18,10 @@ let package = Package(
         // system frameworks it is allowed. What one layer needs of another is `package`, not
         // `public`: the split adds nothing to what the app can see.
         //
-        //   NimbusBase              errors, the log, Sanitize, Format, the Tuning namespace
+        //   NimbusBase              PURE values: DropError, LogLevel, Sanitize, Format, the Tuning namespace
+        //   NimbusRuntime           what a value is not: the log and its file, a lock, the last system
+        //                           error. Beside the pure module, not under it: NimbusCrypto cannot
+        //                           import it, so it cannot log, lock or ask the system anything.
         //   NimbusCrypto            PURE: no socket, file, clock, lock or thread. The cryptography
         //                           of protocol 3 and the pairing transaction as a state machine.
         //                           What the formal models in formal/ are about.
@@ -29,23 +32,24 @@ let package = Package(
         //   NimbusTransferCore      drops: the sender, the listener, the receiver, the speed test
         //   NimbusDropCore          all of it under one name, and what only an app needs
         .target(name: "NimbusBase"),
+        .target(name: "NimbusRuntime", dependencies: ["NimbusBase"]),
         .target(name: "NimbusCrypto", dependencies: ["NimbusBase"]),
-        .target(name: "NimbusNet", dependencies: ["NimbusBase"], linkerSettings: [.linkedFramework("SystemConfiguration")]),
-        .target(name: "NimbusSafeStorageCore", dependencies: ["NimbusBase"]),
-        .target(name: "NimbusSecurityCore", dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet"],
+        .target(name: "NimbusNet", dependencies: ["NimbusBase", "NimbusRuntime"], linkerSettings: [.linkedFramework("SystemConfiguration")]),
+        .target(name: "NimbusSafeStorageCore", dependencies: ["NimbusBase", "NimbusRuntime"]),
+        .target(name: "NimbusSecurityCore", dependencies: ["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet"],
                 linkerSettings: [.linkedFramework("IOKit")]),
-        .target(name: "NimbusDiscovery", dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSecurityCore"],
+        .target(name: "NimbusDiscovery", dependencies: ["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet", "NimbusSecurityCore"],
                 linkerSettings: [.linkedFramework("Network"), .linkedFramework("SystemConfiguration")]),
         .target(name: "NimbusTransferCore",
-                dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore"]),
+                dependencies: ["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore"]),
         .target(
             name: "NimbusDropCore",
-            dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore", "NimbusDiscovery",
-                           "NimbusTransferCore"]
+            dependencies: ["NimbusBase", "NimbusRuntime", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore",
+                           "NimbusDiscovery", "NimbusTransferCore"]
         ),
         // The pure module by itself: the pairing machine, attacked, and written out as the
         // transition relation that TLC checks against its specification (formal/tla).
-        .testTarget(name: "NimbusCryptoTests", dependencies: ["NimbusCrypto"]),
+        .testTarget(name: "NimbusCryptoTests", dependencies: ["NimbusCrypto"], exclude: ["Vectors"]),
         .testTarget(name: "NimbusDropCoreTests", dependencies: ["NimbusDropCore"]),
         // A middleman for testing only, never part of the app: a TCP proxy that sits between a
         // sender and a receiver and misbehaves on cue (throttles, stalls, drops connections,

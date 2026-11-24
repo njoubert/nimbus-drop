@@ -109,8 +109,8 @@ final class VectorTests: XCTestCase {
         let other = try XCTUnwrap(responder.withLock { $0 })
         XCTAssertEqual(initiator.h, d("h"))
         XCTAssertEqual(other.h, d("h"))
-        XCTAssertEqual(initiator.master, d("master"), "the third output of Split, which the published Noise vectors do not cover")
-        XCTAssertEqual(other.master, d("master"))
+        XCTAssertEqual(initiator.master.bytes, d("master"), "the third output of Split, which the published Noise vectors do not cover")
+        XCTAssertEqual(other.master.bytes, d("master"))
         XCTAssertEqual(other.remote, si.publicKey)
 
         // One control message each way, with a body whose bytes are fixed.
@@ -127,17 +127,17 @@ final class VectorTests: XCTestCase {
     }
 
     func testTheDropsKeys() throws {
-        let keys = DropKeys(master: d("master"))
+        let keys = DropKeys(master: Secret(d("master")))
         XCTAssertEqual(keys.sessionID, d("session_id"))
         XCTAssertEqual(keys.attachKey, d("attach_key"))
-        XCTAssertEqual(keys.resumeKey, d("resume_key"))
+        XCTAssertEqual(keys.resumeKey.bytes, d("resume_key"))
         XCTAssertEqual((keys.sessionID + Crypto.be64(7) + keys.attachTag(conn: 7, challenge: d("challenge"))).hex, s("attach_7"))
         XCTAssertEqual(DropKeys.resumeProof(keys.resumeKey, "resume", h: d("later_h")), d("resume_proof"))
         XCTAssertEqual(DropKeys.resumeProof(keys.resumeKey, "resumed", h: d("later_h")), d("resumed_proof"))
     }
 
     func testARecordAndTheEndMarker() throws {
-        let keys = DropKeys(master: d("master"))
+        let keys = DropKeys(master: Secret(d("master")))
         var cipher = keys.stream(1)
         let payload = Data("hello".utf8)
         let record = try payload.withUnsafeBytes { try RecordHeader.seal(&cipher, file: 3, chunk: 9, bytes: $0.baseAddress!, count: 5) }

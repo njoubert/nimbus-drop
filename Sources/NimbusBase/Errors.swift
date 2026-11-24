@@ -1,6 +1,5 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
-import Darwin
 import Foundation
 
 /// The one error type the engine throws; its message is what the user reads.
@@ -18,8 +17,4 @@ public struct DropError: Error, CustomStringConvertible, LocalizedError, Equatab
     public static func == (a: DropError, b: DropError) -> Bool { a.message == b.message }
     public var description: String { message }
     public var errorDescription: String? { message }
-}
-
-package func errnoError(_ what: String) -> DropError {
-    DropError("\(what): \(String(cString: strerror(errno)))")
 }

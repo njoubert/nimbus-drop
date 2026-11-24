@@ -5,6 +5,7 @@ import Foundation
 import Network
 import SystemConfiguration
 import NimbusBase
+import NimbusRuntime
 import NimbusCrypto
 import NimbusNet
 import NimbusSecurityCore
@@ -63,6 +64,25 @@ public struct Peer: Identifiable, Equatable, Sendable {
     }
 
     public var isCompatible: Bool { version == nil || version == protocolVersion }
+
+    /// The Mac a drop was sent to, as it is on the network now. A drop is sent to a KEY. The
+    /// place its tile had in the list (`id`: the name the Mac announces, as Bonjour reports
+    /// it) is a label, and another Mac can take it. So: the destination that has proved the
+    /// same key, wherever it is now and whatever it calls itself; or, when none has, this
+    /// record with that key still expected, so that whoever answers at the old address must
+    /// prove it. `proved`: the key the drop's own handshake proved, when it got that far.
+    /// Only a Mac added by address that never proved a key is looked up by its place: there is
+    /// nothing else to go by, and an address means whoever answers there, provided it is paired.
+    ///
+    /// Until 2026-11-24 Retry looked the Mac up by `id`, and sent, expecting whatever key was
+    /// at that name now: a second paired Mac that took the name of one that had gone was sent
+    /// the drop meant for the first, on one click and no question (an independent review).
+    public func asItIsNow(among destinations: [Peer], proved: PublicKey? = nil) -> Peer {
+        guard let key = proved ?? key else { return isManual ? (destinations.first { $0.id == id } ?? self) : self }
+        var same = destinations.first { $0.key == key } ?? self
+        same.key = key
+        return same
+    }
 }
 
 public enum Probe {

@@ -765,7 +765,7 @@ final class ReviewTests: XCTestCase {
         let socket: Socket
         var out: CipherState
         var back: CipherState
-        let master: Data
+        let master: Secret
         let h: Data
 
         init(port: UInt16, keys: KeyPair) throws {

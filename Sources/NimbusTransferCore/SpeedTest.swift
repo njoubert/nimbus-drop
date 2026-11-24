@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import NimbusBase
+import NimbusRuntime
 import NimbusCrypto
 import NimbusNet
 import NimbusSafeStorageCore
@@ -407,6 +408,15 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
             try? control.send(.decline, Reason(message: "\(listener.identity.name) declined the speed test"))
             log("declined")
             finish(.declined("Declined"))
+            return
+        }
+        // A yes to a question whose pairing has since ended starts nothing, as for a drop (F6):
+        // the question was asked under a key that no longer holds. Asking the store is also what
+        // makes it count the time: where nothing ticks by itself (the command line), the yes
+        // used to be the first thing to look, and it did not.
+        guard listener.trust.standing(of: control.remote).isPaired else {
+            try? control.send(.decline, Reason(message: "The pairing with \(listener.identity.name) has run out; pair again"))
+            finish(.failed("The pairing with \(peerName) ran out before the speed test was allowed"))
             return
         }
         log("allowed")

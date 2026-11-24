@@ -6,6 +6,8 @@
 #   ./build.sh verify [word…]  everything that is checked by a machine: the layers, the formal models
 #                           and their mutants (formal/check.py: TLC and Tamarin), the short-code
 #                           simulation, and swift test. Words narrow the models ("tla", "Drop").
+#   ./build.sh verify quick    the part of that which takes about a minute: no Tamarin, and of the
+#                           tests only the pure core's.
 #   ./build.sh run [args]   debug build as dist/debug/Nimbus Drop Dev.app, (re)launch it detached.
 #                           Add --fg to run in the foreground instead (logs here, Ctrl-C quits).
 #                           Its identifier is com.njoubert.nimbusdrop.dev: its own settings,
@@ -282,12 +284,26 @@ case "$cmd" in
     ;;
 
   verify)
+    # "quick": what takes seconds. The layers, the runner's own tests, the register, the TLA+
+    # models, and the tests of the pure core (which hold the generated relations to the code).
+    quick=0
+    if [ "${1:-}" = "quick" ]; then quick=1; shift; fi
     python3 scripts/check-layers.py
+    python3 scripts/test-check-layers.py 2>&1 | tail -3
+    python3 formal/test_check.py 2>&1 | tail -3
     python3 formal/sas-bound.py
-    python3 formal/check.py "$@"
-    # The tests include the one that holds formal/tla/PairingImpl.tla to what the code does.
-    swift test
-    say "verified: the layers, the models and their mutants, the tests"
+    if [ $quick = 1 ]; then
+      python3 formal/check.py register tla "$@"
+      swift test --filter NimbusCryptoTests
+      say "verified (quick): the layers, the register, the TLA+ models and their mutants, the pure core's tests. Not run: Tamarin, the engine's tests."
+    else
+      python3 formal/check.py "$@"
+      # The tests include those that hold formal/tla/*Impl.tla to what the code does.
+      swift test
+      # And what must not compile, does not: the access control the secrets sit behind.
+      python3 scripts/test-capabilities.py | tail -1
+      say "verified: the layers, the models and their mutants, the tests"
+    fi
     ;;
   run)
     fg=0; args=()

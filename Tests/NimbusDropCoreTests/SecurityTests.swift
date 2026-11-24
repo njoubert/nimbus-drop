@@ -129,7 +129,7 @@ final class SecurityTests: XCTestCase {
         XCTAssertNoThrow(try tree.makeSymlink("trap", to: outside.path), "the same link again is a resume")
         XCTAssertNoThrow(try tree.makeDirectory("real"), "a real folder again is a resume")
         XCTAssertNil(tree.fileSize("trap/victim.txt"), "nor is anything measured through a symlink")
-        tree.finish("filetrap", mtime: 0, mode: 0o777)
+        XCTAssertThrowsError(try tree.finish("filetrap", mtime: 0, mode: 0o777), "a link is not finished as the file it points to")
 
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: outside.path), ["victim.txt"], "nothing was made outside")
         XCTAssertEqual(try String(contentsOf: outside.appendingPathComponent("victim.txt"), encoding: .utf8), "secret")
@@ -165,6 +165,16 @@ final class SecurityTests: XCTestCase {
         XCTAssertNoThrow(try big.validate())
         XCTAssertEqual(big.totalBytes, 4 << 50)
         XCTAssertEqual(big.chunkCount(0), 1 << 30)
+        // And the sum of them is bounded too. Four files proved nothing: 8,192 of the largest
+        // come to exactly 2^63, and adding them up trapped, in `validate` or in `totalBytes`.
+        let most = Int(Manifest.maxTotalBytes / Manifest.maxFileSize)
+        let full = Manifest(chunkSize: 1 << 20, entries: (0..<most).map { .init(path: "f\($0)", kind: .file, size: Manifest.maxFileSize) })
+        XCTAssertNoThrow(try full.validate())
+        XCTAssertEqual(full.totalBytes, Manifest.maxTotalBytes)
+        for count in [most + 1, 8191, 8192, 8193, 20000] {
+            let over = Manifest(chunkSize: 1 << 20, entries: (0..<count).map { .init(path: "f\($0)", kind: .file, size: Manifest.maxFileSize) })
+            XCTAssertThrowsError(try over.validate(), "\(count) files of the largest size")
+        }
         // A chunk is named on the wire by 32 bits: a file of more chunks than that is refused,
         // not sent with numbers that wrap.
         XCTAssertThrowsError(try Manifest(chunkSize: 4096, entries: [.init(path: "f", kind: .file, size: Manifest.maxFileSize)]).validate())

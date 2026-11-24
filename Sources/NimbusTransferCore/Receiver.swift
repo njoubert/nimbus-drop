@@ -403,11 +403,12 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
                     // after round delivers nothing.
                     let roundStart = lock.withLock { roundStartBytes }
                     if let resent = done.resent { note { $0.retransmittedChunks = resent } }
-                    settle(opened: done.streams)
-                    let soFar = stats
-                    log("the sender says it is done (\(done.streams) data connections opened in all, \(done.resent ?? 0) chunks retransmitted); here: \(soFar.chunks) chunks received, \(soFar.damagedChunks) damaged, \(ledger.doneBytes) of \(manifest.totalBytes) bytes", .debug)
-                    if isOver { return [] }
-                    let next = step(.settled(ledger.isComplete ? .whole : ledger.doneBytes > roundStart ? .more : .nothingNew))
+                    let next = settle(opened: done.streams) { [self] in
+                        let soFar = stats
+                        log("the sender says it is done (\(done.streams) data connections opened in all, \(done.resent ?? 0) chunks retransmitted); here: \(soFar.chunks) chunks received, \(soFar.damagedChunks) damaged, \(ledger.doneBytes) of \(manifest.totalBytes) bytes", .debug)
+                        if isOver { return [] }
+                        return step(.settled(ledger.isComplete ? .whole : ledger.doneBytes > roundStart ? .more : .nothingNew))
+                    }
                     if next == [.send(.plan)] {
                         note { $0.rounds += 1 }
                         let have = ledger.doneBytes
@@ -559,7 +560,15 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     /// After the sender says done: wait for the data connections it opened to finish here too
     /// (their last chunks may still be on the wire or on their way to disk), then close whatever
     /// is left so that nothing writes into the drop once it is judged.
-    private func settle(opened: Int) {
+    ///
+    /// `judge` reads the ledger and tells the machine how the drop stands. It runs with the
+    /// data connections' lock still held: no connection is open when the drop is judged, and
+    /// none can be let in between the judgement and the machine's hearing it (`runStream` asks
+    /// the machine, under the same lock). So a drop that is judged whole is put in place as it
+    /// was judged. Until 2026-11-24 the lock was let go first and nothing asked the machine: a
+    /// data connection that arrived late was written into a drop being moved
+    /// (`testNothingIsWrittenIntoADropOnceItHasBeenJudgedWhole`).
+    private func settle(opened: Int, judge: () -> [Effect]) -> [Effect] {
         streams.lock()
         var quietSince = Date()
         var lastBytes = progress.doneBytes
@@ -572,13 +581,17 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
             let patience = active.isEmpty ? Tuning.settleSeconds : Tuning.stallSeconds
             if Date().timeIntervalSince(quietSince) > patience { break }
         }
-        let left = active
-        streams.unlock()
-        for s in left { s.shutdown() }
-        streams.lock()
+        // Whatever is open is closed, and whatever is let in while that is waited for too.
         let deadline = Date().addingTimeInterval(10)
-        while !active.isEmpty, streams.wait(until: deadline) {}
-        streams.unlock()
+        while !active.isEmpty, Date() < deadline {
+            let left = active
+            streams.unlock()
+            for s in left { s.shutdown() }
+            streams.lock()
+            if !active.isEmpty { streams.wait(until: min(deadline, Date().addingTimeInterval(0.05))) }
+        }
+        defer { streams.unlock() }
+        return judge()
     }
 
     /// Folders, symlinks and empty files, before any data. All through `SafeTree`: whatever is
@@ -611,6 +624,14 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         let from = socket.peerAddress
         track(socket)
         streams.lock()
+        // The machine says when a drop takes data: not before its folder is ready, and not once
+        // it has been judged whole. Asked with the lock held under which the drop is judged.
+        guard lock.withLock({ machine.takesData }) else {
+            streams.unlock()
+            log("refused a data connection from \(from): the drop is not taking data (it has been judged, or has not begun)", .warn)
+            socket.shutdown()
+            return
+        }
         guard active.count < Tuning.streamsPerDrop else {
             streams.unlock()
             log("refused a data connection from \(from): \(Tuning.streamsPerDrop) are open already", .warn)

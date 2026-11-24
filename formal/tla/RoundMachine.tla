@@ -98,6 +98,11 @@
 (*    scan, the error in hand) and are not the machines'; Drop.tla has a   *)
 (*    plan's contents as the environment's.                                *)
 (*                                                                         *)
+(*    One QUERY besides: Receiver.takesData (may a data connection be let  *)
+(*    in to write?) is TakesData below, a function of the phase. Its table *)
+(*    over every state is written out with the relations and checked       *)
+(*    equal too.                                                           *)
+(*                                                                         *)
 (* 4. HOW MUCH OF THIS IS CHECKED, AND HOW.                                *)
 (*    By enumeration (exhaustive): the relation of one Swift machine per   *)
 (*    abstract state under every abstract event, equal to Step both ways   *)
@@ -274,6 +279,11 @@ Unask(s) == IF s.phase = "deciding" THEN << "unask" >> ELSE << >>
 RFail(s, why) == << [s EXCEPT !.phase = "failed"], << "send error", "fail " \o why >> >>
 
 Nothing(s) == << s, << >> >>
+
+\* Whether a data connection of the drop may be let in to write (Receiver.takesData): while
+\* rounds are being received. Not before the folder is ready, and not once the drop has been
+\* judged whole: what is put in place is what was judged.
+TakesData(s) == s.phase \in {"planning", "reading", "settling", "awaitSender"}
 
 ReceiverStep(s, e) ==
     \* The one thing a finished drop still answers: a sender that lost the conversation before it heard.

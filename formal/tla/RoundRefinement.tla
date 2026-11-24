@@ -14,7 +14,9 @@
 (*                    event's transition is one the code makes;            *)
 (*   the same beginnings (one for each patience the relation was written   *)
 (*   out for), and the code's states are exactly those its own transitions *)
-(*   reach from them.                                                      *)
+(*   reach from them;                                                      *)
+(*   QueryIsQuery     the states in which the code says a data connection  *)
+(*                    may be let in are exactly those TakesData names.     *)
 (*                                                                         *)
 (* So over the abstraction RoundMachine.tla states (what each event stands *)
 (* for), what is proved of the two Steps in Rounds.tla and Drop.tla is     *)
@@ -47,6 +49,7 @@ ASSUME ImplIsClosed   == /\ Closure(SenderImplInit, SenderImpl) = States(SenderI
                          /\ Closure(ReceiverImplInit, ReceiverImpl) = States(ReceiverImpl)
 ASSUME ImplIsTotal    == /\ \A x \in States(SenderImpl), e \in SenderEvents: \E t \in SenderImpl: t[1] = x /\ t[2] = e
                          /\ \A x \in States(ReceiverImpl), e \in ReceiverEvents: \E t \in ReceiverImpl: t[1] = x /\ t[2] = e
+ASSUME QueryIsQuery   == ReceiverTakesData = {x \in States(ReceiverImpl): TakesData(x)}
 
 \* One machine moves at a time; neither knows of the other here.
 Init == s \in SenderImplInit /\ r \in ReceiverImplInit

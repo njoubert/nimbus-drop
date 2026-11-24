@@ -3993,4 +3993,45 @@ ReceiverImpl == {
   << [phase |-> "settling", idle |-> 4, patience |-> 5], "yesUnpaired", [phase |-> "settling", idle |-> 4, patience |-> 5], << >> >>
 }
 
+\* The states in which Receiver.takesData is true.
+ReceiverTakesData == {
+  [phase |-> "awaitSender", idle |-> 0, patience |-> 1],
+  [phase |-> "awaitSender", idle |-> 0, patience |-> 2],
+  [phase |-> "awaitSender", idle |-> 0, patience |-> 3],
+  [phase |-> "awaitSender", idle |-> 0, patience |-> 5],
+  [phase |-> "awaitSender", idle |-> 1, patience |-> 2],
+  [phase |-> "awaitSender", idle |-> 1, patience |-> 3],
+  [phase |-> "awaitSender", idle |-> 1, patience |-> 5],
+  [phase |-> "awaitSender", idle |-> 2, patience |-> 3],
+  [phase |-> "awaitSender", idle |-> 2, patience |-> 5],
+  [phase |-> "awaitSender", idle |-> 3, patience |-> 5],
+  [phase |-> "awaitSender", idle |-> 4, patience |-> 5],
+  [phase |-> "planning", idle |-> 0, patience |-> 1],
+  [phase |-> "planning", idle |-> 0, patience |-> 2],
+  [phase |-> "planning", idle |-> 0, patience |-> 3],
+  [phase |-> "planning", idle |-> 0, patience |-> 5],
+  [phase |-> "reading", idle |-> 0, patience |-> 1],
+  [phase |-> "reading", idle |-> 0, patience |-> 2],
+  [phase |-> "reading", idle |-> 0, patience |-> 3],
+  [phase |-> "reading", idle |-> 0, patience |-> 5],
+  [phase |-> "reading", idle |-> 1, patience |-> 2],
+  [phase |-> "reading", idle |-> 1, patience |-> 3],
+  [phase |-> "reading", idle |-> 1, patience |-> 5],
+  [phase |-> "reading", idle |-> 2, patience |-> 3],
+  [phase |-> "reading", idle |-> 2, patience |-> 5],
+  [phase |-> "reading", idle |-> 3, patience |-> 5],
+  [phase |-> "reading", idle |-> 4, patience |-> 5],
+  [phase |-> "settling", idle |-> 0, patience |-> 1],
+  [phase |-> "settling", idle |-> 0, patience |-> 2],
+  [phase |-> "settling", idle |-> 0, patience |-> 3],
+  [phase |-> "settling", idle |-> 0, patience |-> 5],
+  [phase |-> "settling", idle |-> 1, patience |-> 2],
+  [phase |-> "settling", idle |-> 1, patience |-> 3],
+  [phase |-> "settling", idle |-> 1, patience |-> 5],
+  [phase |-> "settling", idle |-> 2, patience |-> 3],
+  [phase |-> "settling", idle |-> 2, patience |-> 5],
+  [phase |-> "settling", idle |-> 3, patience |-> 5],
+  [phase |-> "settling", idle |-> 4, patience |-> 5]
+}
+
 =============================================================================

@@ -168,7 +168,6 @@ ROUNDS_RECEIVER = ["TypeOK", "EndsOnce", "AWithdrawalSaysNothing", "NothingBefor
                    "TheQuestionGoesWhenTheDropDoes", "TheSendersGivingUpIsNotAnswered", "RUnderWaySilenceIsNotTheEnd",
                    "RTheirWordEndsIt", "AFinishedDropSaysOnlyCompleteAgain"]
 
-
 def rounds(end, mutant=None, fails=HOLDS, old=None, new=None):
     """One end of the conversation against anything; with `mutant`, RoundMachine.tla with `old` made `new`."""
     title = f"Rounds (the {'sending' if end == 'sender' else 'receiving'} end)" + (f" / mutant: {mutant}" if mutant else "")
@@ -188,6 +187,11 @@ ROUND_RUNS = [
     ("RoundRefinement / mutant: the specification begins where the code does not", "RoundRefinement", {}, ["SpecIsImpl"], [], "SameBeginnings",
      ("RoundMachine.tla", "ReceiverStart(patience) == [phase |-> \"idle\", idle |-> 0, patience |-> patience]",
       "ReceiverStart(patience) == [phase |-> \"deciding\", idle |-> 0, patience |-> patience]")),
+
+    ("RoundRefinement / mutant: the specification lets data into a drop that is being put in place", "RoundRefinement", {}, ["SpecIsImpl"], [],
+     "QueryIsQuery",
+     ("RoundMachine.tla", "TakesData(s) == s.phase \\in {\"planning\", \"reading\", \"settling\", \"awaitSender\"}",
+      "TakesData(s) == s.phase \\in {\"planning\", \"reading\", \"settling\", \"awaitSender\", \"placing\"}")),
 
     # The sending end, against a receiver and a network that keep to nothing.
     rounds("sender"),

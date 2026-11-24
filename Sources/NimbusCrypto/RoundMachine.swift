@@ -413,6 +413,12 @@ package enum RoundMachine {
             self.patience = patience
         }
 
+        /// Whether a data connection of the drop may be let in to write: from when the folder
+        /// is ready, for as long as rounds are being received. Not before (there is nothing to
+        /// write into), and not once the drop has been judged whole: what is put in place is
+        /// what was judged.
+        package var takesData: Bool { phase == .planning || phase == .reading || phase == .settling || phase == .awaitSender }
+
         /// Ends the drop and tells the sender why.
         private mutating func fail(_ why: Failure) -> [Effect] {
             phase = .failed

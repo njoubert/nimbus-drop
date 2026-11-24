@@ -294,6 +294,22 @@ final class RoundMachineTests: XCTestCase {
         return r
     }
 
+    /// Every state the receiving machine reaches in which it says a data connection may be let in.
+    static func takingData() -> [String] {
+        var seen = Set<String>(), taking = Set<String>()
+        var queue = receiverPatience.map { ReceiverDriver(patience: $0) }
+        for d in queue { seen.insert(d.state) }
+        while let d = queue.popLast() {
+            if d.m.takesData { taking.insert(d.state) }
+            for e in receiverEvents {
+                var next = d
+                next.take(e)
+                if seen.insert(next.state).inserted { queue.append(next) }
+            }
+        }
+        return taking.sorted()
+    }
+
     static var implFile: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("formal/tla/RoundImpl.tla")
@@ -325,6 +341,11 @@ final class RoundMachineTests: XCTestCase {
 
         ReceiverImpl == {
           \(r.transitions.sorted().joined(separator: ",\n  "))
+        }
+
+        \\* The states in which Receiver.takesData is true.
+        ReceiverTakesData == {
+          \(Self.takingData().joined(separator: ",\n  "))
         }
 
         =============================================================================
@@ -885,6 +906,24 @@ final class RoundMachineTests: XCTestCase {
             }
             if step.effects.contains("place") { XCTAssertTrue(step.event == "whole" && step.from.contains("\"settling\""), "\(step)") }
             if step.effects.contains("end completed") { XCTAssertTrue(step.event == "placed" && step.from.contains("\"placing\""), "\(step)") }
+        }
+    }
+
+    /// Data connections are let in while rounds are being received and at no other time: not
+    /// before the folder is ready (there is nothing to write into), and not once the drop has
+    /// been judged whole or has ended, so that what is put in place is what was judged.
+    func testDataIsTakenOnlyWhileRoundsAreBeingReceived() {
+        for phase in Receiver.Phase.allCases {
+            XCTAssertEqual(Self.receiver(at: phase).m.takesData, [.planning, .reading, .settling, .awaitSender].contains(phase), "\(phase)")
+        }
+        // Whatever the machine was made with and however it got there: it is the phase alone.
+        var rng = Seeded(state: 7)
+        for _ in 0..<2000 {
+            var m = Receiver(offered: Self.description(&rng), patience: Self.receiverPatience.randomElement(using: &rng)!)
+            for _ in 0..<30 {
+                _ = Self.receiverEvent(Self.receiverLabel(&rng, m), &rng, offered: Self.offered).map { m.step($0) }
+                XCTAssertEqual(m.takesData, [.planning, .reading, .settling, .awaitSender].contains(m.phase))
+            }
         }
     }
 

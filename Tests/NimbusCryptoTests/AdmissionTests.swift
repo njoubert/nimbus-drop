@@ -7,40 +7,81 @@ import XCTest
 /// Admission by itself: no listener, no connection, no clock. Time is a number these tests
 /// make up, and the limits are small enough to fill by hand.
 ///
-/// Two kinds of test, as for the pairing machine. The first are attacks on the machine, each
-/// the guard of one line in `scripts/mutate.py`. The second ties the code to its
-/// specification: every state the machine can reach at two small sets of limits, under every
-/// event, is written out as `formal/tla/AdmissionImpl.tla`, and TLC checks that relation
-/// against `Step` in `formal/tla/Admission.tla`, both ways (`./build.sh verify`).
+/// Three kinds of test. Attacks on the machine, each the guard of one line in
+/// `scripts/mutate.py`. The tie to the specification: every state the machine can reach at two
+/// small sets of limits, under every event, is written out as `formal/tla/AdmissionImpl.tla`,
+/// and TLC checks that relation against `Step` in `formal/tla/Admission.tla`, both ways
+/// (`./build.sh verify`). And what that tie leaves out, tried at random: the abstraction
+/// (`Naming`, `abstract`, `label`, `answer` below; the contract is at the top of Admission.tla)
+/// keeps one machine for each state of the specification, so walks with other numbers, other
+/// addresses, other keys, other times and long histories must stay inside the relation; and
+/// at limits nobody wrote out, every step is held to the rule said a second time (`World`).
 final class AdmissionTests: XCTestCase {
     typealias Limits = Admission.Limits
 
     static func key(_ n: UInt8) -> PublicKey { PublicKey(Data(repeating: n, count: 32))! }
 
+    // MARK: Chance, with a seed
+
+    /// SplitMix64: the walks are random, and a walk that fails can be had again.
+    struct Seeded: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// `NIMBUS_SEED=… swift test --filter AdmissionTests` repeats a run.
+    static func seed() -> UInt64 {
+        ProcessInfo.processInfo.environment["NIMBUS_SEED"].flatMap { UInt64($0) } ?? UInt64.random(in: 0...UInt64.max)
+    }
+
+    static func randomKey(using rng: inout Seeded) -> PublicKey {
+        while true {
+            var bytes = (0..<32).map { _ in UInt8.random(in: 0...255, using: &rng) }
+            bytes[31] &= 0x7f
+            if let key = PublicKey(Data(bytes)) { return key }
+        }
+    }
+
+    static func randomAddress(using rng: inout Seeded) -> String {
+        Bool.random(using: &rng)
+            ? "10.\(Int.random(in: 0...255, using: &rng)).\(Int.random(in: 0...255, using: &rng)).\(Int.random(in: 1...254, using: &rng))"
+            : "fe80::\(String(UInt32.random(in: 1...UInt32.max, using: &rng), radix: 16))%en\(Int.random(in: 0...9, using: &rng))"
+    }
+
     // MARK: The code and its specification
 
-    /// One set of limits the machine is walked at, and what is thrown at it there.
+    /// One set of limits the machine is walked at, and what is thrown at it there, in the
+    /// specification's terms: names for addresses and keys, time in whole ticks.
     struct Walk {
         let name: String
+        /// `window` in ticks.
         let limits: Limits
         let addresses: [String]
         let keys: [String]
-        /// How far the clock has moved since the last arrival, for the next.
+        /// How far the clock has moved since the last arrival from the local network, for the next.
         let gaps: [Int]
         /// How many drops may be in progress when a connection says it is a data connection.
         let drops: [Int]
+
+        var window: Int { Int(limits.window) }
     }
 
     /// Two walks, because one with every limit above one has more states than a file should
     /// hold (a million transitions). Each has the part it is named for at sizes where every
     /// branch of it is taken, and the rest at one.
     ///
-    /// `pools`: three places for strangers and two an address, so that the oldest of an address
+    /// `Pools`: three places for strangers and two an address, so that the oldest of an address
     /// is neither the oldest of the pool nor the newest; the pool of data connections with one
     /// place for each drop in progress, and none, one or two drops; two keys. The rate is one
     /// arrival in a window of no length: two at the same instant, or not.
     ///
-    /// `rate`: three arrivals in a window from all and two from one address, a window of one
+    /// `Rate`: three arrivals in a window from all and two from one address, a window of one
     /// tick, and a clock that moves by nothing, by one tick (some arrivals are forgotten and
     /// some are not) or by two (all are). One place of each kind.
     static let walks = [
@@ -53,6 +94,50 @@ final class AdmissionTests: XCTestCase {
                             unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1),
              addresses: ["a", "b"], keys: ["k1"], gaps: [0, 1, 2], drops: [0]),
     ]
+
+    /// What the specification is not told: which strings its addresses are, which keys its
+    /// keys, how long a tick is and when the clock started. The walk that is written out uses
+    /// one naming; the walks at random use others, and must get the same relation.
+    struct Naming {
+        /// The specification's name for each address, and for each paired key.
+        var addresses: [String: String]
+        var keys: [PublicKey: String]
+        /// One tick of the specification's time, in the machine's.
+        var tick: Double
+        /// The time of an arrival when there has been none before it.
+        var origin: Double
+
+        /// a, b … are "a", "b" …; k1, k2 … are thirty-two bytes of 1, of 2 …; a tick is 1; time starts at 1000.
+        static func plain(_ walk: Walk) -> Naming {
+            Naming(addresses: Dictionary(uniqueKeysWithValues: walk.addresses.map { ($0, $0) }),
+                   keys: Dictionary(uniqueKeysWithValues: walk.keys.enumerated().map { (AdmissionTests.key(UInt8($0 + 1)), $1) }),
+                   tick: 1, origin: 1000)
+        }
+
+        /// Other addresses, other keys, another length of tick (a power of two, so that whole
+        /// ticks stay exact), another beginning.
+        static func random(_ walk: Walk, using rng: inout Seeded) -> Naming {
+            var addresses: [String: String] = [:], keys: [PublicKey: String] = [:]
+            for name in walk.addresses.shuffled(using: &rng) {
+                var a = AdmissionTests.randomAddress(using: &rng)
+                while addresses[a] != nil { a = AdmissionTests.randomAddress(using: &rng) }
+                addresses[a] = name
+            }
+            for name in walk.keys { keys[AdmissionTests.randomKey(using: &rng)] = name }
+            let tick = [0.125, 0.5, 1, 2, 64, 4096].randomElement(using: &rng)!
+            return Naming(addresses: addresses, keys: keys, tick: tick, origin: tick * Double(Int.random(in: -1_000_000...1_000_000, using: &rng)))
+        }
+
+        func address(named name: String) -> String { addresses.first { $0.value == name }!.key }
+        func key(named name: String) -> PublicKey { keys.first { $0.value == name }!.key }
+
+        /// The machine's limits for a walk's: the window is so many ticks.
+        func limits(_ walk: Walk) -> Limits {
+            var l = walk.limits
+            l.window = Double(walk.window) * tick
+            return l
+        }
+    }
 
     /// A connection as the specification names one: by where it stands, not by its number.
     enum Who: Hashable {
@@ -96,56 +181,97 @@ final class AdmissionTests: XCTestCase {
         }
     }
 
-    /// A machine, and what turns the specification's events into the code's: which number
-    /// stands where, and what time it is.
+    // The abstraction, as three functions of the machine's value and nothing else (the
+    // contract in words is at the top of formal/tla/Admission.tla).
+
+    /// The specification's state for a machine's value.
+    static func abstract(_ m: Admission, _ walk: Walk, _ n: Naming) -> String {
+        let pool = { (p: [Admission.Unproved]) in p.isEmpty ? "<< >>" : "<< " + p.map { "\"\(n.addresses[$0.address]!)\"" }.joined(separator: ", ") + " >>" }
+        let waiting = walk.keys.map { k in "\(k) |-> \(m.waiting.values.filter { n.keys[$0] == k }.count)" }.joined(separator: ", ")
+        let age = { (a: Admission.Arrival) in Int(((m.asOf! - a.at) / n.tick).rounded()) }
+        let arrivals = m.arrivals.isEmpty ? "<< >>"
+            : "<< " + m.arrivals.map { "[age |-> \(age($0)), from |-> \"\(n.addresses[$0.address]!)\"]" }.joined(separator: ", ") + " >>"
+        return "[strangers |-> \(pool(m.strangers)), unattached |-> \(pool(m.unattached)), unpaired |-> \(m.unpaired.count), "
+            + "waiting |-> [\(waiting)], arrivals |-> \(arrivals)]"
+    }
+
+    /// Whom a number is, in a machine's value.
+    static func who(_ id: UInt64, in m: Admission, _ n: Naming) -> Who {
+        if let i = m.strangers.firstIndex(where: { $0.id == id }) { return .stranger(i + 1) }
+        if let i = m.unattached.firstIndex(where: { $0.id == id }) { return .unattached(i + 1) }
+        if m.unpaired.contains(id) { return .unpaired }
+        if let key = m.waiting[id] { return .waiting(n.keys[key]!) }
+        return .nobody
+    }
+
+    /// The specification's event for one of the machine's, in the state it is given in: what
+    /// the numbers say. Nil when the specification has no such event at this walk's sizes.
+    static func label(_ event: Admission.Event, in m: Admission, _ walk: Walk, _ n: Naming) -> Happening? {
+        switch event {
+        case .arrive(let from, let local, let now):
+            guard let name = n.addresses[from] else { return nil }
+            guard local else { return .arrive(name, local: false, gap: 0) }
+            let ticks = (now - (m.asOf ?? n.origin)) / n.tick
+            guard ticks == ticks.rounded(), ticks >= Double(walk.gaps.min()!) else { return nil }
+            // Longer than the window forgets everything, however much longer.
+            return .arrive(name, local: true, gap: Int(min(ticks, Double(walk.gaps.max()!))))
+        case .data(let id, let drops):
+            return walk.drops.contains(drops) ? .data(who(id, in: m, n), drops: drops) : nil
+        case .proved(let id, let what):
+            switch what {
+            case .mine: return .proved(who(id, in: m, n), "mine")
+            case .retired: return .proved(who(id, in: m, n), "retired")
+            case .unpaired: return .proved(who(id, in: m, n), "unpaired")
+            case .paired(let key): return n.keys[key].map { .proved(who(id, in: m, n), $0) }
+            }
+        case .attached(let id): return .attached(who(id, in: m, n))
+        case .purpose(let id): return .purpose(who(id, in: m, n))
+        case .closed(let id): return .closed(who(id, in: m, n))
+        }
+    }
+
+    /// The specification's answer for one of the machine's, given the value it was asked in:
+    /// WHO gives way is said by its place in its pool before the event, counted from one.
+    static func answer(_ answer: Admission.Answer, before m: Admission) -> String {
+        switch answer {
+        case .admitted(_, let out): return "<< \"admitted\", \(out.map { id in m.strangers.firstIndex { $0.id == id }! + 1 } ?? 0) >>"
+        case .moved(let out): return "<< \"moved\", \(out.map { id in m.unattached.firstIndex { $0.id == id }! + 1 } ?? 0) >>"
+        case .close(let why): return "<< \"close\", \"\(why.rawValue)\" >>"
+        case .nothing: return "<< \"nothing\" >>"
+        }
+    }
+
+    /// A machine under one naming, and what turns the specification's events into its own.
     struct Driver {
         let walk: Walk
+        let naming: Naming
         var m: Admission
-        /// The time of the last arrival from the local network. The specification keeps ages,
-        /// the code keeps times; this is the difference.
-        var clock: Double
+        /// Every number given out so far: an arrival must be given a new one.
+        var given = Set<UInt64>()
         /// For a walk at random: which of several equal holders is meant, and a number that
-        /// holds nothing. The walk of every state takes the lowest and zero.
+        /// holds nothing. The walk of every state takes the lowest, and zero.
         var pick: (Set<UInt64>) -> UInt64 = { $0.min()! }
         var stale: UInt64 = 0
 
-        init(_ walk: Walk, clock: Double = 1000) {
+        init(_ walk: Walk, _ naming: Naming? = nil) {
             self.walk = walk
-            m = Admission(limits: walk.limits)
-            self.clock = clock
+            self.naming = naming ?? .plain(walk)
+            m = Admission(limits: self.naming.limits(walk))
         }
 
-        static func proved(_ name: String, among keys: [String]) -> Admission.Proved {
-            switch name {
-            case "mine": return .mine
-            case "retired": return .retired
-            case "unpaired": return .unpaired
-            default: return .paired(AdmissionTests.key(UInt8(keys.firstIndex(of: name)! + 1)))
-            }
-        }
-
-        func name(of key: PublicKey) -> String { walk.keys.first { Driver.proved($0, among: walk.keys) == .paired(key) }! }
-
-        /// The state as the specification writes it.
-        var state: String {
-            let pool = { (p: [Admission.Unproved]) in p.isEmpty ? "<< >>" : "<< " + p.map { "\"\($0.address)\"" }.joined(separator: ", ") + " >>" }
-            let waiting = walk.keys.map { k in "\(k) |-> \(m.waiting.values.filter { name(of: $0) == k }.count)" }.joined(separator: ", ")
-            let arrivals = m.arrivals.isEmpty ? "<< >>"
-                : "<< " + m.arrivals.map { "[age |-> \(Int(clock - $0.at)), from |-> \"\($0.address)\"]" }.joined(separator: ", ") + " >>"
-            return "[strangers |-> \(pool(m.strangers)), unattached |-> \(pool(m.unattached)), unpaired |-> \(m.unpaired.count), "
-                + "waiting |-> [\(waiting)], arrivals |-> \(arrivals)]"
-        }
+        var state: String { AdmissionTests.abstract(m, walk, naming) }
+        var held: Set<UInt64> { Set(m.strangers.map(\.id) + m.unattached.map(\.id)).union(m.unpaired).union(m.waiting.keys) }
 
         /// Everyone a fact can be about, in this state.
         var whos: [Who] {
             m.strangers.indices.map { Who.stranger($0 + 1) } + m.unattached.indices.map { Who.unattached($0 + 1) }
                 + (m.unpaired.isEmpty ? [] : [.unpaired])
-                + walk.keys.filter { k in m.waiting.values.contains { name(of: $0) == k } }.map { Who.waiting($0) }
+                + walk.keys.filter { k in m.waiting.values.contains { naming.keys[$0] == k } }.map { Who.waiting($0) }
                 + [.nobody]
         }
 
-        /// Everything that can happen in this state: every fact about every connection, in
-        /// turn or out of it.
+        /// Everything the specification says can happen in this state: every fact about every
+        /// connection, in turn or out of it.
         var happenings: [Happening] {
             var all: [Happening] = []
             for a in walk.addresses {
@@ -167,33 +293,40 @@ final class AdmissionTests: XCTestCase {
             case .stranger(let i): return m.strangers[i - 1].id
             case .unattached(let i): return m.unattached[i - 1].id
             case .unpaired: return pick(m.unpaired)
-            case .waiting(let k): return pick(Set(m.waiting.filter { name(of: $0.value) == k }.keys))
+            case .waiting(let k): return pick(Set(m.waiting.filter { naming.keys[$0.value] == k }.keys))
             case .nobody: return stale
             }
         }
 
-        /// Does it, and gives the answer as the specification writes it: a connection that
-        /// gives way is named by its place in its pool before the event, counted from one.
-        mutating func take(_ happening: Happening) -> String {
-            let strangers = m.strangers.map(\.id), unattached = m.unattached.map(\.id)
-            let answer: Admission.Answer
+        /// One of the machine's events that the specification calls `happening`, here.
+        func make(_ happening: Happening) -> Admission.Event {
             switch happening {
             case .arrive(let a, let local, let gap):
-                let now = clock + Double(gap)
-                answer = m.step(.arrive(from: a, local: local, now: now))
-                if local { clock = now }
-            case .data(let who, let drops): answer = m.step(.data(number(who), drops: drops))
-            case .proved(let who, let what): answer = m.step(.proved(number(who), Driver.proved(what, among: walk.keys)))
-            case .attached(let who): answer = m.step(.attached(number(who)))
-            case .purpose(let who): answer = m.step(.purpose(number(who)))
-            case .closed(let who): answer = m.step(.closed(number(who)))
+                return .arrive(from: naming.address(named: a), local: local, now: (m.asOf ?? naming.origin) + Double(gap) * naming.tick)
+            case .data(let who, let drops): return .data(number(who), drops: drops)
+            case .proved(let who, let what):
+                switch what {
+                case "mine": return .proved(number(who), .mine)
+                case "retired": return .proved(number(who), .retired)
+                case "unpaired": return .proved(number(who), .unpaired)
+                default: return .proved(number(who), .paired(naming.key(named: what)))
+                }
+            case .attached(let who): return .attached(number(who))
+            case .purpose(let who): return .purpose(number(who))
+            case .closed(let who): return .closed(number(who))
             }
-            switch answer {
-            case .admitted(_, let out): return "<< \"admitted\", \(out.map { strangers.firstIndex(of: $0)! + 1 } ?? 0) >>"
-            case .moved(let out): return "<< \"moved\", \(out.map { unattached.firstIndex(of: $0)! + 1 } ?? 0) >>"
-            case .close(let why): return "<< \"close\", \"\(why.rawValue)\" >>"
-            case .nothing: return "<< \"nothing\" >>"
+        }
+
+        /// Gives the machine one of its own events; returns the answer as the specification
+        /// writes it. Nil (and a failed test) if an arrival was given a number given before.
+        mutating func take(_ event: Admission.Event) -> String? {
+            let before = m
+            let answer = m.step(event)
+            if case .admitted(let id, _) = answer, !given.insert(id).inserted {
+                XCTFail("an arrival was given the number \(id), which another had")
+                return nil
             }
+            return AdmissionTests.answer(answer, before: before)
         }
     }
 
@@ -202,29 +335,36 @@ final class AdmissionTests: XCTestCase {
     }
 
     /// Every state the machine reaches from an empty listener, under every event: the whole
-    /// transition relation of the Swift code at these limits.
-    static func relation(_ walk: Walk) -> (start: String, steps: Set<Step>) {
+    /// transition relation of the Swift code at these limits. `unmade`: events the
+    /// specification has that could not be made to happen (there must be none).
+    static func relation(_ walk: Walk) -> (start: String, steps: Set<Step>, unmade: [String]) {
         let start = Driver(walk)
         var seen: Set<String> = [start.state]
         var queue = [start]
         var steps = Set<Step>()
+        var unmade: [String] = []
         while let d = queue.popLast() {
             let from = d.state
             for happening in d.happenings {
                 var next = d
-                let answer = next.take(happening)
+                let event = d.make(happening)
+                // What was made must be what was meant, by the numbers.
+                guard label(event, in: d.m, walk, d.naming) == happening, let answer = next.take(event) else {
+                    unmade.append("\(from) under \(happening.tla)")
+                    continue
+                }
                 let to = next.state
                 steps.insert(Step(from: from, event: happening.tla, to: to, answer: answer))
                 if seen.insert(to).inserted { queue.append(next) }
             }
         }
-        return (start.state, steps)
+        return (start.state, steps, unmade)
     }
 
     /// The relation as a TLA+ module. There are tens of thousands of transitions, so they are
     /// written as numbers: each state, event and answer once, in a list, and each step as the
     /// places of its three in those lists.
-    static func module() -> String {
+    static func module() -> (text: String, unmade: [String]) {
         var text = """
         ---------------------------- MODULE AdmissionImpl ----------------------------
         \\* GENERATED from Sources/NimbusCrypto/Admission.swift by AdmissionTests
@@ -239,8 +379,10 @@ final class AdmissionTests: XCTestCase {
 
 
         """
+        var unmade: [String] = []
         for walk in walks {
-            let (start, steps) = relation(walk)
+            let (start, steps, missing) = relation(walk)
+            unmade += missing
             let states = [start] + Set(steps.flatMap { [$0.from, $0.to] }).subtracting([start]).sorted()
             let events = Set(steps.map(\.event)).sorted(), answers = Set(steps.map(\.answer)).sorted()
             let stateAt = Dictionary(uniqueKeysWithValues: states.enumerated().map { ($1, $0 + 1) })
@@ -257,7 +399,7 @@ final class AdmissionTests: XCTestCase {
               addresses |-> \(set(walk.addresses.map { "\"\($0)\"" })), keys |-> \(set(walk.keys.map { "\"\($0)\"" })),
               gaps |-> \(set(walk.gaps.map(String.init))), drops |-> \(set(walk.drops.map(String.init))),
               strangers |-> \(l.strangers), strangersPerAddress |-> \(l.strangersPerAddress),
-              arrivals |-> \(l.arrivals), arrivalsPerAddress |-> \(l.arrivalsPerAddress), window |-> \(Int(l.window)),
+              arrivals |-> \(l.arrivals), arrivalsPerAddress |-> \(l.arrivalsPerAddress), window |-> \(walk.window),
               unattachedPerDrop |-> \(l.unattachedPerDrop), unattachedPerAddress |-> \(l.unattachedPerAddress),
               unpaired |-> \(l.unpaired), pairedWaiting |-> \(l.pairedWaiting)]
 
@@ -282,7 +424,7 @@ final class AdmissionTests: XCTestCase {
 
             """
         }
-        return text + "=============================================================================\n"
+        return (text + "=============================================================================\n", unmade)
     }
 
     static var implFile: URL {
@@ -294,7 +436,8 @@ final class AdmissionTests: XCTestCase {
     /// to the machine: `NIMBUS_WRITE_IMPL=1 swift test --filter AdmissionTests`, then
     /// `./build.sh verify`, which fails unless `Admission.tla` was changed to match.
     func testTheWrittenOutRelationIsWhatTheCodeDoes() throws {
-        let text = Self.module()
+        let (text, unmade) = Self.module()
+        XCTAssertEqual(unmade, [], "events the specification has that this test could not make happen")
         if ProcessInfo.processInfo.environment["NIMBUS_WRITE_IMPL"] != nil {
             try text.write(to: Self.implFile, atomically: true, encoding: .utf8)
         }
@@ -303,40 +446,237 @@ final class AdmissionTests: XCTestCase {
         XCTAssertTrue(onDisk == text, "Admission.swift no longer does what formal/tla/AdmissionImpl.tla says; see this test's comment")
     }
 
-    /// The walk above keeps one machine for each state of the specification, always takes the
-    /// lowest number where several stand alike, and starts its clock at one time. That is only
-    /// the whole truth if the machine's behaviour depends on none of those, so: long walks at
-    /// random, with other numbers, other times and numbers long gone, and every step of every
-    /// one must be in the relation.
+    /// The walk that is written out keeps one machine for each state of the specification,
+    /// under one naming: it always takes the lowest number where several stand alike, calls
+    /// the addresses "a" and "b", ticks once a second from one beginning, and never goes far.
+    /// That is the whole truth only if the machine's behaviour depends on nothing the
+    /// specification's state leaves out. So: long walks at random that vary all of it (other
+    /// addresses, keys, lengths of tick and beginnings; any holder where several stand alike;
+    /// numbers long gone; gaps of any number of ticks; histories of hundreds of events), each
+    /// event the machine's own and labelled by what the numbers say, and every step of every
+    /// walk must be in the relation: the same state after, the same answer, the same
+    /// connection giving way.
     func testRandomWalksStayInsideTheRelation() {
-        var rng = SystemRandomNumberGenerator()
+        let seed = Self.seed()
+        print("AdmissionTests.testRandomWalksStayInsideTheRelation: NIMBUS_SEED=\(seed)")
+        var rng = Seeded(state: seed)
+        var count = 0
         for walk in Self.walks {
             let steps = Self.relation(walk).steps
-            for _ in 0..<300 {
-                var d = Driver(walk, clock: Double(Int.random(in: -5000...5000, using: &rng)))
-                var gone: [UInt64] = [0, 7_000_000]
-                d.pick = { $0.randomElement()! }
-                for _ in 0..<60 {
-                    let before = d.state
-                    let held = Set(d.m.strangers.map(\.id) + d.m.unattached.map(\.id)).union(d.m.unpaired).union(d.m.waiting.keys)
-                    d.stale = gone.randomElement(using: &rng)!
-                    // Mostly arrivals and what a connection does next, so that the pools fill.
-                    let all = d.happenings
-                    let likely = all.filter {
-                        switch $0 {
-                        case .arrive(_, local: true, _), .data(.stranger, _), .proved(.stranger, _): return true
-                        default: return false
-                        }
+            for _ in 0..<250 {
+                var d = Driver(walk, .random(walk, using: &rng))
+                let addresses = Array(d.naming.addresses.keys), keys = Array(d.naming.keys.keys)
+                var gone: [UInt64] = [0, UInt64.max]
+                var trace: [String] = []
+                for _ in 0..<240 {
+                    let held = d.held
+                    let anyone = { (rng: inout Seeded) -> UInt64 in
+                        (Int.random(in: 0..<6, using: &rng) == 0 ? gone.randomElement(using: &rng) : held.randomElement(using: &rng)) ?? 0
                     }
-                    let happening = (Int.random(in: 0..<3, using: &rng) > 0 ? likely : all).randomElement(using: &rng)!
-                    let answer = d.take(happening)
-                    XCTAssertTrue(steps.contains(Step(from: before, event: happening.tla, to: d.state, answer: answer)),
-                                  "\(walk.name): \(before) --\(happening.tla)--> \(d.state) \(answer)")
-                    let now = Set(d.m.strangers.map(\.id) + d.m.unattached.map(\.id)).union(d.m.unpaired).union(d.m.waiting.keys)
-                    gone.append(contentsOf: held.subtracting(now))
+                    let stranger = { (rng: inout Seeded) -> UInt64 in d.m.strangers.randomElement(using: &rng)?.id ?? anyone(&rng) }
+                    let event: Admission.Event
+                    // Mostly arrivals and what a stranger does next, so that the pools fill.
+                    switch Int.random(in: 0..<16, using: &rng) {
+                    case 0..<6:
+                        let ticks = [0, 0, 0, 1, 1, 2, 3, 17, 100_000].randomElement(using: &rng)!
+                        event = .arrive(from: addresses.randomElement(using: &rng)!, local: Int.random(in: 0..<8, using: &rng) > 0,
+                                        now: (d.m.asOf ?? d.naming.origin) + Double(ticks) * d.naming.tick)
+                    case 6, 7: event = .data(stranger(&rng), drops: walk.drops.randomElement(using: &rng)!)
+                    case 8: event = .proved(stranger(&rng), .unpaired)
+                    case 9, 10: event = .proved(stranger(&rng), .paired(keys.randomElement(using: &rng)!))
+                    case 11: event = .proved(anyone(&rng), [.mine, .retired].randomElement(using: &rng)!)
+                    case 12: event = .attached(d.m.unattached.randomElement(using: &rng)?.id ?? anyone(&rng))
+                    case 13: event = .purpose(anyone(&rng))
+                    case 14: event = .closed(anyone(&rng))
+                    default: event = .data(anyone(&rng), drops: walk.drops.randomElement(using: &rng)!)
+                    }
+                    guard let happening = Self.label(event, in: d.m, walk, d.naming) else { XCTFail("an event with no name: \(event)"); return }
+                    let before = d.state
+                    guard let answer = d.take(event) else { return }
+                    let step = Step(from: before, event: happening.tla, to: d.state, answer: answer)
+                    trace.append("\(event)\n      = \(step.event) -> \(step.answer)\n      \(step.to)")
+                    count += 1
+                    guard steps.contains(step) else {
+                        XCTFail("\(walk.name), seed \(seed): a step that is not in the relation. The walk:\n  "
+                            + trace.joined(separator: "\n  ") + "\nunder \(d.naming)")
+                        return
+                    }
+                    gone.append(contentsOf: held.subtracting(d.held))
                 }
             }
         }
+        print("AdmissionTests.testRandomWalksStayInsideTheRelation: \(count) steps")
+    }
+
+    // MARK: The rule, said a second time
+
+    /// Admission said of the world and not of arrays: who holds what, where each came from,
+    /// and the order in which each took its present place. From that and an event it says what
+    /// the answer must be, down to which connection gives way; `AdmissionTests` then holds the
+    /// machine to it at limits, addresses and times that nothing was written out for.
+    struct World {
+        enum Place: Equatable { case stranger, unattached, unpaired, waiting(PublicKey) }
+        var place: [UInt64: Place] = [:]
+        var address: [UInt64: String] = [:]
+        /// When each took its present place among those that have proved nothing: a count.
+        var since: [UInt64: Int] = [:]
+        var placements = 0
+        var given = Set<UInt64>()
+        /// The arrivals that were given a place and still count, oldest first.
+        var taken: [Admission.Arrival] = []
+
+        func those(_ p: Place) -> [UInt64] { place.filter { $0.value == p }.map(\.key).sorted { since[$0]! < since[$1]! } }
+
+        /// Who gives way in a pool for a newcomer from `a`: the one that has waited longest
+        /// from that address when the address holds as many places as it may; otherwise the
+        /// one that has waited longest of all when the pool is full; otherwise nobody.
+        func givesWay(_ p: Place, for a: String, limit: Int, perAddress: Int) -> UInt64? {
+            let pool = those(p), own = pool.filter { address[$0] == a }
+            if !own.isEmpty, own.count >= perAddress { return own.first }
+            if !pool.isEmpty, pool.count >= limit { return pool.first }
+            return nil
+        }
+
+        mutating func put(_ id: UInt64, _ p: Place) {
+            place[id] = p
+            placements += 1
+            since[id] = placements
+        }
+
+        /// What the answer to `event` must be, and the world after it. For an arrival that is
+        /// to be given a place the number is the machine's to choose: `admitted(0, …)` here,
+        /// and `arrived` once it has chosen.
+        mutating func expect(_ event: Admission.Event, _ l: Limits) -> Admission.Answer {
+            switch event {
+            case .arrive(let from, let local, let now):
+                guard local else { return .close(.elsewhere) }
+                taken.removeAll { now - $0.at > l.window }
+                if taken.count >= l.arrivals || taken.filter({ $0.address == from }).count >= l.arrivalsPerAddress { return .close(.rate) }
+                taken.append(Admission.Arrival(at: now, address: from))
+                let out = givesWay(.stranger, for: from, limit: l.strangers, perAddress: l.strangersPerAddress)
+                if let out { place[out] = nil }
+                return .admitted(0, displacing: out)
+            case .data(let id, let drops):
+                guard place[id] == .stranger else { return .close(.gone) }
+                place[id] = nil
+                guard drops > 0 else { return .close(.noDrop) }
+                let out = givesWay(.unattached, for: address[id]!, limit: l.unattachedPerDrop * drops, perAddress: l.unattachedPerAddress)
+                if let out { place[out] = nil }
+                put(id, .unattached)
+                return .moved(displacing: out)
+            case .proved(let id, let what):
+                guard place[id] == .stranger else { return .close(.gone) }
+                place[id] = nil
+                switch what {
+                case .mine: return .close(.mine)
+                case .retired: return .close(.retired)
+                case .unpaired:
+                    guard those(.unpaired).count < l.unpaired else { return .close(.tooManyUnpaired) }
+                    put(id, .unpaired)
+                case .paired(let key):
+                    guard those(.waiting(key)).count < l.pairedWaiting else { return .close(.tooManyWaiting) }
+                    put(id, .waiting(key))
+                }
+                return .moved(displacing: nil)
+            case .attached(let id):
+                if place[id] == .unattached { place[id] = nil }
+                return .nothing
+            case .purpose(let id):
+                if case .waiting = place[id] { place[id] = nil }
+                return .nothing
+            case .closed(let id):
+                place[id] = nil
+                return .nothing
+            }
+        }
+
+        /// The machine gave an arrival this number.
+        mutating func arrived(_ id: UInt64, from: String) -> Bool {
+            guard given.insert(id).inserted else { return false }
+            address[id] = from
+            put(id, .stranger)
+            return true
+        }
+
+        /// The machine holds exactly what the world says is held, in the same order.
+        func agrees(with m: Admission) -> Bool {
+            let pool = { (p: Place) in those(p).map { Admission.Unproved(id: $0, address: address[$0]!) } }
+            var waiting: [UInt64: PublicKey] = [:]
+            for (id, p) in place { if case .waiting(let key) = p { waiting[id] = key } }
+            return m.strangers == pool(.stranger) && m.unattached == pool(.unattached) && m.unpaired == Set(those(.unpaired)) && m.waiting == waiting
+        }
+    }
+
+    /// At limits, addresses and times nobody wrote a relation out for (each limit from one to
+    /// six or so, chosen at random and changed in the middle of a walk, as the listener's can
+    /// be; up to six addresses and three keys; times that are not whole ticks, among them
+    /// exactly one window apart), every answer is the one `World` says it must be, the same
+    /// connection gives way, and the machine holds what the world holds.
+    func testRandomWalksAtOtherLimitsKeepToTheRule() {
+        let seed = Self.seed()
+        print("AdmissionTests.testRandomWalksAtOtherLimitsKeepToTheRule: NIMBUS_SEED=\(seed)")
+        var rng = Seeded(state: seed)
+        func limits() -> Limits {
+            Limits(strangers: Int.random(in: 1...6, using: &rng), strangersPerAddress: Int.random(in: 1...4, using: &rng),
+                   arrivals: Int.random(in: 1...9, using: &rng), arrivalsPerAddress: Int.random(in: 1...5, using: &rng),
+                   window: [0, 0.5, 1, 1, 10].randomElement(using: &rng)!,
+                   unattachedPerDrop: Int.random(in: 1...3, using: &rng), unattachedPerAddress: Int.random(in: 1...3, using: &rng),
+                   unpaired: Int.random(in: 1...3, using: &rng), pairedWaiting: Int.random(in: 1...3, using: &rng))
+        }
+        var count = 0
+        for _ in 0..<300 {
+            var m = Admission(limits: limits()), world = World()
+            let addresses = (0..<Int.random(in: 1...6, using: &rng)).map { _ in Self.randomAddress(using: &rng) }
+            let keys = (0..<Int.random(in: 1...3, using: &rng)).map { _ in Self.randomKey(using: &rng) }
+            var now = Double.random(in: -1e6...1e6, using: &rng)
+            var gone: [UInt64] = [0, UInt64.max]
+            var trace: [String] = []
+            for _ in 0..<300 {
+                if Int.random(in: 0..<60, using: &rng) == 0 {
+                    m.limits = limits()
+                    trace.append("the limits become \(m.limits)")
+                }
+                let held = Set(world.place.keys)
+                let anyone = { (rng: inout Seeded) -> UInt64 in
+                    (Int.random(in: 0..<6, using: &rng) == 0 ? gone.randomElement(using: &rng) : held.randomElement(using: &rng)) ?? 0
+                }
+                let stranger = { (rng: inout Seeded) -> UInt64 in world.those(.stranger).randomElement(using: &rng) ?? anyone(&rng) }
+                let event: Admission.Event
+                switch Int.random(in: 0..<16, using: &rng) {
+                case 0..<6:
+                    let w = m.limits.window
+                    now += [0, 0, 0.001, w / 2, w, w, w + 0.001, 3 * w + 1, Double.random(in: 0...2, using: &rng)].randomElement(using: &rng)!
+                    event = .arrive(from: addresses.randomElement(using: &rng)!, local: Int.random(in: 0..<8, using: &rng) > 0, now: now)
+                case 6, 7: event = .data(stranger(&rng), drops: Int.random(in: 0...3, using: &rng))
+                case 8: event = .proved(stranger(&rng), .unpaired)
+                case 9, 10: event = .proved(stranger(&rng), .paired(keys.randomElement(using: &rng)!))
+                case 11: event = .proved(anyone(&rng), [.mine, .retired].randomElement(using: &rng)!)
+                case 12: event = .attached(world.those(.unattached).randomElement(using: &rng) ?? anyone(&rng))
+                case 13: event = .purpose(anyone(&rng))
+                case 14: event = .closed(anyone(&rng))
+                default: event = .data(anyone(&rng), drops: Int.random(in: 0...3, using: &rng))
+                }
+                var expected = world.expect(event, m.limits)
+                let answer = m.step(event)
+                var fresh = true
+                if case .admitted(let id, let out) = answer, case .admitted(_, let should) = expected, case .arrive(let from, _, _) = event {
+                    fresh = world.arrived(id, from: from)
+                    expected = .admitted(id, displacing: should)
+                    _ = out
+                }
+                trace.append("\(event) -> \(answer)")
+                count += 1
+                var same = answer == expected && fresh && world.agrees(with: m)
+                if case .arrive(_, true, _) = event { same = same && m.arrivals == world.taken }
+                guard same else {
+                    XCTFail("seed \(seed): the machine answered \(answer) and the rule says \(expected)" + (fresh ? "" : " (a number given twice)")
+                        + ", or they no longer hold the same. The walk, at \(m.limits):\n  " + trace.joined(separator: "\n  "))
+                    return
+                }
+                gone.append(contentsOf: held.subtracting(world.place.keys))
+            }
+        }
+        print("AdmissionTests.testRandomWalksAtOtherLimitsKeepToTheRule: \(count) steps")
     }
 
     // MARK: Attacks on the machine

@@ -153,6 +153,11 @@ package struct Admission: Sendable {
     package private(set) var waiting: [UInt64: PublicKey] = [:]
     /// Arrivals within the last window, as of the last one.
     package private(set) var arrivals: [Arrival] = []
+    /// The time of the last arrival from the local network: what `arrivals` is as of. Nothing
+    /// is decided by it. It is here so that everything the specification's state says (how
+    /// long ago each counted arrival was) is a function of this value alone.
+    package private(set) var asOf: Double?
+    /// The number the next arrival is given. Numbers are names: never compared but for equality.
     private var next: UInt64 = 1
 
     package init(limits: Limits) {
@@ -180,6 +185,7 @@ package struct Admission: Sendable {
         switch event {
         case .arrive(let from, let local, let now):
             guard local else { return .close(.elsewhere) }
+            asOf = now
             arrivals.removeAll { now - $0.at > limits.window }
             // The rate cannot be met by anyone giving way: over it, the newcomer is closed.
             guard arrivals.count < limits.arrivals,

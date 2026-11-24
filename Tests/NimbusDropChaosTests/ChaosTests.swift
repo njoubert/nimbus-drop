@@ -16,6 +16,8 @@ final class ChaosTests: XCTestCase {
     var proxy: ChaosProxy!
     var received = Box<[ReceiveSession]>([])
     let sender = Identity(name: "sender", id: "sender-id")
+    var senderTrust: Trust!
+    var receiverTrust: Trust!
     /// Small chunks, so a few megabytes are hundreds of chunks across the connections.
     let chunk = 64 << 10
 
@@ -30,7 +32,8 @@ final class ChaosTests: XCTestCase {
         Tuning.reconnectSeconds = 3
         let dst = self.dst
         let received = self.received
-        listener = try DropListener(identity: Identity(name: "receiver", id: "receiver-id"), preferredPort: 0)
+        (senderTrust, receiverTrust) = Trust.paired()
+        listener = try DropListener(identity: Identity(name: "receiver", id: "receiver-id"), trust: receiverTrust, preferredPort: 0)
         listener.onOffer = { session in
             received.value += [session]
             session.accept(destination: dst)
@@ -83,7 +86,7 @@ final class ChaosTests: XCTestCase {
 
     /// Sends through the proxy.
     func send(_ url: URL, streams: Int = 4) -> SendSession {
-        let s = SendSession(urls: [url], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender,
+        let s = SendSession(urls: [url], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender, trust: senderTrust,
                             streams: streams, chunkSize: chunk)
         s.start()
         return s
@@ -303,6 +306,44 @@ final class ChaosTests: XCTestCase {
         try assertArrived(src)
     }
 
+    /// A clock a test can move.
+    final class MovedClock: TrustClock, @unchecked Sendable {
+        private let lock = NSLock()
+        private var ahead = 0.0
+        let bootSession = "boot"
+        var continuous: Double { lock.withLock { 1000 + ahead } }
+        var wall: Date { Date().addingTimeInterval(lock.withLock { ahead }) }
+        func pass(_ seconds: Double) { lock.withLock { ahead += seconds } }
+    }
+
+    func testADropFinishesOnTheKeyItStartedWith() throws {
+        // This Mac's key reaches its end while a drop is running, and is replaced. Then the
+        // link drops. The plan lets a running drop finish on the keys it started with: the
+        // reconnect proves the key the drop began under. It used to prove the new one, which
+        // the receiver has never seen, and the drop ended there (the review of 2026-11-23).
+        let clock = MovedClock()
+        senderTrust = Trust.inMemory(clock: clock, lifetime: 3600)
+        senderTrust.adopt(receiverTrust, as: "receiver")
+        receiverTrust.adopt(senderTrust, as: "sender")
+        let began = senderTrust.publicKey
+        let trust = senderTrust!
+        let src = try makeTree(megabytes: 48)
+        proxy.set { $0.bytesPerSecond = 6 << 20 }
+        proxy.whenForwarded(bytes: 2 << 20) { p in
+            clock.pass(4000)
+            _ = trust.publicKey   // the key is replaced here
+            p.set { $0.refuseNew = true; $0.bytesPerSecond = nil }
+            p.kill(.all)
+            p.after(seconds: 1.5) { $0.set { $0.refuseNew = false } }
+        }
+        let s = send(src)
+        wait(s)
+        XCTAssertNotEqual(senderTrust.publicKey, began, "the sender's key was replaced on the way")
+        guard s.state == .completed else { return XCTFail("\(s.state)") }
+        XCTAssertGreaterThanOrEqual(s.stats.reconnects, 1)
+        try assertArrived(src)
+    }
+
     func testTheReceiverGivesTheConversationUpButTheSenderOnlyFindsOutAtTheEnd() throws {
         // The owner's test with 0.2.0 on 2026-11-22: a cable out for a while. The receiver timed
         // its control connection out; the sender's survived as far as the sender could tell,
@@ -349,7 +390,7 @@ final class ChaosTests: XCTestCase {
             p.set { $0.refuseNew = true }
             p.kill(.all)
         }
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender,
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: proxy.port, peerName: "receiver", identity: sender, trust: senderTrust,
                             streams: 4, chunkSize: chunk)
         let asked = Box(0)
         let newPort = elsewhere.port
@@ -535,14 +576,15 @@ final class ChaosTests: XCTestCase {
     }
 
     func testAChunkRedirectedByOneFlippedBitIsNotWritten() throws {
-        // The dangerous flip is not in the data but in the 16 bytes before it. On one connection
-        // the chunks go out in manifest order: the folder is entry 0, IMG_0…IMG_7 are entries
-        // 1…8 (one 64 KB chunk each, with a 1 MB tree), then movie.bin's nine chunks.
-        //
-        //  - Turn IMG_2's file index (3) into 1: IMG_2's bytes, intact, aimed at IMG_0, which
-        //    is already written. A checksum over the data alone would pass them.
-        //  - Turn movie.bin chunk 5's index into 4: the same, inside one file.
-        let attach = 61, framed = 16 + chunk   // the attach frame, then header + chunk each
+        // The dangerous flip is not in the data but in the header before it, which says where the
+        // data goes. On one connection the chunks go out in manifest order: the folder is entry
+        // 0, IMG_0…IMG_7 are entries 1…8 (one 64 KB chunk each, with a 1 MB tree), then
+        // movie.bin's nine chunks. Under protocol 2 these two flips turned IMG_2's file index
+        // into IMG_0's, and one chunk index into its neighbour's: intact bytes aimed at a place
+        // already written, which a checksum over the data alone passed. Under protocol 3 the
+        // header is sealed by itself: the same flips, at the same places, now make a header
+        // that does not open, and nothing after it on that connection is believed.
+        let attach = 45, framed = 28 + chunk + 16   // "NDATA" and the attach, then sealed header + chunk + tag each
         for (name, offset, bit) in [("file index", attach + 2 * framed + 3, 1),
                                     ("chunk index", attach + 8 * framed + 5 * framed + 7, 0)] {
             try? FileManager.default.removeItem(at: dst)
@@ -560,10 +602,10 @@ final class ChaosTests: XCTestCase {
     }
 
     func testABitFlippedInAChunkHeaderDoesNotPutBytesInTheWrongPlace() throws {
-        // A data connection begins with its attach frame (about 70 bytes), then 16-byte chunk
-        // headers. One flip at each offset through the first header and into the chunk: the
-        // file index, the chunk index, the length, the checksum itself.
-        for offset in stride(from: 60, to: 110, by: 3) {
+        // A data connection begins with "NDATA" and its attach (45 bytes), then a sealed header
+        // of 28 bytes and the chunk. One flip at each offset from inside the attach's proof,
+        // through the whole first header and its tag, and into the chunk.
+        for offset in stride(from: 31, to: 100, by: 3) {
             try? FileManager.default.removeItem(at: dst)
             try FileManager.default.createDirectory(at: dst, withIntermediateDirectories: true)
             try? FileManager.default.removeItem(at: root.appendingPathComponent("src"))

@@ -21,12 +21,21 @@ import NimbusUpdater
 //   --dump-history PATH     render the History window with a made-up history to PATH, exit
 //   --dump-internals PATH   render the Internals panel with a staged drop to PATH, exit
 //   --dump-offer PATH       render the "do you want this drop?" panel to PATH, exit
+//   --dump-pairing PATH     render every stage of the pairing panel to PATH-<stage>.png, exit
 //   --show-window           open the window at launch (the app otherwise starts in the menu bar only)
 //
 // The engine without the app:
-//   --receive [DIR]         take every drop into DIR (default: the current folder) without asking;
+//   --receive [DIR]         take drops from paired Macs into DIR (default: the current folder), asking
+//                           on the terminal for each; answers requests to pair the same way.
 //                           --once exits after the first, --no-advertise stays off Bonjour,
 //                           --any-network takes drops from beyond the local subnet too
+//   --unattended-from TAG   with --receive (before it): accept without asking, but only from the one
+//                           paired key named, one drop at a time; --max-bytes N caps each (100 GB)
+//   --pair TARGET           pair with TARGET by two spoken codes; --verify TARGET by identity numbers
+//   --identity              this identity's key tag, identity number and end date; exit
+//   --known                 the Macs this identity is paired with; --forget TAG removes one
+//   --reset-identity        tell the paired Macs this key is retired, and make a new one
+//   --key-lifetime 90d      how long keys last: 1h, 1d, 1w, 30d or 90d
 //   --send TARGET PATH…     send to TARGET: a Mac's name as --peers shows it, HOST or HOST:PORT
 //   --peers                 the Macs found on the network in three seconds; exit
 //   --watch-peers           the same, live, with everything Bonjour reports (Ctrl-C to stop)
@@ -97,6 +106,7 @@ while !args.isEmpty {
     case "--dump-settings": let v = takeValue(a); exit(MainActor.assumeIsolated { SettingsWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-history": let v = takeValue(a); exit(MainActor.assumeIsolated { HistoryWindowController.dump(to: v) ? 0 : 1 })
     case "--dump-internals": let v = takeValue(a); exit(MainActor.assumeIsolated { InternalsPanelController.dump(to: v) ? 0 : 1 })
+    case "--dump-pairing": let v = takeValue(a); exit(MainActor.assumeIsolated { PairingPanel.dump(to: v) ? 0 : 1 })
     case "--dump-offer": let v = takeValue(a); exit(MainActor.assumeIsolated { OfferPanel.dump(to: v) ? 0 : 1 })
     case "--crowd": dumpCrowd = Int(takeValue(a)) ?? 0
     case "--show-window": showWindowAtLaunch = true
@@ -113,6 +123,15 @@ while !args.isEmpty {
         guard rest.count >= 2 else { fputs("--send needs a target and at least one path\n", stderr); usage() }
         sendArgs = rest
     case "--peers": cli = .peers
+    case "--pair": cli = .pair(target: takeValue(a), byNumber: false)
+    case "--verify": cli = .pair(target: takeValue(a), byNumber: true)
+    case "--identity": cli = .identity
+    case "--known": cli = .known
+    case "--forget": cli = .forget(tag: takeValue(a))
+    case "--reset-identity": cli = .resetIdentity
+    case "--key-lifetime": cli = .keyLifetime(takeValue(a))
+    case "--unattended-from": let v = takeValue(a); MainActor.assumeIsolated { CLI.unattendedFrom = v }
+    case "--max-bytes": let v = Int64(takeValue(a)); MainActor.assumeIsolated { if let v { CLI.maxBytes = v } }
     case "--watch-peers": cli = .watchPeers
     case "--name": let v = takeValue(a); MainActor.assumeIsolated { CLI.name = v }
     case "--port": let v = UInt16(takeValue(a)); MainActor.assumeIsolated { CLI.port = v }

@@ -32,6 +32,16 @@ public enum Format {
         return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
     }
 
+    /// How long a key lasts: "90 days", "1 week", "1 hour".
+    public static func lifetime(_ seconds: Double) -> String {
+        let s = Int(max(0, seconds.rounded()))
+        func say(_ n: Int, _ unit: String) -> String { "\(n) \(unit)\(n == 1 ? "" : "s")" }
+        if s % (7 * 86400) == 0, s / (7 * 86400) == 1 { return "1 week" }
+        if s >= 86400 { return say(s / 86400, "day") }
+        if s >= 3600 { return say(s / 3600, "hour") }
+        return say(max(1, s / 60), "minute")
+    }
+
     /// "1 file", "1,204 files".
     public static func files(_ n: Int) -> String {
         let f = NumberFormatter()

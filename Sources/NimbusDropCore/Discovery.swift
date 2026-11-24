@@ -7,13 +7,15 @@ import Network
 public let bonjourType = "_nimbusdrop._tcp"
 
 /// Announces this Mac on the local network for as long as the object lives. The TXT record
-/// carries the name and the id; the service's port is the listener's.
+/// carries the name, the protocol major and `i`, a random value made at launch by which a Mac
+/// recognises its own record. No key, no tag, nothing lasting: Bonjour says where a Mac is, and
+/// only a handshake says who it is.
 public final class Advertiser {
     private var ref: DNSServiceRef?
 
     public init(identity: Identity, port: UInt16) throws {
         var txt = [UInt8]()
-        for (key, value) in [("id", identity.id), ("name", identity.name), ("v", protocolVersionText), ("app", identity.appVersion)] {
+        for (key, value) in [("i", identity.id), ("name", identity.name), ("v", "\(protocolVersion)")] {
             let pair = Array("\(key)=\(value)".utf8.prefix(255))
             txt.append(UInt8(pair.count))
             txt.append(contentsOf: pair)
@@ -45,6 +47,11 @@ public struct Peer: Identifiable, Equatable, Sendable {
     public var isManual = false
     /// A Mac added by address that did not answer the last time it was asked.
     public var unreachable = false
+    /// The key the Mac at this address proved it holds, when it was last asked. Everything a
+    /// window says about who a Mac is comes from this and from nothing the Mac announces.
+    public var key: PublicKey?
+    /// It was asked and could not prove any key (not Nimbus Drop 0.3, or not answering).
+    public var unproved = false
 
     public init(id: String, name: String, address: String? = nil, port: UInt16? = nil, version: Int? = protocolVersion) {
         self.id = id; self.name = name; self.address = address; self.port = port; self.version = version
@@ -54,19 +61,69 @@ public struct Peer: Identifiable, Equatable, Sendable {
 }
 
 public enum Probe {
-    /// Asks whatever listens at `host:port` who it is. For Macs added by address, where there
-    /// is no Bonjour record to say.
-    public static func hello(host: String, port: UInt16 = defaultPort, timeout: TimeInterval = 3) throws -> Peer {
+    /// Asks whatever listens at `host:port` to prove who it is, and hangs up. This side says
+    /// nothing about itself. The answer is a key; what that key is to this Mac is `Trust`'s to say.
+    public static func identify(host: String, port: UInt16 = defaultPort, timeout: TimeInterval = 3) throws -> PublicKey {
+        try Channel.probe(host: host, port: port, timeout: timeout)
+    }
+
+    /// For a Mac added by address, where there is no Bonjour record to give a name: a full
+    /// handshake and an exchange of hellos, then nothing. This Mac's key is shown to it.
+    public static func hello(host: String, port: UInt16 = defaultPort, identity: Identity, trust: Trust, timeout: TimeInterval = 3) throws -> Peer {
         let socket = try Socket.connect(host: host, port: port, timeout: timeout)
         socket.setReadTimeout(Int(timeout.rounded(.up)))
-        try socket.send(.hello, Empty())
-        let reply = try socket.readFrame()
+        defer { socket.shutdown() }
+        let channel = try Channel.initiate(socket, keys: trust.keyPair, expect: nil)
+        try channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
+                                             paired: trust.standing(of: channel.remote).isPaired, purpose: nil))
+        let reply = try channel.read()
         guard reply.type == .hello else { throw DropError("\(host) is not running Nimbus Drop") }
-        let hello = try decode(Hello.self, from: reply.body)
-        var peer = Peer(id: String(hello.id.prefix(64)), name: Sanitize.label(hello.name, limit: 64), address: host, port: port, version: hello.version)
+        let hello = try decode(SecureHello.self, from: reply.body)
+        var peer = Peer(id: "manual:\(host):\(port)", name: Sanitize.label(hello.name, limit: 64), address: host, port: port, version: protocolVersion)
         peer.minor = hello.minor
-        peer.appVersion = hello.app.map { Sanitize.label($0, limit: 24) }
+        peer.appVersion = Sanitize.label(hello.app, limit: 24)
+        peer.key = channel.remote
         return peer
+    }
+}
+
+/// Probes addresses for the app, within limits: forged Bonjour records could otherwise drive
+/// any amount of it. At most four at once, an address at most once in thirty seconds, results
+/// for at most 256 addresses.
+public final class Prober: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [String: (key: PublicKey?, at: Date)] = [:]
+    private var inFlight = Set<String>()
+    private let slots = DispatchSemaphore(value: 4)
+    private let queue = DispatchQueue(label: "nimbusdrop.prober", attributes: .concurrent)
+
+    public init() {}
+
+    /// The key last proved at that address, if it has been asked.
+    public func known(host: String, port: UInt16) -> (key: PublicKey?, at: Date)? { lock.withLock { results["\(host):\(port)"] } }
+
+    /// Asks, unless it was asked within the last thirty seconds (`fresh` insists). `completion`
+    /// is called on a background queue, with nil when no key was proved.
+    public func identify(host: String, port: UInt16, fresh: Bool = false, completion: @escaping @Sendable (PublicKey?) -> Void) {
+        let name = "\(host):\(port)"
+        let go = lock.withLock { () -> Bool in
+            if inFlight.contains(name) { return false }
+            if !fresh, let r = results[name], Date().timeIntervalSince(r.at) < 30 { return false }
+            inFlight.insert(name)
+            return true
+        }
+        guard go else { if let r = known(host: host, port: port) { completion(r.key) }; return }
+        queue.async { [self] in
+            slots.wait()
+            let key = try? Probe.identify(host: host, port: port)
+            slots.signal()
+            lock.withLock {
+                inFlight.remove(name)
+                if results.count >= 256, results[name] == nil, let oldest = results.min(by: { $0.value.at < $1.value.at }) { results[oldest.key] = nil }
+                results[name] = (key, Date())
+            }
+            completion(key)
+        }
     }
 }
 
@@ -74,7 +131,7 @@ public enum Probe {
 /// learned the hard way have tests: a result that loses its TXT record is still the Mac it was.
 struct PeerTable {
     struct Seen { var key: String; var txt: [String: String]? }
-    private var identities: [String: (id: String, name: String, version: Int?, minor: Int?, app: String?)] = [:]
+    private var identities: [String: (instance: String, name: String, version: Int?, minor: Int?)] = [:]
     private(set) var peers: [String: Peer] = [:]
     /// The browse result each peer was last seen under.
     private(set) var keys: [String: String] = [:]
@@ -82,28 +139,32 @@ struct PeerTable {
     /// Takes a full set of browse results. Returns the peers that need their address looked up
     /// (new, or seen under a different result) and whether any result came without its TXT
     /// record, which calls for a fresh browse.
+    ///
+    /// A peer is one browse result, whatever it says about itself: two records claiming to be
+    /// the same Mac are two tiles, and neither can move or replace the other. `i` in the record
+    /// serves only for this Mac to leave its own record out.
     mutating func apply(_ results: [Seen], selfID: String) -> (resolve: [String], missingTXT: Bool) {
         var seen = Set<String>(), resolve: [String] = [], missingTXT = false
         for r in results {
-            if let txt = r.txt, let id = txt["id"] {
-                // "2.0", or a bare "2" from before minors existed.
+            if let txt = r.txt, txt["name"] != nil || txt["v"] != nil || txt["i"] != nil {
+                // "3", or "2.2" from a copy that still speaks protocol 2.
                 let v = (txt["v"] ?? "").split(separator: ".").map { Int($0) }
-                identities[r.key] = (String(id.prefix(64)), Sanitize.label(txt["name"] ?? "?", limit: 64), v.first ?? nil,
-                                     v.count > 1 ? v[1] : nil, txt["app"].map { Sanitize.label($0, limit: 24) })
+                identities[r.key] = (String((txt["i"] ?? txt["id"] ?? "").prefix(64)), Sanitize.label(txt["name"] ?? "?", limit: 64), v.first ?? nil,
+                                     v.count > 1 ? v[1] : nil)
             } else {
                 missingTXT = true
             }
-            guard let who = identities[r.key], who.id != selfID else { continue }
-            seen.insert(who.id)
-            let moved = keys[who.id] != r.key
-            keys[who.id] = r.key
-            var peer = peers[who.id] ?? Peer(id: who.id, name: who.name)
+            guard let who = identities[r.key], who.instance != selfID else { continue }
+            let id = r.key
+            seen.insert(id)
+            let moved = keys[id] != r.key
+            keys[id] = r.key
+            var peer = peers[id] ?? Peer(id: id, name: who.name)
             peer.name = who.name
             peer.version = who.version
             peer.minor = who.minor
-            peer.appVersion = who.app
-            peers[who.id] = peer
-            if moved || peer.address == nil { resolve.append(who.id) }
+            peers[id] = peer
+            if moved || peer.address == nil { resolve.append(id) }
         }
         let present = Set(results.map(\.key))
         identities = identities.filter { present.contains($0.key) }
@@ -111,7 +172,15 @@ struct PeerTable {
         return (resolve, missingTXT)
     }
 
+    /// What the Mac at a peer's address proved when asked (nil: nothing).
+    mutating func setKey(_ id: String, key: PublicKey?) {
+        peers[id]?.key = key
+        peers[id]?.unproved = key == nil
+    }
+
     mutating func setAddress(_ id: String, address: String, port: UInt16) {
+        // A Mac at another address has to prove itself again.
+        if peers[id]?.address != address || peers[id]?.port != port { peers[id]?.key = nil; peers[id]?.unproved = false }
         peers[id]?.address = address
         peers[id]?.port = port
     }
@@ -131,6 +200,9 @@ public final class PeerBrowser: @unchecked Sendable {
     private var restartPending = false
     private var lastRestart = Date.distantPast
     private var stopped = false
+    private var recheck: Timer?
+    /// Asks each address found to prove who it is.
+    public let prober = Prober()
 
     public var onChange: (([Peer]) -> Void)?
     /// What the browser is told, line by line, for `--watch-peers`.
@@ -144,6 +216,15 @@ public final class PeerBrowser: @unchecked Sendable {
 
     public func start() {
         stopped = false
+        // A Mac's key changes under an address that does not: it was reset, or it ran out and
+        // was made anew, with the app running throughout. Nothing Bonjour reports changes then,
+        // so every address is asked again as time passes. Without this a Mac that reset its
+        // identity stayed "Identity not accepted" at the others until one of the two was
+        // restarted (found by the owner, 2026-11-23).
+        recheck?.invalidate()
+        let t = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.probeAll() }
+        RunLoop.main.add(t, forMode: .common)
+        recheck = t
         let b = NWBrowser(for: .bonjourWithTXTRecord(type: bonjourType, domain: nil), using: NWParameters())
         b.browseResultsChangedHandler = { [weak self, weak b] results, _ in
             guard let self, let b, self.browser === b else { return }
@@ -186,6 +267,8 @@ public final class PeerBrowser: @unchecked Sendable {
 
     public func stop() {
         stopped = true
+        recheck?.invalidate()
+        recheck = nil
         browser?.cancel()
         browser = nil
         for c in resolving.values { c.cancel() }
@@ -244,6 +327,7 @@ public final class PeerBrowser: @unchecked Sendable {
                 if case .hostPort(let host, let port)? = connection.currentPath?.remoteEndpoint, table.peers[id] != nil {
                     table.setAddress(id, address: Self.text(host), port: port.rawValue)
                     onChange?(peers)
+                    if table.peers[id]?.isCompatible == true { probe(id) }
                 }
                 finish(table.peers[id])
             case .failed, .cancelled:
@@ -257,6 +341,21 @@ public final class PeerBrowser: @unchecked Sendable {
             finish(self?.table.peers[id].map { var p = $0; p.address = nil; p.port = nil; return p })
         }
     }
+
+    /// Asks the Mac at a peer's address to prove its key; the answer arrives as a change.
+    public func probe(_ id: String, fresh: Bool = false) {
+        guard let peer = table.peers[id], let address = peer.address, let port = peer.port else { return }
+        prober.identify(host: address, port: port, fresh: fresh) { [weak self] key in
+            DispatchQueue.main.async {
+                guard let self, self.table.peers[id]?.address == address, self.table.peers[id]?.port == port else { return }
+                self.table.setKey(id, key: key)
+                self.onChange?(self.peers)
+            }
+        }
+    }
+
+    /// Asks every address again (trust changed, or time has passed).
+    public func probeAll() { for id in table.peers.keys { probe(id, fresh: true) } }
 
     private static func text(_ host: NWEndpoint.Host) -> String {
         switch host {

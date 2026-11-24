@@ -21,7 +21,6 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Network"),
                 .linkedFramework("SystemConfiguration"),
-                .linkedLibrary("z"),
             ]
         ),
         .testTarget(name: "NimbusDropCoreTests", dependencies: ["NimbusDropCore"]),

@@ -10,12 +10,17 @@ final class SecurityTests: XCTestCase {
     var root: URL!
     let attacker = Identity(name: "attacker", id: "attacker-id")
     let chunk = 16 * 1024
+    /// The attacker is a Mac the victim has paired with: these are attacks by a peer that is
+    /// who it says it is and means harm, which pairing does nothing to prevent.
+    var attackerTrust: Trust!
+    var victimTrust: Trust!
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("nimbusdrop-security-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("home/Downloads"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("home/Library/LaunchAgents"), withIntermediateDirectories: true)
         Tuning.reconnectSeconds = 1
+        (attackerTrust, victimTrust) = Trust.paired("attacker", "victim")
     }
 
     override func tearDownWithError() throws {
@@ -26,7 +31,7 @@ final class SecurityTests: XCTestCase {
     /// The victim: accepts whatever is offered, into its Downloads.
     func victim() throws -> DropListener {
         let downloads = self.downloads
-        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
         l.onOffer = { $0.accept(destination: downloads) }
         l.start()
         return l
@@ -46,7 +51,7 @@ final class SecurityTests: XCTestCase {
         try Data("<plist>run this at login</plist>".utf8).write(to: payload)
         let scanned = ScannedDrop(manifest: Manifest(chunkSize: chunk, entries: entries),
                                   sources: entries.map { $0.path == path ? payload.path : "/dev/null" })
-        let s = SendSession(urls: [], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker,
+        let s = SendSession(urls: [], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, trust: attackerTrust,
                             chunkSize: chunk, prescanned: scanned)
         s.start()
         wait(s)
@@ -85,7 +90,7 @@ final class SecurityTests: XCTestCase {
             .init(path: "Photos/sub", kind: .directory, mode: 0o755),
             .init(path: "Photos/sub/evil.plist", kind: .file, size: size, mode: 0o644),
         ]
-        let key = Manifest(chunkSize: chunk, entries: entries).key(senderID: attacker.id)
+        let key = Manifest(chunkSize: chunk, entries: entries).key(senderID: attackerTrust.publicKey.raw.map { String(format: "%02x", $0) }.joined())
         let items = downloads.appendingPathComponent("Photos.\(key.prefix(32)).nimbusdrop-partial/items")
         try FileManager.default.createDirectory(at: items.appendingPathComponent("Photos"), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: items.appendingPathComponent("Photos/sub").path, withDestinationPath: launchAgents.path)
@@ -149,27 +154,36 @@ final class SecurityTests: XCTestCase {
         bad(.init(path: "l", kind: .symlink, link: String(repeating: "a", count: 5000)))
         XCTAssertThrowsError(try Manifest(chunkSize: 1 << 40, entries: [.init(path: "f", kind: .file)]).validate())
         // The largest sizes that are let through do not overflow the sums done with them.
-        let big = Manifest(chunkSize: 4096, entries: (0..<4).map { .init(path: "f\($0)", kind: .file, size: Manifest.maxFileSize) })
+        let big = Manifest(chunkSize: 1 << 20, entries: (0..<4).map { .init(path: "f\($0)", kind: .file, size: Manifest.maxFileSize) })
         XCTAssertNoThrow(try big.validate())
         XCTAssertEqual(big.totalBytes, 4 << 50)
-        XCTAssertEqual(big.chunkCount(0), 1 << 38)
+        XCTAssertEqual(big.chunkCount(0), 1 << 30)
+        // A chunk is named on the wire by 32 bits: a file of more chunks than that is refused,
+        // not sent with numbers that wrap.
+        XCTAssertThrowsError(try Manifest(chunkSize: 4096, entries: [.init(path: "f", kind: .file, size: Manifest.maxFileSize)]).validate())
+        XCTAssertNoThrow(try Manifest(chunkSize: 4096, entries: [.init(path: "f", kind: .file, size: 4096 * Int64(UInt32.max) - 1)]).validate())
     }
 
     // MARK: A raw connection: what is on the wire, without the app's sender
 
     func connect(_ l: DropListener) throws -> Socket { try Socket.connect(host: "127.0.0.1", port: l.port) }
 
+    /// The attacker's own hand on the protocol: a proved, paired channel on which it may send
+    /// whatever it likes.
+    func dial(_ l: DropListener, name: String = "attacker") throws -> Channel {
+        try Channel.dial(host: "127.0.0.1", port: l.port, trust: attackerTrust, name: name, purpose: .drop).channel
+    }
+
     func testWhatArrivesMustBeWhatWasOffered() throws {
         // The person agrees to "1 file, 5 bytes". The manifest then describes something else.
         let l = try victim()
         defer { l.stop() }
         func attempt(_ manifest: Manifest) throws -> String {
-            let s = try connect(l)
-            try s.send(.offer, Offer(version: protocolVersion, minor: 0, app: "x", senderName: "attacker", senderID: "a",
-                                     items: ["note.txt"], fileCount: 1, totalBytes: 5))
-            XCTAssertEqual(try s.readFrame().type, .accept)
+            let s = try dial(l)
+            try s.send(.offer, Offer(items: ["note.txt"], fileCount: 1, totalBytes: 5))
+            XCTAssertEqual(try s.read().type, .accept)
             try s.send(.manifest, manifest)
-            let reply = try s.readFrame()
+            let reply = try s.read()
             XCTAssertEqual(reply.type, .error)
             return try decode(Reason.self, from: reply.body).message
         }
@@ -185,20 +199,49 @@ final class SecurityTests: XCTestCase {
     }
 
     func testAStrangerCannotMakeThisMacSetHalfAGigabyteAside() throws {
-        // A frame header promising 400 MB, from a connection that has not been let in.
+        // Before a key is proved nothing longer than a kilobyte is read: a handshake frame
+        // promising 60,000 bytes is refused at its length.
         let l = try victim()
         defer { l.stop() }
         let s = try connect(l)
-        var length = UInt32(400 << 20).bigEndian
-        var crc = withUnsafeBytes(of: &length) { checksum($0.baseAddress!, 4) }.bigEndian
-        var head = Data()
-        withUnsafeBytes(of: &length) { head.append(contentsOf: $0) }
-        withUnsafeBytes(of: &crc) { head.append(contentsOf: $0) }
-        try head.withUnsafeBytes { try s.writeAll($0.baseAddress!, 8) }
-        // The receiver does not wait for the 400 MB: it closes at the header.
+        let opening = Opening.mine()
+        try opening.withUnsafeBytes { try s.writeAll($0.baseAddress!, opening.count) }
+        let n: UInt16 = 60000
+        let head = Data([UInt8(n >> 8), UInt8(n & 0xff), UInt8(~n >> 8), UInt8(~n & 0xff)])
+        try head.withUnsafeBytes { try s.writeAll($0.baseAddress!, 4) }
         s.setReadTimeout(3)
+        var reply = [UInt8](repeating: 0, count: opening.count)
+        try reply.withUnsafeMutableBytes { try s.readExactly($0.baseAddress!, opening.count) }   // its own opening, sent before it read ours
         var byte: UInt8 = 0
         XCTAssertThrowsError(try s.readExactly(&byte, 1)) { XCTAssertTrue("\($0)".contains("closed"), "\($0)") }
+    }
+
+    func testAPairedMacCannotMakeThisMacSetHalfAGigabyteAsideEither() throws {
+        // After a handshake and before an accept, a message is one fragment. One that announces
+        // 400 MB is refused on its first fragment, with nothing set aside.
+        let asked = Box(0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
+        l.onOffer = { _ in asked.value += 1 }
+        l.start()
+        defer { l.stop() }
+        let s = try dial(l)
+        // (The victim hangs up at the first fragment, so the rest of the sending may fail.)
+        try? s.send(.offer, Offer(items: [String(repeating: "x", count: 200_000)], fileCount: 1, totalBytes: 1))
+        s.socket.setReadTimeout(3)
+        XCTAssertThrowsError(try s.read())
+        XCTAssertEqual(asked.value, 0)
+
+        // And after an accept, the manifest may be as large as the offer said the drop was, no
+        // larger: "1 file" does not buy a 300,000-entry manifest.
+        l.onOffer = { $0.accept(destination: self.downloads) }
+        let t = try dial(l)
+        try t.send(.offer, Offer(items: ["a"], fileCount: 1, totalBytes: 1))
+        XCTAssertEqual(try t.read().type, .accept)
+        try? t.send(.manifest, Manifest(chunkSize: chunk, entries: (0..<20_000).map { .init(path: "f\($0)", kind: .file, size: 0) }))
+        t.socket.setReadTimeout(3)
+        let reply = try? t.read()
+        XCTAssertTrue(reply == nil || reply!.type == .error, "refused, or the connection closed")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: downloads.path), [])
     }
 
     func testAConnectionThatNeverSaysWhatItIsIsClosed() throws {
@@ -217,25 +260,24 @@ final class SecurityTests: XCTestCase {
     }
 
     func testOffersCannotBuryThePersonInQuestions() throws {
-        // Twenty offers from one address. Two questions are asked; the rest are declined unseen.
+        // A dozen offers from one Mac. Two questions are asked; the rest are declined unseen.
         let asked = Box(0)
-        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
         l.onOffer = { _ in asked.value += 1 }   // never answers
         l.start()
         defer { l.stop() }
-        var sockets: [Socket] = [], declined = 0
-        for i in 0..<20 {
-            let s = try connect(l)
-            try s.send(.offer, Offer(version: protocolVersion, minor: 0, app: "x", senderName: "attacker", senderID: "a\(i)",
-                                     items: ["f"], fileCount: 1, totalBytes: 1))
-            sockets.append(s)
+        var channels: [Channel] = [], declined = 0
+        for _ in 0..<12 {
+            let s = try dial(l)
+            try s.send(.offer, Offer(items: ["f"], fileCount: 1, totalBytes: 1))
+            channels.append(s)
         }
         Thread.sleep(forTimeInterval: 0.5)
-        for s in sockets where s.waitReadable(milliseconds: 50) {
-            if let f = try? s.readFrame(), f.type == .decline { declined += 1 }
+        for s in channels where s.socket.waitReadable(milliseconds: 50) {
+            if let f = try? s.read(), f.type == .decline { declined += 1 }
         }
         XCTAssertEqual(asked.value, Tuning.pendingOffersPerAddress)
-        XCTAssertEqual(declined, 20 - Tuning.pendingOffersPerAddress)
+        XCTAssertEqual(declined, 12 - Tuning.pendingOffersPerAddress)
     }
 
     func testNamesFromAnotherMachineCannotForgeLinesOrFloodAPanel() throws {
@@ -243,17 +285,16 @@ final class SecurityTests: XCTestCase {
         XCTAssertEqual(Sanitize.label("a\u{2028}b\rc\0d\u{1B}[31m"), "a b c d [31m")
         XCTAssertEqual(Sanitize.label(String(repeating: "x", count: 500), limit: 64).count, 65)
         let seen = Box<ReceiveSession?>(nil)
-        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
         l.onOffer = { seen.value = $0 }
         l.start()
         defer { l.stop() }
-        let s = try connect(l)
-        try s.send(.offer, Offer(version: protocolVersion, minor: 0, app: "x", senderName: "macbookairm4\n\n(trusted)" + String(repeating: "!", count: 300),
-                                 senderID: "a", items: ["holiday\nphotos"], fileCount: 1, totalBytes: 1))
+        let s = try dial(l, name: "macbookairm4\n\n(trusted)" + String(repeating: "!", count: 300))
+        try s.send(.offer, Offer(items: ["holiday\nphotos"], fileCount: 1, totalBytes: 1))
         Thread.sleep(forTimeInterval: 0.3)
         let r = try XCTUnwrap(seen.value)
-        XCTAssertFalse(r.peerName.contains("\n"))
-        XCTAssertLessThanOrEqual(r.peerName.count, 65)
+        XCTAssertEqual(r.peerName, "attacker", "the name shown is the one given to that Mac here, whatever it calls itself today")
+        XCTAssertFalse(victimTrust.known[0].announced.contains { $0.contains("\n") }, "and what it calls itself is cleaned before it is kept")
         XCTAssertEqual(r.items, ["holiday photos"])
         XCTAssertEqual(r.peerAddress, "127.0.0.1", "the address is the connection's, not the sender's say-so")
     }
@@ -271,7 +312,7 @@ final class SecurityTests: XCTestCase {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: src.appendingPathComponent("install.command").path)
         let l = try victim()
         defer { l.stop() }
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, chunkSize: chunk)
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, trust: attackerTrust, chunkSize: chunk)
         s.start()
         wait(s)
         XCTAssertEqual(s.state, .completed)
@@ -301,11 +342,11 @@ final class SecurityTests: XCTestCase {
         }
         let seen = Box<ReceiveSession?>(nil)
         let downloads = self.downloads
-        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
         l.onOffer = { seen.value = $0; $0.accept(destination: downloads) }
         l.start()
         defer { l.stop() }
-        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, chunkSize: chunk)
+        let s = SendSession(urls: [src], host: "127.0.0.1", port: l.port, peerName: "victim", identity: attacker, trust: attackerTrust, chunkSize: chunk)
         s.start()
         wait(s)
         XCTAssertEqual(s.state, .completed, "the drop itself is fine; only the links are left out")
@@ -361,19 +402,19 @@ final class SecurityTests: XCTestCase {
 
     func testAnAddressThatIsNotLocalIsTurnedAwayUnread() throws {
         let asked = Box(0)
-        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), preferredPort: 0)
+        let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
         l.onOffer = { _ in asked.value += 1 }
         l.allows = { _ in false }   // as if 127.0.0.1 were somewhere far away
         l.start()
         defer { l.stop() }
         XCTAssertTrue(l.localOnly, "the default")
         let s = try connect(l)
-        try? s.send(.offer, Offer(version: protocolVersion, minor: 0, app: "x", senderName: "far away", senderID: "a",
-                                  items: ["f"], fileCount: 1, totalBytes: 1))
+        let opening = Opening.mine()
+        try? opening.withUnsafeBytes { try s.writeAll($0.baseAddress!, opening.count) }
         s.setReadTimeout(3)
         var b: UInt8 = 0
         XCTAssertThrowsError(try s.readExactly(&b, 1), "the connection was closed, not answered")
         XCTAssertEqual(asked.value, 0, "and nobody was asked anything")
-        XCTAssertThrowsError(try Probe.hello(host: "127.0.0.1", port: l.port, timeout: 2), "not even who it is")
+        XCTAssertThrowsError(try Probe.identify(host: "127.0.0.1", port: l.port, timeout: 2), "not even who it is")
     }
 }

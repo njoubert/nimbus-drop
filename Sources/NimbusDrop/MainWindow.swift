@@ -21,6 +21,8 @@ struct MainView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // Redrawn when the trust store changes: a tile's badge comes from it.
+                    let _ = model.trustChanges
                     if let problem = model.problem {
                         Label(problem, systemImage: "exclamationmark.triangle.fill")
                             .font(.callout).foregroundStyle(Palette.warning)
@@ -35,7 +37,7 @@ struct MainView: View {
             .dropDestination(for: URL.self) { urls, _ in
                 let files = urls.filter(\.isFileURL)
                 guard !files.isEmpty else { return false }
-                let usable = model.destinations.filter(\.isCompatible)
+                let usable = model.destinations.filter { model.standing($0).canSend || model.standing($0).canPair }
                 if usable.count == 1 { model.send(files, to: usable[0]) } else { model.pendingURLs = files }
                 return true
             } isTargeted: { backgroundTargeted = $0 }
@@ -125,7 +127,7 @@ struct MainView: View {
                 VStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text("Looking for other Macs…").font(.callout)
-                    Text("Open Nimbus Drop on the other Mac, on the same network, with Receive drops on.\nIf it does not appear, add it by its IP address.")
+                    Text("Open Nimbus Drop on the other Mac, on the same network, with Receive drops on.\nIf it does not appear, add it by its IP address. No internet is needed.")
                         .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 34)
@@ -147,7 +149,7 @@ struct MainView: View {
     }
 
     /// Files dragged over the window have exactly one place they could go.
-    private var onlyOne: Bool { model.destinations.filter(\.isCompatible).count == 1 }
+    private var onlyOne: Bool { model.destinations.filter { model.standing($0).canSend || model.standing($0).canPair }.count == 1 }
 
     private var addressField: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -199,19 +201,30 @@ private struct HeightKey: PreferenceKey {
 /// One destination. A drop target, and a button for people who would rather pick files from a panel.
 private struct PeerTile: View {
     let peer: Peer
-    let model: AppModel
+    /// Observed, not just held: the badge comes from the trust store, and a view whose inputs
+    /// have not changed is not redrawn because its parent was. A tile stayed "needs pairing"
+    /// after a pairing until the pointer crossed it (found by the owner, 2026-11-23).
+    @ObservedObject var model: AppModel
     /// Files are being dragged over the window and this is the only place they could go.
     var hint = false
     @State private var targeted = false
     @State private var hovered = false
 
-    private var lit: Bool { (targeted || hint) && peer.isCompatible }
+    private var standing: PeerStanding { model.standing(peer) }
+    /// Files can be dropped on it: it is paired, or can be paired first.
+    private var usable: Bool { standing.canSend || standing.canPair }
+    private var lit: Bool { (targeted || hint) && usable }
 
     private var caption: String {
-        if !peer.isCompatible { return "Needs an update: speaks protocol \(peer.protocolText), this Mac \(protocolVersionText)" }
-        if peer.isManual && peer.unreachable { return "Not answering" }
-        if lit { return "Release to send" }
-        return peer.isManual ? "Added by address · drop files here" : "Drop files here"
+        switch standing {
+        case .needsUpdate: return "Runs a version from before drops were encrypted"
+        case .checking: return "Finding out who this is…"
+        case .unproved: return "Could not prove who it is"
+        case .refused(let why): return why
+        case .new, .renew, .nameInUse: return lit ? "Release to pair, then send" : "Drop files here to pair"
+        case .paused: return "Not taking requests just now · click this Mac's tile there"
+        case .paired: return lit ? "Release to send" : (peer.isManual ? "Added by address · drop files here" : "Drop files here")
+        }
     }
 
     var body: some View {
@@ -219,24 +232,31 @@ private struct PeerTile: View {
             if model.pendingURLs.isEmpty { model.chooseAndSend(to: peer) } else { model.send(model.pendingURLs, to: peer) }
         } label: {
             VStack(spacing: 6) {
-                Image(systemName: lit ? "arrow.down.circle.fill" : (peer.isManual && peer.unreachable ? "questionmark.circle" : "laptopcomputer"))
+                Image(systemName: lit ? "arrow.down.circle.fill" : (standing == .unproved ? "questionmark.circle" : "laptopcomputer"))
                     .font(.system(size: 34)).foregroundStyle(lit ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .frame(height: 40)
-                Text(peer.name).font(.headline).lineLimit(1).truncationMode(.middle)
+                Text(model.displayName(peer)).font(.headline).lineLimit(1).truncationMode(.middle)
                 Text((peer.address ?? "finding address…") + (peer.isManual && peer.port != defaultPort ? ":\(peer.port ?? 0)" : ""))
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                if model.wasJustPaired(peer) {
+                    PairedPulse()
+                } else if let badge = standing.badge {
+                    Text(badge.text).font(.caption2.weight(.semibold)).foregroundStyle(badge.colour)
+                        .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(badge.colour.opacity(0.16)))
+                }
                 Text(caption)
-                    .font(.caption2).multilineTextAlignment(.center)
-                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.warning)))
+                    .font(.caption2).multilineTextAlignment(.center).lineLimit(2)
+                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
             }
-            .frame(maxWidth: .infinity).padding(.vertical, 16).padding(.horizontal, 8)
+            .frame(maxWidth: .infinity).padding(.vertical, 14).padding(.horizontal, 8)
             .background(RoundedRectangle(cornerRadius: 12).fill(lit ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.quaternary.opacity(hovered ? 0.9 : 0.5))))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(lit ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 2))
             .contentShape(RoundedRectangle(cornerRadius: 12))
-            .opacity(peer.isCompatible && !(peer.isManual && peer.unreachable) ? 1 : 0.6)
+            .opacity(usable ? 1 : 0.6)
         }
         .buttonStyle(.plain)
-        .disabled(!peer.isCompatible)
+        .disabled(!usable)
+        .contextMenu { PeerMenu(peer: peer, model: model) }
         .overlay(alignment: .topTrailing) {
             if peer.isManual, hovered {
                 Button { model.removeManual(peer) } label: { Image(systemName: "xmark.circle.fill") }
@@ -246,13 +266,59 @@ private struct PeerTile: View {
         .onHover { hovered = $0 }
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
-            guard !files.isEmpty, peer.isCompatible else { return false }
+            guard !files.isEmpty, usable else { return false }
             model.send(files, to: peer)
             return true
         } isTargeted: { targeted = $0 }
-        .help(peer.isCompatible
-              ? "Drag files or folders here to send them to \(peer.name)\(peer.appVersion.map { " (Nimbus Drop \($0))" } ?? ""), or click to choose them."
-              : "\(peer.name) runs Nimbus Drop \(peer.appVersion ?? "of another version"), which speaks protocol \(peer.protocolText). This Mac speaks \(protocolVersionText). Update Nimbus Drop on both.")
+        .help(PeerMenu.help(peer, standing, model))
+    }
+}
+
+/// What a right-click on a destination offers, and the words for hovering over one.
+private struct PeerMenu: View {
+    let peer: Peer
+    let model: AppModel
+
+    var body: some View {
+        let standing = model.standing(peer)
+        if standing.canPair {
+            Button("Pair with Codes…") { model.pair(with: peer) }
+            Button("Pair by Identity Number…") { model.pair(with: peer, byNumber: true) }
+        }
+        if case .paired(let mac) = standing {
+            Button("Rename…") { model.rename(mac) }
+            Button("Forget \(mac.name)…") { model.forget(mac) }
+        }
+        if let key = peer.key { Text("Key \(key.tag)") }
+    }
+
+    static func help(_ peer: Peer, _ standing: PeerStanding, _ model: AppModel) -> String {
+        switch standing {
+        case .paired(let mac): return "Drag files or folders here to send them to \(mac.name), or click to choose them. Paired on \(mac.pairedAt.formatted(date: .abbreviated, time: .omitted)); good until \(mac.endsWall.formatted(date: .abbreviated, time: .omitted))."
+        case .new: return "\(peer.name) has not been paired with this Mac. Drop files here and the two of you will each read out a code and type the other's."
+        case .renew(let name): return "\(name) needs pairing again: keys are replaced on a schedule, and one has run out. Drop files here to renew it with two codes."
+        case .nameInUse(let clash): return "This Mac calls itself \(peer.name) but is not the \(clash.name) you paired with. It may have been erased or replaced, or be another Mac using the name."
+        case .needsUpdate: return "\(peer.name) runs a version of Nimbus Drop from before drops were encrypted (protocol \(peer.protocolText)). Update Nimbus Drop there."
+        case .checking: return "Asking the Mac at \(peer.address ?? "this address") to prove who it is."
+        case .unproved: return "The Mac at \(peer.address ?? "this address") did not prove who it is."
+        case .refused(let why): return why
+        case .paused(let until):
+            return "\(peer.name) is not showing requests to pair for another \(max(1, Int(until.timeIntervalSinceNow.rounded(.up)))) s: a request to it was refused or abandoned a moment ago, perhaps not yours. Start the pairing from \(peer.name) instead (click this Mac's tile there); its request will be shown here."
+        }
+    }
+}
+
+/// "Pairing successful", pulsing, where a tile's badge is: what a pairing that worked shows
+/// in place of a window. It gives way to "✓ Paired" after a few seconds.
+struct PairedPulse: View {
+    @State private var bright = false
+    var body: some View {
+        Text("✓ Pairing successful").font(.caption2.weight(.bold)).foregroundStyle(.white).lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(Palette.receive.opacity(bright ? 1 : 0.55)))
+            .scaleEffect(bright ? 1.08 : 1)
+            .shadow(color: Palette.receive.opacity(bright ? 0.7 : 0), radius: 6)
+            .onAppear { withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { bright = true } }
     }
 }
 
@@ -325,20 +391,18 @@ private struct KindSheet: View {
 /// One destination as a line in the compact list: the same drop target and button as a tile.
 private struct PeerRow: View {
     let peer: Peer
-    let model: AppModel
+    /// Observed, not just held: the badge comes from the trust store, and a view whose inputs
+    /// have not changed is not redrawn because its parent was. A tile stayed "needs pairing"
+    /// after a pairing until the pointer crossed it (found by the owner, 2026-11-23).
+    @ObservedObject var model: AppModel
     var hint = false
     @State private var targeted = false
     @State private var hovered = false
 
-    private var lit: Bool { (targeted || hint) && peer.isCompatible }
-    private var silent: Bool { peer.isManual && peer.unreachable }
-
-    private var note: String {
-        if !peer.isCompatible { return "Needs an update (protocol \(peer.protocolText))" }
-        if silent { return "Not answering" }
-        if lit { return "Release to send" }
-        return peer.isManual ? "Added by address" : ""
-    }
+    private var standing: PeerStanding { model.standing(peer) }
+    private var usable: Bool { standing.canSend || standing.canPair }
+    private var lit: Bool { (targeted || hint) && usable }
+    private var silent: Bool { standing == .unproved }
 
     var body: some View {
         Button {
@@ -347,12 +411,18 @@ private struct PeerRow: View {
             HStack(spacing: 10) {
                 Image(systemName: lit ? "arrow.down.circle.fill" : (silent ? "questionmark.circle" : "laptopcomputer"))
                     .foregroundStyle(lit ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary)).frame(width: 20)
-                Text(peer.name).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                Text(model.displayName(peer)).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
                 Text((peer.address ?? "finding address…") + (peer.isManual && peer.port != defaultPort ? ":\(peer.port ?? 0)" : ""))
                     .font(.system(.callout, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: 8)
-                Text(note).font(.caption).lineLimit(1)
-                    .foregroundStyle(lit ? AnyShapeStyle(.tint) : (peer.isCompatible ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.warning)))
+                if lit {
+                    Text(standing.canSend ? "Release to send" : "Release to pair").font(.caption).foregroundStyle(.tint)
+                } else if model.wasJustPaired(peer) {
+                    PairedPulse()
+                } else if let badge = standing.badge {
+                    Text(badge.text).font(.caption2.weight(.semibold)).foregroundStyle(badge.colour).lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(badge.colour.opacity(0.16)))
+                }
                 if peer.isManual, hovered {
                     Button { model.removeManual(peer) } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("Remove this address")
@@ -361,20 +431,19 @@ private struct PeerRow: View {
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(lit ? AnyShapeStyle(.tint.opacity(0.16)) : AnyShapeStyle(.quaternary.opacity(hovered ? 0.6 : 0)))
             .contentShape(Rectangle())
-            .opacity(peer.isCompatible && !silent ? 1 : 0.6)
+            .opacity(usable ? 1 : 0.6)
         }
         .buttonStyle(.plain)
-        .disabled(!peer.isCompatible)
+        .disabled(!usable)
+        .contextMenu { PeerMenu(peer: peer, model: model) }
         .onHover { hovered = $0 }
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
-            guard !files.isEmpty, peer.isCompatible else { return false }
+            guard !files.isEmpty, usable else { return false }
             model.send(files, to: peer)
             return true
         } isTargeted: { targeted = $0 }
-        .help(peer.isCompatible
-              ? "Drag files or folders here to send them to \(peer.name), or click to choose them."
-              : "\(peer.name) speaks protocol \(peer.protocolText); this Mac speaks \(protocolVersionText). Update Nimbus Drop on both.")
+        .help(PeerMenu.help(peer, standing, model))
     }
 }
 
@@ -536,6 +605,11 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         for (suffix, size, list) in [("", NSSize(width: 560, height: 620), false), ("-list", NSSize(width: 560, height: 620), true),
                                      ("-wide", NSSize(width: 1000, height: 700), false)] {
             let model = AppModel(demoPeers: peers, manual: [], rows: rows, listLayout: list)
+            for (i, p) in peers.enumerated() {
+                // Mostly paired, with a few of the other states among them.
+                // swiftlint:disable:next force_try
+                model.demoStandings[p.id] = i % 7 == 3 ? .new : (i % 11 == 6 ? .renew(p.name) : .paired(try! model.trust.store(pairing: KeyPair().publicKey, announced: p.name, method: "codes", remaining: 80 * 86400)))
+            }
             let host = NSHostingView(rootView: MainView(model: model).background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: .darkAqua)
@@ -559,10 +633,22 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         if crowd > 0 { return dumpCrowd(to: path, count: crowd) }
         var added = Peer(id: "3", name: "dads-imac", address: "192.168.1.77", port: 47823)
         added.isManual = true
-        var old = Peer(id: "4", name: "macmini", address: "192.168.1.31", port: 47823, version: 1)
-        old.appVersion = "0.1.0"
+        let old = Peer(id: "4", name: "PHJ-MacBook", address: "192.168.1.148", port: 47823, version: 2)
         let peers = [Peer(id: "1", name: "macbookairm4", address: "192.168.1.52", port: 47823),
-                     Peer(id: "2", name: "macstudio", address: "192.168.1.20", port: 47823), old]
+                     Peer(id: "2", name: "macstudio", address: "192.168.1.20", port: 47823),
+                     Peer(id: "5", name: "macstudio", address: "192.168.1.166", port: 47823),
+                     Peer(id: "6", name: "macmini", address: "192.168.1.31", port: 47823), old]
+        // The states a destination can be in, with made-up keys.
+        func demo(_ model: AppModel) -> AppModel {
+            func mac(_ name: String) -> KnownMac {
+                // swiftlint:disable:next force_try
+                try! model.trust.store(pairing: KeyPair().publicKey, announced: name, method: "codes", remaining: 80 * 86400)
+            }
+            let studio = mac("macstudio")
+            model.demoStandings = ["1": .paired(mac("My MacBook Air")), "2": .paired(studio), "3": .new, "6": .renew("macmini"),
+                                   "5": .nameInUse(NameClash(name: "macstudio", key: studio.key, pairedAt: studio.pairedAt, expected: false, paired: true))]
+            return model
+        }
         let rows = [
             TransferRow(id: UUID(), direction: .send, peerName: "dads-imac", peerAddress: "192.168.1.77", title: "Christmas 2026",
                         status: "13.1 GB of 31.2 GB · 921 Mbps · 8 connections · 2:37 left", fraction: 0.42, isActive: true, isIndeterminate: false, failed: false, canReveal: false),
@@ -576,8 +662,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         let base = path.hasSuffix(".png") ? String(path.dropLast(4)) : path
         var ok = true
         for (suffix, appearance, model) in [
-            ("", NSAppearance.Name.darkAqua, AppModel(demoPeers: peers, manual: [added], rows: rows)),
-            ("-light", .aqua, AppModel(demoPeers: peers, manual: [added], rows: rows)),
+            ("", NSAppearance.Name.darkAqua, demo(AppModel(demoPeers: peers, manual: [added], rows: rows))),
+            ("-light", .aqua, demo(AppModel(demoPeers: peers, manual: [added], rows: rows))),
             ("-empty", .darkAqua, AppModel(demoPeers: [], manual: [], rows: [], receiving: false, askingForAddress: true)),
         ] {
             let host = NSHostingView(rootView: MainView(model: model).background(Color(nsColor: .windowBackgroundColor)))

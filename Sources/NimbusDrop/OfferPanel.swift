@@ -18,7 +18,7 @@ final class OfferPanel: NSObject, NSWindowDelegate {
         self.answer = answer
         panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
-        let view = OfferView(sender: session.peerName, address: session.peerAddress, title: session.title,
+        let view = OfferView(sender: session.peerName, address: session.peerAddress, paired: session.sender.pairedAt, title: session.title,
                              detail: "\(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))",
                              answer: { [weak self] in self?.finish($0) })
         panel.contentViewController = NSHostingController(rootView: view)
@@ -60,7 +60,7 @@ final class OfferPanel: NSObject, NSWindowDelegate {
     /// The panel's contents as a PNG, for `--dump-offer`.
     static func dump(to path: String) -> Bool {
         _ = NSApplication.shared
-        let view = OfferView(sender: "macbookairm4", address: "192.168.1.143", title: "2026-05-03 - M10 - Canon 28mm LTE evening walk",
+        let view = OfferView(sender: "My MacBook Air", address: "192.168.1.143", paired: Date().addingTimeInterval(-3 * 86400), title: "2026-05-03 - M10 - Canon 28mm LTE evening walk",
                              detail: "1,204 files, 31.2 GB", answer: { _ in })
         let host = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled], backing: .buffered, defer: false)
@@ -79,6 +79,9 @@ final class OfferPanel: NSObject, NSWindowDelegate {
 private struct OfferView: View {
     let sender: String
     let address: String
+    /// When the sender was paired with this Mac. Said plainly and without a tick: it means
+    /// "this is that Mac", not "this drop is safe to take".
+    let paired: Date
     let title: String
     let detail: String
     let answer: (OfferPanel.Answer) -> Void
@@ -89,7 +92,8 @@ private struct OfferView: View {
                 .shadow(color: Palette.receive.opacity(0.5), radius: 8)
             VStack(spacing: 4) {
                 Text("\(sender) (\(address))").font(.headline).textSelection(.enabled)
-                Text("wants to send you").foregroundStyle(.secondary)
+                Text("paired with this Mac on \(paired.formatted(date: .abbreviated, time: .omitted)) · wants to send you").foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 // A long name wraps rather than being cut short: it is what is being agreed to.
                 Text("“\(title)”").font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                     .lineLimit(4).fixedSize(horizontal: false, vertical: true).padding(.top, 2)

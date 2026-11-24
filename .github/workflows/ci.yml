@@ -23,20 +23,16 @@ jobs:
         # declined drop, name collisions, an interrupted drop continuing, a hostile manifest.
         run: swift test
       - name: Smoke-run the command line
-        # The runner has no second Mac and no window server; the engine still has to move a
-        # folder from one process to another and every command has to exit 0.
+        # The runner has no second Mac and no window server; the engine still has to pair two
+        # identities and move a folder from one process to another, and every command has to
+        # exit 0.
         run: |
           bin=.build/debug/NimbusDrop
           run() { perl -e 'alarm shift; exec @ARGV' 120 "$@"; }
           run "$bin" --print
-          mkdir -p /tmp/nd-src/sub /tmp/nd-dst
-          head -c 20000000 /dev/urandom > /tmp/nd-src/big.bin
-          echo hello > /tmp/nd-src/sub/small.txt
-          "$bin" --receive /tmp/nd-dst --once --no-advertise --name ci-receiver --port 47999 &
-          sleep 2
-          run "$bin" --name ci-sender --send 127.0.0.1:47999 /tmp/nd-src
-          wait
-          diff -r /tmp/nd-src /tmp/nd-dst/nd-src
+          # Two identities on one Mac are two Macs to each other: refused while unpaired, then
+          # paired with two codes, a folder accepted on the terminal and compared, one declined.
+          run python3 scripts/cli-smoke.py "$bin"
           run "$bin" --render-icon /tmp/icon.png --size 256
           run "$bin" --dump-bar /tmp/bar.png
       - name: Build release

@@ -695,6 +695,12 @@ compiler's, by reading, or not established). The plans for the work are
   TLA+ models on every push (`lint`, `models`, on Linux), and what must not compile after
   the tests (`build`); the Tamarin proofs weekly and on request (`proofs`), a job nobody had
   seen run when it was written.
+- **CI is not this Mac**: its Swift is older (the `macos-15` image) and its TLC runs on
+  Linux. The first push of this round failed there three ways, all green here: an expression
+  the older compiler typed as `[Any]?` (write the types out), built modules in `<bin>/Modules`
+  where `test-capabilities.py` did not look, and a mutant with two ways to fail reporting the
+  other one (a run that must fail now asks TLC for the one thing it must fail on:
+  `check.py`, `asked_for`). A green `./build.sh verify` is not a green CI: wait for it.
 
 ## Platform facts (checked 2026-11-22, macOS 27)
 

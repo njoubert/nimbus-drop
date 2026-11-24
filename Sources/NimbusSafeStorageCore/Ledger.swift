@@ -24,28 +24,46 @@ package final class Ledger: @unchecked Sendable {
 
     private static func pack(_ file: Int, _ chunk: Int) -> UInt64 { UInt64(file) << 32 | UInt64(chunk) }
 
-    /// Opens (or starts) the ledger at `url`. A record counts only if the file it speaks of is
-    /// still there in the tree, an ordinary file long enough to hold that chunk; the rest are forgotten.
+    /// Opens (or starts) the ledger: the file beside the tree's root that has the last name of
+    /// `url`. A record counts only if the file it speaks of is still there in the tree, an
+    /// ordinary file long enough to hold that chunk; the rest are forgotten.
+    ///
+    /// It is opened once, through the tree (`SafeTree.openBeside`: no symlink, an ordinary
+    /// file, one name), and read, rewritten and appended to through that one descriptor. It
+    /// used to go by its path, three times: with a link put where the ledger was, the file at
+    /// the other end was read, emptied, and had the drop's records appended to it.
     package init(url: URL, manifest: Manifest, tree: SafeTree) throws {
         self.manifest = manifest
         remaining = manifest.entries.indices.map { Int32(clamping: manifest.chunkCount($0)) }
+        fd = try tree.openBeside(url.lastPathComponent)
+
+        var st = stat()
+        fstat(fd, &st)
+        var data = Data(count: Int(max(0, st.st_size)))
+        let got = data.withUnsafeMutableBytes { raw -> Int in
+            var n = 0
+            while n < raw.count {
+                let r = pread(fd, raw.baseAddress! + n, raw.count - n, off_t(n))
+                if r > 0 { n += r } else if r == 0 || errno != EINTR { break }
+            }
+            return n
+        }
+        data.count = got
 
         var kept: [(Int, Int)] = []
-        if let data = try? Data(contentsOf: url) {
-            var sizes: [Int: Int64] = [:]
-            data.withUnsafeBytes { raw in
-                for i in 0..<(raw.count / 8) {
-                    let file = Int(UInt32(bigEndian: raw.loadUnaligned(fromByteOffset: i * 8, as: UInt32.self)))
-                    let chunk = Int(UInt32(bigEndian: raw.loadUnaligned(fromByteOffset: i * 8 + 4, as: UInt32.self)))
-                    guard file < manifest.entries.count, chunk < manifest.chunkCount(file) else { continue }
-                    let onDisk: Int64
-                    if let s = sizes[file] { onDisk = s } else {
-                        onDisk = tree.fileSize(manifest.entries[file].path) ?? -1
-                        sizes[file] = onDisk
-                    }
-                    let end = Int64(chunk) * Int64(manifest.chunkSize) + Int64(manifest.chunkLength(file: file, chunk: chunk))
-                    if onDisk >= end, done.insert(Ledger.pack(file, chunk)).inserted { kept.append((file, chunk)) }
+        var sizes: [Int: Int64] = [:]
+        data.withUnsafeBytes { raw in
+            for i in 0..<(raw.count / 8) {
+                let file = Int(UInt32(bigEndian: raw.loadUnaligned(fromByteOffset: i * 8, as: UInt32.self)))
+                let chunk = Int(UInt32(bigEndian: raw.loadUnaligned(fromByteOffset: i * 8 + 4, as: UInt32.self)))
+                guard file < manifest.entries.count, chunk < manifest.chunkCount(file) else { continue }
+                let onDisk: Int64
+                if let s = sizes[file] { onDisk = s } else {
+                    onDisk = tree.fileSize(manifest.entries[file].path) ?? -1
+                    sizes[file] = onDisk
                 }
+                let end = Int64(chunk) * Int64(manifest.chunkSize) + Int64(manifest.chunkLength(file: file, chunk: chunk))
+                if onDisk >= end, done.insert(Ledger.pack(file, chunk)).inserted { kept.append((file, chunk)) }
             }
         }
         for (file, chunk) in kept { account(file, chunk) }
@@ -53,9 +71,20 @@ package final class Ledger: @unchecked Sendable {
         // Rewritten compacted, so a torn tail or a forgotten record does not linger.
         var out = Data(capacity: kept.count * 8)
         for (file, chunk) in kept { Ledger.append(file, chunk, to: &out) }
-        try out.write(to: url)
-        fd = open(url.path, O_WRONLY | O_APPEND)
-        guard fd >= 0 else { throw errnoError("Cannot write the resume ledger") }
+        let rewritten = ftruncate(fd, 0) == 0 && out.withUnsafeBytes { raw -> Bool in
+            var n = 0
+            while n < raw.count {
+                let w = write(fd, raw.baseAddress! + n, raw.count - n)
+                if w > 0 { n += w } else if errno != EINTR { return false }
+            }
+            return true
+        }
+        guard rewritten else {
+            let error = errnoError("Cannot write the resume ledger")
+            close(fd)
+            fd = -1
+            throw error
+        }
     }
 
     deinit { if fd >= 0 { close(fd) } }

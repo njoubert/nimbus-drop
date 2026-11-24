@@ -945,4 +945,35 @@ extension ContainmentTests {
         let after = snapshot()
         XCTAssertEqual(before, after, "refusing a tree made or changed something")
     }
+
+    /// Between two attempts the ledger is changed for a link to a file elsewhere, a link to a
+    /// file that is not there, a second name for a file elsewhere, a folder, a pipe. As found,
+    /// the ledger went by its path: it was read, emptied and rewritten through a link (the
+    /// file at the other end lost its contents), a link to nowhere had its file made, and a
+    /// pipe was waited on for ever.
+    func testALedgerThatIsNotTheDropsOwnOrdinaryFileIsRefused() throws {
+        let fm = FileManager.default
+        let swaps: [(String, (URL) throws -> Void)] = [
+            ("a link to a file elsewhere", { try fm.createSymbolicLink(atPath: $0.path, withDestinationPath: self.documents.appendingPathComponent("secret.txt").path) }),
+            ("a link to a file that is not there", { try fm.createSymbolicLink(atPath: $0.path, withDestinationPath: self.agents.appendingPathComponent("made.plist").path) }),
+            ("a second name for a file elsewhere", { try fm.linkItem(at: self.documents.appendingPathComponent("large.bin"), to: $0) }),
+            ("a folder", { try fm.createDirectory(at: $0, withIntermediateDirectories: false) }),
+            ("a pipe", { XCTAssertEqual(mkfifo($0.path, 0o600), 0) }),
+        ]
+        for (i, (what, swap)) in swaps.enumerated() {
+            let a = bytes(chunk * 2, seed: 1)
+            let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "L\(i)", kind: .directory), .init(path: "L\(i)/a.bin", kind: .file, size: Int64(a.count))])
+            let partial = try interrupted(manifest) { $0.chunks(of: 1, a, only: [0]) }
+            try fm.removeItem(at: partial.appendingPathComponent("ledger"))
+            try swap(partial.appendingPathComponent("ledger"))
+            let before = snapshot()
+            let hand = try Hand(manifest, from: mallory, to: victim)
+            XCTAssertNotNil(hand.refusal, "\(what): the drop went on")
+            if hand.planned { _ = try? deliver(hand, ["L\(i)/a.bin": a]) }
+            try ended()
+            assertContained(before, snapshot(), allowing: [allowed(manifest, from: mallory)], what)
+            hand.hangUp()
+        }
+        XCTAssertEqual(try Data(contentsOf: documents.appendingPathComponent("secret.txt")), Data("secret".utf8))
+    }
 }

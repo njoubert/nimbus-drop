@@ -125,6 +125,24 @@ package final class SafeTree {
         return fd
     }
 
+    /// Opens the file called `name` in the folder that holds the root (a drop's ledger lives
+    /// there, beside the tree), for reading and for appending, making it if it is not there.
+    /// Like a file of the tree it is never a symlink, and never anything but an ordinary file
+    /// with one name: what is written to it goes nowhere else. The caller closes the descriptor.
+    package func openBeside(_ name: String) throws -> Int32 {
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else { throw DropError("\(name) is not a file beside the drop") }
+        let fd = openat(holder, name, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else {
+            throw errno == ELOOP ? DropError("The resume ledger is a link; the drop was refused") : errnoError("Cannot open the resume ledger")
+        }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else {
+            close(fd)
+            throw DropError("The resume ledger is not an ordinary file; the drop was refused")
+        }
+        return fd
+    }
+
     /// The size of the ordinary file at `path`, or nil when there is none (or it is something else).
     func fileSize(_ path: String) -> Int64? {
         guard let (fd, name) = try? parent(of: path) else { return nil }

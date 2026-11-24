@@ -4,6 +4,9 @@ import CryptoKit
 import Darwin
 import Foundation
 import IOKit
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
 
 /// The trust file on disk, sealed so that it opens only on the Mac that made it.
 ///

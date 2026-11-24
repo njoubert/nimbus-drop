@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Darwin
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
 
 /// What a connection is for; said in the encrypted hello, so nobody on the path learns it.
-enum Purpose: String, Codable {
+package enum Purpose: String, Codable {
     /// Send a drop. Both sides must hold a current pairing.
     case drop
     /// Pair, with two spoken codes.
@@ -20,23 +23,27 @@ enum Purpose: String, Codable {
 }
 
 /// The first message inside the encrypted channel, each way.
-struct SecureHello: Codable {
-    var minor: Int
-    var app: String
-    var name: String
+package struct SecureHello: Codable {
+    package var minor: Int
+    package var app: String
+    package var name: String
     /// Seconds the sender's key has left. A duration and not a date: two Macs on a network with
     /// no time server need not agree what day it is.
     var remaining: Double
     /// Whether the sender holds a current pairing with the key it is talking to.
-    var paired: Bool
-    var purpose: Purpose?
+    package var paired: Bool
+    package var purpose: Purpose?
+
+    package init(minor: Int, app: String, name: String, remaining: Double, paired: Bool, purpose: Purpose?) {
+        self.minor = minor; self.app = app; self.name = name; self.remaining = remaining; self.paired = paired; self.purpose = purpose
+    }
 }
 
 /// How every connection begins, in the clear: five bytes saying what it is, then (for a control
 /// connection) the protocol majors this side speaks. Nothing else is said before the handshake.
-enum Opening {
-    static let control = Data("NDROP".utf8)
-    static let data = Data("NDATA".utf8)
+package enum Opening {
+    package static let control = Data("NDROP".utf8)
+    package static let data = Data("NDATA".utf8)
     /// The majors this copy speaks. (A variable so that a test can claim more.)
     nonisolated(unsafe) static var majors: [UInt8] = [UInt8(protocolVersion)]
 
@@ -53,7 +60,7 @@ enum Opening {
         return (control + Data([count]) + Data(list), list)
     }
 
-    static func readKind(_ socket: Socket) throws -> Data {
+    package static func readKind(_ socket: Socket) throws -> Data {
         var kind = [UInt8](repeating: 0, count: 5)
         try kind.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, 5) }
         return Data(kind)
@@ -68,7 +75,7 @@ extension DropError {
         return e
     }
     /// A drop needs a pairing first; the app starts one.
-    static func notPaired(_ message: String) -> DropError {
+    package static func notPaired(_ message: String) -> DropError {
         var e = DropError(message)
         e.needsPairing = true
         return e
@@ -82,21 +89,21 @@ extension DropError {
 /// length leaves a reader waiting for bytes that never come); the seal catches everything else.
 /// The plaintext is `[u8 type][u8 flags][u32 total length, in a first fragment only]` and bytes;
 /// a message too long for one Noise message (65,535 bytes) goes as consecutive fragments.
-final class Channel: @unchecked Sendable {
-    let socket: Socket
+package final class Channel: @unchecked Sendable {
+    package let socket: Socket
     /// The other end's static key, proved by the handshake.
-    let remote: PublicKey
+    package let remote: PublicKey
     /// The handshake hash: what both ends saw. Pairing codes and resume proofs are bound to it.
-    let h: Data
+    package let h: Data
     /// The third output of the handshake's Split: the root of a drop's data keys.
-    let master: Data
+    package let master: Data
     private var sending: CipherState
     private var receiving: CipherState
     private let writeLock = NSLock()
     /// The largest message this side will reassemble. One fragment until a drop is accepted.
-    var limit = Channel.fragment
+    package var limit = Channel.fragment
 
-    static let fragment = 65519
+    package static let fragment = 65519
     private static let firstBody = fragment - 6
     private static let nextBody = fragment - 2
 
@@ -118,7 +125,7 @@ final class Channel: @unchecked Sendable {
         try out.withUnsafeBytes { try socket.writeAll($0.baseAddress!, out.count) }
     }
 
-    static func read(_ socket: Socket, limit: Int = 65535) throws -> Data {
+    package static func read(_ socket: Socket, limit: Int = 65535) throws -> Data {
         var head = [UInt8](repeating: 0, count: 4)
         try head.withUnsafeMutableBytes { try socket.readExactly($0.baseAddress!, 4) }
         let n = UInt16(head[0]) << 8 | UInt16(head[1]), check = UInt16(head[2]) << 8 | UInt16(head[3])
@@ -155,7 +162,7 @@ final class Channel: @unchecked Sendable {
 
     /// Asks whatever listens there to prove who it is, and hangs up: opening, Noise messages 1
     /// and 2. The answer is a key that the other end holds; this side has revealed nothing.
-    static func probe(host: String, port: UInt16, timeout: TimeInterval = 3) throws -> PublicKey {
+    package static func probe(host: String, port: UInt16, timeout: TimeInterval = 3) throws -> PublicKey {
         let socket = try Socket.connect(host: host, port: port, timeout: timeout)
         socket.setReadTimeout(Int(timeout.rounded(.up)))
         defer { socket.shutdown() }
@@ -169,7 +176,7 @@ final class Channel: @unchecked Sendable {
     /// another, this side stops before sending its own key or anything else. `check` is asked
     /// about the responder's key at the same point and may refuse it (a retired key).
     /// `ephemeral`: tests only (the vectors fix it).
-    static func initiate(_ socket: Socket, keys: KeyPair, expect: PublicKey?, expectName: String = "the Mac you chose", ephemeral: KeyPair? = nil,
+    package static func initiate(_ socket: Socket, keys: KeyPair, expect: PublicKey?, expectName: String = "the Mac you chose", ephemeral: KeyPair? = nil,
                          check: (PublicKey) throws -> Void = { _ in }) throws -> Channel {
         let noise = try begin(socket, keys: keys, ephemeral: ephemeral)
         guard let theirs = noise.remoteStatic else { throw DropError.notAuthentic }
@@ -180,7 +187,7 @@ final class Channel: @unchecked Sendable {
     }
 
     /// The responder's side, after the first five bytes ("NDROP") have been read.
-    static func respond(_ socket: Socket, keys: KeyPair, ephemeral: KeyPair? = nil) throws -> Channel {
+    package static func respond(_ socket: Socket, keys: KeyPair, ephemeral: KeyPair? = nil) throws -> Channel {
         let theirs = try Opening.readRest(socket)
         let mine = Opening.mine()
         try mine.withUnsafeBytes { try socket.writeAll($0.baseAddress!, mine.count) }
@@ -208,10 +215,10 @@ final class Channel: @unchecked Sendable {
 
     // MARK: Messages
 
-    func send<T: Encodable>(_ type: FrameType, _ value: T) throws { try send(type, body: try JSONEncoder().encode(value)) }
+    package func send<T: Encodable>(_ type: FrameType, _ value: T) throws { try send(type, body: try JSONEncoder().encode(value)) }
 
     /// A message whose body is already bytes.
-    func send(_ type: FrameType, body: Data) throws {
+    package func send(_ type: FrameType, body: Data) throws {
         writeLock.lock()
         defer { writeLock.unlock() }
         var offset = 0, first = true
@@ -229,7 +236,7 @@ final class Channel: @unchecked Sendable {
 
     /// The next message. Read by one thread at a time. A message longer than `limit` is refused
     /// on its first fragment, before anything is set aside for it.
-    func read() throws -> (type: FrameType, body: Data) {
+    package func read() throws -> (type: FrameType, body: Data) {
         let head = try receiving.open(try Channel.read(socket))
         guard head.count >= 6, let type = FrameType(rawValue: head[head.startIndex]) else { throw DropError.damagedMessage }
         let total = Int(UInt32(bigEndian: head.dropFirst(2).prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
@@ -247,74 +254,5 @@ final class Channel: @unchecked Sendable {
             guard body.count <= total, more == (body.count < total) else { throw DropError.damagedMessage }
         }
         return (type, body)
-    }
-}
-
-/// The keys of one drop, all derived from the handshake's `master`. One master per drop: a
-/// reconnect proves the same two Macs again and gives the control channel new keys, and changes
-/// nothing here, so data connections that outlive a control connection keep working.
-struct DropKeys {
-    let sessionID: Data
-    private let master: Data
-    let attachKey: Data
-    let resumeKey: Data
-
-    /// At most this many bytes and this many seals under one stream key; then the sender moves
-    /// to a new connection, and so to a new key. Far inside what the cipher allows.
-    nonisolated(unsafe) static var streamBytes: Int64 = 1 << 38
-    static let streamSeals: UInt64 = 1 << 24
-
-    init(master: Data) {
-        self.master = master
-        sessionID = Crypto.kdf(master, "nimbus-drop session id v1", 16)
-        attachKey = Crypto.kdf(master, "nimbus-drop attach v1", 32)
-        resumeKey = Crypto.kdf(master, "nimbus-drop resume v1", 32)
-    }
-
-    /// The key of data connection number `conn`. A number is used once in a drop, so a key is too.
-    func stream(_ conn: UInt64) -> CipherState {
-        CipherState(key: Crypto.kdf(master, Data("nimbus-drop stream v1".utf8) + Crypto.be64(conn), 32), limit: DropKeys.streamSeals)
-    }
-
-    func attachTag(conn: UInt64, challenge: Data) -> Data {
-        Crypto.hmac(attachKey, sessionID + Crypto.be64(conn) + challenge).prefix(16)
-    }
-
-    static func resumeProof(_ resumeKey: Data, _ label: String, h: Data) -> Data { Crypto.hmac(resumeKey, Data(label.utf8) + h) }
-}
-
-/// The twelve bytes sealed before every chunk on a data connection: which file, which chunk,
-/// how long. Sealed by themselves and opened before the chunk is read, so nobody watching can
-/// tell where one file ends, and a damaged length is caught at once.
-struct RecordHeader {
-    static let size = 12
-    static let sealedSize = 28
-    static let endMarker = UInt32.max
-    var file: UInt32
-    var chunk: UInt32
-    var length: UInt32
-
-    var bytes: Data { Crypto.be32(file) + Crypto.be32(chunk) + Crypto.be32(length) }
-
-    init(file: UInt32, chunk: UInt32, length: UInt32) { self.file = file; self.chunk = chunk; self.length = length }
-
-    /// A whole record as it goes on the wire: the header sealed by itself, then the chunk sealed
-    /// with the header as associated data. Two seals, two counts.
-    static func seal(_ cipher: inout CipherState, file: UInt32, chunk: UInt32, bytes: UnsafeRawPointer, count: Int) throws -> (header: Data, ciphertext: Data, tag: Data) {
-        let header = RecordHeader(file: file, chunk: chunk, length: UInt32(count)).bytes
-        let sealedHeader = try cipher.seal(header)
-        let body = try cipher.seal(bytes: bytes, count: count, ad: header)
-        return (sealedHeader, body.ciphertext, body.tag)
-    }
-
-    /// What ends a data connection: exactly this header, sealed, and nothing after it.
-    static func sealEnd(_ cipher: inout CipherState) throws -> Data {
-        try cipher.seal(RecordHeader(file: endMarker, chunk: 0, length: 0).bytes)
-    }
-
-    init?(_ data: Data) {
-        guard data.count == RecordHeader.size else { return nil }
-        let v = data.withUnsafeBytes { p in (0..<3).map { UInt32(bigEndian: p.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self)) } }
-        file = v[0]; chunk = v[1]; length = v[2]
     }
 }

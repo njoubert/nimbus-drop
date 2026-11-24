@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Darwin
 import Foundation
+import NimbusBase
 
 /// Every file operation a receiver performs on a drop, confined to one folder.
 ///
@@ -16,13 +17,13 @@ import Foundation
 /// `openat(…, O_NOFOLLOW | O_DIRECTORY)`, which refuses anything on the way that is not a real
 /// directory; and whatever is found already in place (a resumed drop, or a name the disk
 /// considers taken) must be exactly the kind of thing the manifest says, or the drop ends.
-final class SafeTree {
+package final class SafeTree {
     private let root: Int32
     /// The directory the last operation was in: entries arrive folder by folder.
     private var cachedPath: String?
     private var cachedFD: Int32 = -1
 
-    init(root url: URL) throws {
+    package init(root url: URL) throws {
         root = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard root >= 0 else { throw errnoError("Cannot open \(url.path)") }
     }
@@ -65,7 +66,7 @@ final class SafeTree {
     }
 
     /// Makes a folder. One already there must be a folder, not something else under that name.
-    func makeDirectory(_ path: String) throws {
+    package func makeDirectory(_ path: String) throws {
         let (fd, name) = try parent(of: path)
         if mkdirat(fd, name, 0o700) == 0 { return }
         guard errno == EEXIST, kind(fd, name) == S_IFDIR else {
@@ -74,7 +75,7 @@ final class SafeTree {
     }
 
     /// Makes a symlink. One already there must be the same link.
-    func makeSymlink(_ path: String, to target: String) throws {
+    package func makeSymlink(_ path: String, to target: String) throws {
         let (fd, name) = try parent(of: path)
         if symlinkat(target, fd, name) == 0 { return }
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
@@ -86,7 +87,7 @@ final class SafeTree {
 
     /// Opens a file for writing, creating it if need be. It is never a symlink and never
     /// anything but an ordinary file. The caller closes the descriptor.
-    func openFile(_ path: String) throws -> Int32 {
+    package func openFile(_ path: String) throws -> Int32 {
         let (dir, name) = try parent(of: path)
         let fd = openat(dir, name, O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw errnoError("Cannot create \(path)") }
@@ -108,7 +109,7 @@ final class SafeTree {
 
     /// Sets the modification time and the permission bits of the thing itself, never of
     /// something it might point to; and marks it quarantined, when a mark is given.
-    func finish(_ path: String, mtime: Double, mode: mode_t, quarantine: [UInt8]? = nil) {
+    package func finish(_ path: String, mtime: Double, mode: mode_t, quarantine: [UInt8]? = nil) {
         guard let (fd, name) = try? parent(of: path) else { return }
         if let quarantine {
             // On the thing itself, through a descriptor that is never a symlink's target.
@@ -125,7 +126,7 @@ final class SafeTree {
     }
 
     /// Lets go of the cached directory (before the tree is moved).
-    func release() {
+    package func release() {
         if cachedFD >= 0 { close(cachedFD) }
         cachedFD = -1
         cachedPath = nil

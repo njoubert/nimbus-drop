@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// Whole drops over loopback: a real listener, a real sender, real files in a temporary folder.
 final class DropTests: XCTestCase {

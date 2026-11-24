@@ -1,6 +1,13 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSafeStorageCore
+import NimbusSecurityCore
+import NimbusDiscovery
+import NimbusTransferCore
 
 /// One finished drop, as the History window shows it: what, who, when, how it ended.
 public struct HistoryEntry: Codable, Identifiable, Equatable, Sendable {

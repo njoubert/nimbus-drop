@@ -1,6 +1,11 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSafeStorageCore
+import NimbusSecurityCore
 
 /// What a speed test found: bytes carried each way, and over how long, as counted by the end
 /// that received them.
@@ -330,7 +335,7 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
         listener.trust.track(self, key: channel.remote)
     }
 
-    override func withdrawn(_ error: DropError) {
+    package override func withdrawn(_ error: DropError) {
         lock.withLock { keys = nil }
         super.withdrawn(error)
         phase.lock(); phase.broadcast(); phase.unlock()

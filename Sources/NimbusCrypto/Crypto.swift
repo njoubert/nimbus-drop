@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import CryptoKit
 import Foundation
+import NimbusBase
 
 /// The cryptographic pieces of protocol 3, and nothing that touches a socket or a file.
 ///
@@ -11,7 +12,7 @@ import Foundation
 /// from Noise's final Split (`master`), every key derived from it, the pairing codes, and the
 /// record format. `docs/plans/secure-drops-plan.html` is the specification; a change here that
 /// is not a change there is a bug in one of them.
-enum Crypto {
+package enum Crypto {
     /// `KDF(key, info, n)`: HKDF-SHA-256 with an empty salt. Every derivation of our own uses
     /// this; Noise's own HKDF (`Noise.hkdf`) has different conventions and is used only inside
     /// the handshake.
@@ -28,22 +29,22 @@ enum Crypto {
 
     static func sha256(_ data: Data) -> Data { Data(SHA256.hash(data: data)) }
 
-    static func random(_ count: Int) -> Data {
+    package static func random(_ count: Int) -> Data {
         var bytes = [UInt8](repeating: 0, count: count)
         guard SecRandomCopyBytes(kSecRandomDefault, count, &bytes) == errSecSuccess else { fatalError("the system has no random bytes") }
         return Data(bytes)
     }
 
     /// Compares without stopping at the first difference.
-    static func same(_ a: Data, _ b: Data) -> Bool {
+    package static func same(_ a: Data, _ b: Data) -> Bool {
         guard a.count == b.count else { return false }
         var diff: UInt8 = 0
         for (x, y) in zip(a, b) { diff |= x ^ y }
         return diff == 0
     }
 
-    static func be64(_ v: UInt64) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
-    static func be32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+    package static func be64(_ v: UInt64) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+    package static func be32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
 }
 
 /// A Mac's identity as the rest of the world sees it: an X25519 public key in canonical form.
@@ -165,17 +166,17 @@ public struct KeyPair: Sendable {
 extension DropError {
     /// Something that should have been sealed by the other Mac's keys was not. Never a reason to
     /// carry on with that connection; said the same way whatever exactly failed.
-    static let notAuthentic = DropError("The other Mac could not prove what it sent", connection: true)
+    package static let notAuthentic = DropError("The other Mac could not prove what it sent", connection: true)
 }
 
 /// AES-256-GCM with a nonce that is a counter: four zero bytes, then the count, big-endian
 /// (Noise's convention). A key and count pair is used once: the count only rises, and `limit`
 /// ends the key's life long before the count or the cipher's own limits could be reached.
-struct CipherState {
+package struct CipherState {
     private let key: SymmetricKey
-    private(set) var count: UInt64 = 0
+    package private(set) var count: UInt64 = 0
     /// Seals or opens allowed under this key.
-    let limit: UInt64
+    package let limit: UInt64
 
     init(key: Data, limit: UInt64 = 1 << 24) {
         self.key = SymmetricKey(data: key)
@@ -191,14 +192,14 @@ struct CipherState {
     }
 
     /// The ciphertext followed by the 16-byte tag.
-    mutating func seal(_ plaintext: Data, ad: Data = Data()) throws -> Data {
+    package mutating func seal(_ plaintext: Data, ad: Data = Data()) throws -> Data {
         guard count < limit else { throw DropError("A key reached the end of its life", connection: true) }
         let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce(count), authenticating: ad)
         count += 1
         return box.ciphertext + box.tag
     }
 
-    mutating func open(_ sealed: Data, ad: Data = Data()) throws -> Data {
+    package mutating func open(_ sealed: Data, ad: Data = Data()) throws -> Data {
         guard count < limit else { throw DropError("A key reached the end of its life", connection: true) }
         guard sealed.count >= 16 else { throw DropError.notAuthentic }
         let split = sealed.index(sealed.endIndex, offsetBy: -16)
@@ -210,7 +211,7 @@ struct CipherState {
 
     /// For a chunk: seals bytes that are already in a buffer, without first copying them into a
     /// `Data`. Returns the ciphertext and the tag separately, to go out in one `writev`.
-    mutating func seal(bytes: UnsafeRawPointer, count length: Int, ad: Data) throws -> (ciphertext: Data, tag: Data) {
+    package mutating func seal(bytes: UnsafeRawPointer, count length: Int, ad: Data) throws -> (ciphertext: Data, tag: Data) {
         guard count < limit else { throw DropError("A key reached the end of its life", connection: true) }
         let plain = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes), count: length, deallocator: .none)
         let box = try AES.GCM.seal(plain, using: key, nonce: nonce(count), authenticating: ad)
@@ -220,7 +221,7 @@ struct CipherState {
 
     /// For a chunk: opens `length` bytes of ciphertext followed by a 16-byte tag, in a buffer.
     /// The plaintext is a new buffer nothing else has seen; it exists only if the tag held.
-    mutating func open(bytes: UnsafeRawPointer, count length: Int, ad: Data) throws -> Data {
+    package mutating func open(bytes: UnsafeRawPointer, count length: Int, ad: Data) throws -> Data {
         guard count < limit else { throw DropError("A key reached the end of its life", connection: true) }
         let cipher = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes), count: length, deallocator: .none)
         let tag = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes + length), count: 16, deallocator: .none)
@@ -242,7 +243,7 @@ struct CipherState {
 /// it; after message 3 the responder knows the same of the initiator. `split()` then gives the
 /// two transport keys of standard Noise and, as this protocol's one extension, a third output of
 /// the same HKDF: the drop's `master`.
-final class Noise {
+package final class Noise {
     static let name = Data("Noise_XX_25519_AESGCM_SHA256".utf8)
 
     /// Noise's HKDF: `ck` is the HMAC key, the outputs are chained with a counter byte.
@@ -263,14 +264,14 @@ final class Noise {
     private var re: Data?
     /// The other side's static key, once it has been read and (by the DH that follows it in the
     /// same message) proved.
-    private(set) var remoteStatic: PublicKey?
+    package private(set) var remoteStatic: PublicKey?
     private var ck: Data
-    private(set) var h: Data
+    package private(set) var h: Data
     private var cipher: CipherState?
     private var step = 0
 
     /// `ephemeral`: tests only (the published vectors fix it).
-    init(initiator: Bool, prologue: Data, s: KeyPair, ephemeral: KeyPair? = nil) {
+    package init(initiator: Bool, prologue: Data, s: KeyPair, ephemeral: KeyPair? = nil) {
         self.initiator = initiator
         self.s = s
         e = ephemeral
@@ -305,7 +306,7 @@ final class Noise {
     var isComplete: Bool { step == 3 }
 
     /// The next message this side sends. Throws when it is not this side's turn.
-    func write(payload: Data = Data()) throws -> Data {
+    package func write(payload: Data = Data()) throws -> Data {
         guard step < 3, (step % 2 == 0) == initiator else { throw DropError.notAuthentic }
         var out = Data()
         switch step {
@@ -334,7 +335,7 @@ final class Noise {
     }
 
     /// Takes the other side's next message; returns its payload.
-    func read(_ message: Data) throws -> Data {
+    package func read(_ message: Data) throws -> Data {
         guard step < 3, (step % 2 == 0) != initiator else { throw DropError.notAuthentic }
         var rest = message[...]
         func take(_ n: Int) throws -> Data {
@@ -369,7 +370,7 @@ final class Noise {
 
     /// The two transport keys (this side's sending one first) and the master. The chaining key
     /// is gone afterwards.
-    func split() throws -> (send: CipherState, receive: CipherState, master: Data) {
+    package func split() throws -> (send: CipherState, receive: CipherState, master: Data) {
         guard step == 3 else { throw DropError.notAuthentic }
         let out = Noise.hkdf(ck, Data(), 3)
         ck = Data()

@@ -3,7 +3,14 @@
 import Darwin
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// What the review of the speed test (protocol 3.1, at 7a746c9, 2026-11-23) found, as tests.
 /// Each asserts what should hold and failed on the code as reviewed (which also asked nobody:

@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// The speed test (the plan's Addendum B): what it measures, who may ask for one, and what
 /// the Mac that is asked will and will not do for it.

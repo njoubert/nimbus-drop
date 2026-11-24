@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// Protocol 3 against the people it was designed against: an impostor, a thief of an old key,
 /// someone replaying what they recorded, someone flooding, and a paired Mac that is retired

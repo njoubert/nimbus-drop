@@ -3,7 +3,14 @@
 import Darwin
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// Protocol 3 against a second implementation: `scripts/vectors.py`, written from the
 /// specification in Python with another crypto library. What that script printed is below. A

@@ -11,3 +11,12 @@ repos:
     rev: v0.10.0.1
     hooks:
     -   id: shellcheck
+-   repo: local
+    hooks:
+    # The engine's modules, held to what each may depend on and touch (see Package.swift).
+    -   id: layers
+        name: the engine's layers
+        entry: python3 scripts/check-layers.py
+        language: system
+        pass_filenames: false
+        files: ^(Sources/|Package\.swift|scripts/check-layers\.py)

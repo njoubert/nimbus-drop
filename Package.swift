@@ -13,15 +13,35 @@ let package = Package(
         .package(url: "https://github.com/njoubert/nimbus-updater.git", from: "1.4.0"),
     ],
     targets: [
-        // Everything that moves bytes or finds peers, with no AppKit: the wire protocol, the
-        // manifest, the resume ledger, the sender and the receiver, Bonjour. The tests drive
-        // whole drops through it over loopback.
+        // The engine, in layers. A target may import only what it lists here, so the arrows
+        // below are enforced by the compiler; `scripts/check-layers.py` holds each layer to the
+        // system frameworks it is allowed. What one layer needs of another is `package`, not
+        // `public`: the split adds nothing to what the app can see.
+        //
+        //   NimbusBase              errors, the log, Sanitize, Format, the Tuning namespace
+        //   NimbusCrypto            PURE: no socket, file, clock, lock or thread. The cryptography
+        //                           of protocol 3 and the pairing transaction as a state machine.
+        //                           What the formal models in formal/ are about.
+        //   NimbusNet               Socket, Deadline, this Mac's addresses
+        //   NimbusSafeStorageCore   a manifest and every file operation a receiver performs
+        //   NimbusSecurityCore      Trust, the trust file, Channel, pairing, retirement
+        //   NimbusDiscovery         Bonjour and probing
+        //   NimbusTransferCore      drops: the sender, the listener, the receiver, the speed test
+        //   NimbusDropCore          all of it under one name, and what only an app needs
+        .target(name: "NimbusBase"),
+        .target(name: "NimbusCrypto", dependencies: ["NimbusBase"]),
+        .target(name: "NimbusNet", dependencies: ["NimbusBase"], linkerSettings: [.linkedFramework("SystemConfiguration")]),
+        .target(name: "NimbusSafeStorageCore", dependencies: ["NimbusBase"]),
+        .target(name: "NimbusSecurityCore", dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet"],
+                linkerSettings: [.linkedFramework("IOKit")]),
+        .target(name: "NimbusDiscovery", dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSecurityCore"],
+                linkerSettings: [.linkedFramework("Network"), .linkedFramework("SystemConfiguration")]),
+        .target(name: "NimbusTransferCore",
+                dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore"]),
         .target(
             name: "NimbusDropCore",
-            linkerSettings: [
-                .linkedFramework("Network"),
-                .linkedFramework("SystemConfiguration"),
-            ]
+            dependencies: ["NimbusBase", "NimbusCrypto", "NimbusNet", "NimbusSafeStorageCore", "NimbusSecurityCore", "NimbusDiscovery",
+                           "NimbusTransferCore"]
         ),
         .testTarget(name: "NimbusDropCoreTests", dependencies: ["NimbusDropCore"]),
         // A middleman for testing only, never part of the app: a TCP proxy that sits between a

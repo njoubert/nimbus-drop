@@ -4,6 +4,10 @@ import dnssd
 import Foundation
 import Network
 import SystemConfiguration
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSecurityCore
 
 public let bonjourType = "_nimbusdrop._tcp"
 

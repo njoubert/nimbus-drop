@@ -3,7 +3,14 @@
 import CryptoKit
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 func hex(_ s: String) -> Data {
     var d = Data(), i = s.startIndex

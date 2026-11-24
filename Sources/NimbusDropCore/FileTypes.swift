@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import UniformTypeIdentifiers
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSafeStorageCore
+import NimbusSecurityCore
+import NimbusDiscovery
+import NimbusTransferCore
 
 /// The kinds of file in a drop, so a sender can choose to send only some of them ("just the
 /// JPEGs"). A kind is what macOS takes the extension to mean, so `.jpg` and `.jpeg` are one;

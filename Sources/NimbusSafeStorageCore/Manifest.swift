@@ -3,6 +3,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import NimbusBase
 
 /// Everything in a drop: every folder, file and symlink with its size, time and mode. Folders
 /// come before what they hold.
@@ -137,20 +138,6 @@ public struct Manifest: Codable, Equatable, Sendable {
                 }
             }
         }
-    }
-}
-
-/// Text from another machine, made fit to show and to log: a host name, a file name, a reason.
-public enum Sanitize {
-    /// One line of bounded length: control characters (newlines among them, which could forge
-    /// a line of the log or push the real text out of a panel) become spaces.
-    public static func label(_ text: String, limit: Int = 200) -> String {
-        let cleaned = String(String.UnicodeScalarView(text.unicodeScalars.map {
-            $0.properties.generalCategory == .control || $0.properties.generalCategory == .lineSeparator
-                || $0.properties.generalCategory == .paragraphSeparator ? " " : $0
-        }))
-        let trimmed = cleaned.trimmingCharacters(in: .whitespaces)
-        return trimmed.count > limit ? String(trimmed.prefix(limit)) + "…" : trimmed
     }
 }
 

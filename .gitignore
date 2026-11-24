@@ -10,3 +10,5 @@ formal/.tools/
 __pycache__/
 formal/tla/*_TTrace_*
 formal/tla/states/
+formal/.results/
+.claude/worktrees/

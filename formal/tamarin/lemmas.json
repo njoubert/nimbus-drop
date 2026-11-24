@@ -1,0 +1,338 @@
+{
+ "_about": "Every lemma the Tamarin theories must prove, and what each is for. formal/check.py refuses a run whose lemmas are not exactly these: one missing, one more, one twice, one incomplete or one falsified fails it. A lemma is added or retired here, with its reason, in the same change as the theory.",
+ "NimbusHandshake.spthy": {
+  "lemmas": [
+   {
+    "name": "can_finish_a_handshake",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: two honest Macs finish a handshake with the same keys, hash and master, with no key given away.",
+    "assumes": "none",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "CryptoTests",
+     "VectorTests"
+    ]
+   },
+   {
+    "name": "can_deliver_a_record",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: a record the sender sealed is written by the receiver.",
+    "assumes": "none",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
+     "Sources/NimbusTransferCore/Receiver.swift: receive"
+    ],
+    "tests": [
+     "DropTests"
+    ]
+   },
+   {
+    "name": "can_resume",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: a resume is asked for, accepted and confirmed.",
+    "assumes": "none",
+    "code": [
+     "Sources/NimbusTransferCore/Sender.swift: reconnect",
+     "Sources/NimbusTransferCore/Receiver.swift: resume"
+    ],
+    "tests": [
+     "ChaosTests"
+    ]
+   },
+   {
+    "name": "an_ephemeral_secret_is_never_known",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Helper: a Mac's ephemeral secret is never derivable by the attacker.",
+    "assumes": "ideal AEAD, DH, hash and HKDF (symbolic model)",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "CryptoTests"
+    ]
+   },
+   {
+    "name": "a_static_secret_is_known_only_by_being_given_away",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Helper: a static secret is known to the attacker only after an explicit compromise of that key.",
+    "assumes": "ideal AEAD, DH, hash and HKDF (symbolic model)",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "CryptoTests"
+    ]
+   },
+   {
+    "name": "a_probe_is_answered_by_the_key_it_reports",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "A probe's answer was made, for this probe's own ephemeral, by a Mac that holds the key it reports.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished",
+    "code": [
+     "Sources/NimbusSecurityCore/Channel.swift: probe",
+     "Sources/NimbusDiscovery/Discovery.swift: Probe"
+    ],
+    "tests": [
+     "ProtocolTests"
+    ]
+   },
+   {
+    "name": "master_is_secret_for_the_initiator",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Session-key secrecy, forward secrecy and no key-compromise impersonation, as the initiator sees it: master is never known to the attacker.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished; this Mac's own key may be known; either key may be given away afterwards",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys"
+    ],
+    "tests": [
+     "CryptoTests",
+     "VectorTests"
+    ]
+   },
+   {
+    "name": "master_is_secret_for_the_responder",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The same as the responder sees it.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished; this Mac's own key may be known; either key may be given away afterwards",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys"
+    ],
+    "tests": [
+     "CryptoTests",
+     "VectorTests"
+    ]
+   },
+   {
+    "name": "transport_keys_are_secret_for_the_initiator",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Both transport keys of the control channel are never known to the attacker, as the initiator sees it.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "CryptoTests"
+    ]
+   },
+   {
+    "name": "transport_keys_are_secret_for_the_responder",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The same as the responder sees it.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "CryptoTests"
+    ]
+   },
+   {
+    "name": "the_responder_agrees_with_the_initiator",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Mutual authentication with injective agreement: when the responder finishes, exactly one initiator with the key it names finished the same handshake (same keys, hash, transport keys and master); a finished handshake cannot be replayed into a second.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "ProtocolTests",
+     "CryptoTests"
+    ]
+   },
+   {
+    "name": "the_initiator_agrees_with_the_responder",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "When the initiator finishes, the responder it names answered this very handshake.",
+    "assumes": "a peer key that some Mac made (Static) and that was not given away before the handshake finished",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "ProtocolTests",
+     "CryptoTests"
+    ]
+   },
+   {
+    "name": "the_handshake_hash_binds_both_static_keys",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Two Macs that hold the same handshake hash each hold the other's real static key and the same master. No condition on who knows what. (NimbusPairing.spthy assumes exactly this of the hash the codes are made from.)",
+    "assumes": "none beyond ideal AEAD, DH, hash and HKDF (symbolic model)",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
+     "Sources/NimbusCrypto/Version.swift: Noise.prologue"
+    ],
+    "tests": [
+     "PairingTests",
+     "VectorTests"
+    ]
+   },
+   {
+    "name": "the_responders_master_is_one_handshake",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Isolation between sessions: any initiator holding the responder's master is the one it finished with.",
+    "assumes": "the initiator's key made by a Mac and never given away",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys"
+    ],
+    "tests": [
+     "ProtocolTests"
+    ]
+   },
+   {
+    "name": "the_initiators_master_is_one_handshake",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The same from the initiator's end.",
+    "assumes": "the responder's key made by a Mac and never given away",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys"
+    ],
+    "tests": [
+     "ProtocolTests"
+    ]
+   },
+   {
+    "name": "only_the_sender_attaches_a_data_connection",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Proof of possession at attach: a data connection is taken only from the Mac that holds the drop's keys, for that connection number and the challenge this receiver made.",
+    "assumes": "both static keys made by Macs and neither ever given away",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
+     "Sources/NimbusTransferCore/Sender.swift: attach",
+     "Sources/NimbusTransferCore/Receiver.swift: claim"
+    ],
+    "tests": [
+     "ProtocolTests",
+     "ReviewTests"
+    ]
+   },
+   {
+    "name": "what_is_written_is_what_the_sender_sealed",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Integrity of what reaches the disk, as far as the cryptography goes: what is written is what the sender sealed, under that header, on that connection, at that count.",
+    "assumes": "both static keys made by Macs and neither ever given away",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
+     "Sources/NimbusCrypto/DropKeys.swift: RecordHeader",
+     "Sources/NimbusTransferCore/Receiver.swift: receive"
+    ],
+    "tests": [
+     "ReviewTests",
+     "ChaosTests"
+    ]
+   },
+   {
+    "name": "a_chunk_is_secret",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Confidentiality of file contents: a chunk is never known to the attacker.",
+    "assumes": "both static keys made by Macs and neither ever given away",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys"
+    ],
+    "tests": [
+     "DropTests"
+    ]
+   },
+   {
+    "name": "only_the_sender_resumes_a_drop",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Authorisation of a reconnect: a drop is picked up again only by the Mac that holds its keys, on the handshake the proof was made for.",
+    "assumes": "both static keys made by Macs and neither ever given away",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
+     "Sources/NimbusTransferCore/Receiver.swift: resume",
+     "Sources/NimbusTransferCore/Listener.swift: serve"
+    ],
+    "tests": [
+     "ProtocolTests",
+     "ReviewTests"
+    ]
+   },
+   {
+    "name": "only_the_receiver_confirms_a_resume",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The sender takes `resumed` only from the receiver of that drop.",
+    "assumes": "both static keys made by Macs and neither ever given away",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
+     "Sources/NimbusTransferCore/Sender.swift: reconnect"
+    ],
+    "tests": [
+     "ProtocolTests"
+    ]
+   }
+  ]
+ },
+ "NimbusPairing.spthy": {
+  "lemmas": [
+   {
+    "name": "two_people_can_pair",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: two people who read and type the codes pair their two Macs.",
+    "assumes": "none",
+    "code": [
+     "Sources/NimbusCrypto/PairingMachine.swift",
+     "Sources/NimbusCrypto/PairCodes.swift"
+    ],
+    "tests": [
+     "PairingTests",
+     "PairingMachineTests"
+    ]
+   },
+   {
+    "name": "a_stored_pairing_is_with_the_mac_the_person_meant",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Pairing binds identity: whatever a Mac stores as the Mac its person was pairing with is that Mac's own key, in either role, in any number of pairings at once, with someone in the middle of every connection who hears the codes and can steer a short code whenever they hold its last input.",
+    "assumes": "the people read the codes truthfully over a channel the attacker hears but cannot alter; the handshake hash binds both static keys (proved in NimbusHandshake.spthy); a short code agrees by luck with probability outside a symbolic model (formal/computational/pairing-bound.md)",
+    "code": [
+     "Sources/NimbusCrypto/PairingMachine.swift",
+     "Sources/NimbusCrypto/PairCodes.swift",
+     "Sources/NimbusSecurityCore/Pairing.swift: PairingSession"
+    ],
+    "tests": [
+     "PairingTests",
+     "PairingMachineTests"
+    ]
+   }
+  ]
+ }
+}

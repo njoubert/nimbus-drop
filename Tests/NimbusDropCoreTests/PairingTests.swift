@@ -467,4 +467,45 @@ final class PairingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(different, 149, "another session, another code (but for one chance in a million)")
         XCTAssertNotEqual(PairCodes.commitment(h: h, ns: ns), PairCodes.commitment(h: Crypto.random(32), ns: ns), "a commitment is to one session")
     }
+
+    /// What the pairing machine's "store" causes to be stored (the last part of the contract in
+    /// `formal/tla/PairingMachine.tla`): the key that THIS connection's handshake proved, under
+    /// the name that connection's hello gave, by the method that was used. Not the Mac the tile
+    /// was for: the person at A starts from the tile called "b", and what answers there is C.
+    /// By identity number, the number that is right is the proved key's; B's is a wrong entry.
+    func testWhatIsStoredIsTheKeyThisConnectionProved() throws {
+        for byNumber in [false, true] {
+            let a = try TestMac("a"), b = try TestMac("b"), c = try TestMac("c")
+            c.onRequest = { $0.proceed() }
+            let mine = a.pair(with: b, port: c.port, byNumber: byNumber)
+            XCTAssertTrue(until { !c.requests.withLock { $0 }.isEmpty })
+            let theirs = try XCTUnwrap(c.requests.withLock { $0.last })
+            let shownAtA = try XCTUnwrap(mine.code(), "\(mine.state)"), shownAtC = try XCTUnwrap(theirs.code(), "\(theirs.state)")
+            XCTAssertEqual(mine.peerName, "b", "the tile's name is all the session was given")
+            XCTAssertEqual(mine.peerKey, c.key, "and the key is the one the connection proved")
+            if byNumber {
+                mine.submit(b.key.identityNumber)
+                guard case .codes(_, 2) = mine.state else { return XCTFail("the number of the Mac the tile was for was taken: \(mine.state)") }
+                mine.submit(c.key.identityNumber)
+                theirs.submit(a.key.identityNumber)
+            } else {
+                mine.submit(shownAtC)
+                theirs.submit(shownAtA)
+            }
+            XCTAssertTrue(until { mine.state.isFinal && theirs.state.isFinal })
+            guard case .paired(let stored) = mine.state, case .paired(let asked) = theirs.state else { return XCTFail("\(mine.state) / \(theirs.state)") }
+            let method = byNumber ? "identity number" : "codes"
+            XCTAssertEqual(stored.key, c.key)
+            XCTAssertEqual(stored.name, "c", "the name the proved connection gave, not the tile's")
+            XCTAssertEqual(stored.announced, ["c"])
+            XCTAssertEqual(stored.method, method)
+            XCTAssertEqual(a.trust.known.map(\.key), [c.key], "one Mac is stored, and it is that one")
+            XCTAssertEqual(a.trust.standing(of: b.key), .unknown, "nothing is stored for the Mac the tile was for")
+            XCTAssertEqual(asked.key, a.key)
+            XCTAssertEqual(asked.name, "a")
+            XCTAssertEqual(asked.method, method)
+            XCTAssertEqual(c.trust.known.map(\.key), [a.key])
+            XCTAssertTrue(b.trust.known.isEmpty)
+        }
+    }
 }

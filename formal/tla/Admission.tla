@@ -75,12 +75,14 @@
 (* limits, limits that change, times that are not whole ticks) is held to  *)
 (* the rule said a second time: testRandomWalksAtOtherLimitsKeepToTheRule. *)
 (*                                                                         *)
-(* Time, then, is whole ticks here, and a window of one tick has all three *)
-(* cases the code's one comparison has: an arrival younger than the        *)
-(* window, exactly as old (it still counts), and older. Nothing else in    *)
-(* the machine has a time in it: the deadlines (ten seconds to prove a     *)
-(* key, five to attach) are the listener's, and reach the machine as       *)
-(* "closed".                                                               *)
+(* Time, then, is whole ticks here, and a window of one tick has every     *)
+(* case the code's comparisons have: an arrival younger than the window,   *)
+(* exactly as old (it still counts), older, and from later than now (a gap *)
+(* below nothing: forgotten). Gaps run from one tick more than the window  *)
+(* to as far back; any longer either way does the same as those. Nothing   *)
+(* else in the machine has a time in it: the deadlines (ten seconds to     *)
+(* prove a key, five to attach) are the listener's, and reach the machine  *)
+(* as "closed".                                                            *)
 (*                                                                         *)
 (* What stays outside: the sockets (the listener closes what an answer     *)
 (* says to close), the threads and the lock (the listener calls Step with  *)
@@ -131,8 +133,10 @@ Place(pool, a, limit, perAddress) ==
     LET out == GivesWay(pool, a, limit, perAddress)
     IN << Append(IF out = 0 THEN pool ELSE Remove(pool, out), a), out >>
 
-\* The arrivals that still count when the clock has moved by gap.
-StillCounts(x) == x.age <= Window
+\* The arrivals that still count when the clock has moved by gap: for one window after each,
+\* and not at all once the clock says a time before it (a gap may be less than nothing: the
+\* clock is the listener's, and a clock can be set back).
+StillCounts(x) == x.age >= 0 /\ x.age <= Window
 Recent(arrivals, gap) ==
     SelectSeq([i \in 1..Len(arrivals) |-> [arrivals[i] EXCEPT !.age = @ + gap]], StillCounts)
 

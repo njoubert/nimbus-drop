@@ -85,7 +85,9 @@ package struct Admission: Sendable {
 
     package enum Event: Sendable {
         /// A connection has been accepted. `local`: its address is on the local network (or
-        /// Settings say any network will do). `now`: the time, in the unit of `Limits.window`.
+        /// Settings say any network will do). `now`: the time, in the unit of `Limits.window`,
+        /// on a clock that does not go back: the rate is so many in a window of THAT clock, and
+        /// one that is held still or set back a little at a time forgets nothing.
         case arrive(from: String, local: Bool, now: Double)
         /// It opened as a data connection. `drops`: how many drops (and speed tests) are in
         /// progress that one could belong to.
@@ -186,7 +188,11 @@ package struct Admission: Sendable {
         case .arrive(let from, let local, let now):
             guard local else { return .close(.elsewhere) }
             asOf = now
-            arrivals.removeAll { now - $0.at > limits.window }
+            // An arrival counts for one window after it. And one from later than now is
+            // forgotten: the time is the listener's to give, and if its clock was ever set back,
+            // an arrival of before would otherwise go on counting until the clock came round to
+            // it again, with everyone turned away for as long if the rate was full.
+            arrivals.removeAll { now - $0.at > limits.window || $0.at > now }
             // The rate cannot be met by anyone giving way: over it, the newcomer is closed.
             guard arrivals.count < limits.arrivals,
                   arrivals.filter({ $0.address == from }).count < limits.arrivalsPerAddress else { return .close(.rate) }

@@ -193,6 +193,7 @@ def admission_mutant(what, invariant, old, new, constants=None):
 RATED = "IN IF Len(recent) >= Arrivals \\/ From(recent, e[2]) >= ArrivalsPerAddress"
 FULL = "ELSE IF Len(pool) > 0 /\\ Len(pool) >= limit THEN 1"
 OWN = "THEN CHOOSE i \\in 1..Len(pool): pool[i] = a /\\ \\A j \\in 1..(i - 1): pool[j] # a"
+STILL = "StillCounts(x) == x.age >= 0 /\\ x.age <= Window"
 
 ADMISSION_RUNS = [
     # The Swift machine is the specification's machine, at the two sets of limits it was walked at.
@@ -204,7 +205,7 @@ ADMISSION_RUNS = [
      "AdmissionRefinement", {"Walk": '"Pools"'}, ["SpecIsImpl"], [], "ImplIsSpec", ("Admission.tla", OWN, "THEN 1")),
     ("AdmissionRefinement / mutant: the specification differs from the code (an arrival counts for a tick longer)",
      "AdmissionRefinement", {"Walk": '"Rate"'}, ["SpecIsImpl"], [], "ImplIsSpec",
-     ("Admission.tla", "StillCounts(x) == x.age <= Window", "StillCounts(x) == x.age <= Window + 1")),
+     ("Admission.tla", STILL, STILL + " + 1")),
 
     # The listener, the machine, one honest paired Mac and everyone else.
     ("AdmissionSystem (the pools)", "AdmissionSystem", admission(), ADMISSION_INV, [], HOLDS, None),
@@ -225,8 +226,16 @@ ADMISSION_RUNS = [
      "AdmissionSystem", admission_rate(Addresses='{"h", "x", "y"}'), ["NotKeptOutByOthers"], [], "NotKeptOutByOthers", None),
     ("AdmissionSystem / known limit: keys nobody paired, holding on, keep the next one out (there the newcomer is the one refused)",
      "AdmissionSystem", admission(), ["AKeyNobodyPairedIsNeverTurnedAway"], [], "AKeyNobodyPairedIsNeverTurnedAway", None),
+    # Found on the way, 2026-11-24: the listener timed arrivals by the calendar. On a clock that can be set
+    # back, a Mac within the rate is turned away, for as long as the clock was set back by; held still, for
+    # good. No rule inside the machine prevents that, so this run fails now as it did then: what was put
+    # right is the clock the listener reads, which cannot be set (ReviewTests, mutate.py). What the machine
+    # itself promises of any clock is the run after it.
     ("AdmissionSystem / known limit: on a clock that can be set back a Mac within the rate is turned away (the calendar, which the listener read)",
      "AdmissionSystem", admission_rate(SetBack="1"), ["ANewcomerWithinTheRateGetsAPlace"], [], "ANewcomerWithinTheRateGetsAPlace", None),
+    ("AdmissionSystem (the rate, on a clock that is set back: nothing is counted from later than now, and nothing is lost count of)",
+     "AdmissionSystem", admission_rate(SetBack="2", Arrivals="2", ArrivalsPerAddress="1"),
+     ["TypeOK", "PoolsWithinLimits", "EveryPlaceIsHeldByItsConnection", "NothingIsCountedFromLaterThanNow", "AnAddressDecidesOnlyWhoWaits"], [], HOLDS, None),
     # Found by this model, 2026-11-24: the pool of data connections has so many places for each drop in
     # progress, and when a drop ended nobody gave any up.
     ("AdmissionSystem / found: the pool of data connections is over its limit when a drop ends", "AdmissionSystem",
@@ -261,10 +270,11 @@ ADMISSION_RUNS = [
                      "IN IF Len(recent) >= ArrivalsPerAddress", admission_rate()),
     admission_mutant("one address's arrivals count against every address, and a Mac that has not arrived in the window is kept out", "NotKeptOutByOthers",
                      RATED, "IN IF Len(recent) >= ArrivalsPerAddress", admission_rate()),
-    admission_mutant("an arrival counts for a tick longer", "ANewcomerWithinTheRateGetsAPlace", "StillCounts(x) == x.age <= Window",
-                     "StillCounts(x) == x.age <= Window + 1", admission_rate()),
-    admission_mutant("an arrival is forgotten a tick early", "TheRateHolds", "StillCounts(x) == x.age <= Window", "StillCounts(x) == x.age < Window",
+    admission_mutant("an arrival counts for a tick longer", "ANewcomerWithinTheRateGetsAPlace", STILL, STILL + " + 1",
                      admission_rate()),
+    admission_mutant("an arrival is forgotten a tick early", "TheRateHolds", STILL, STILL.replace("<=", "<"), admission_rate()),
+    admission_mutant("an arrival from later than now goes on counting (set back an hour, the clock kept everyone out for the hour)",
+                     "NothingIsCountedFromLaterThanNow", STILL, "StillCounts(x) == x.age <= Window", admission_rate(SetBack="2")),
     admission_mutant("a connection from elsewhere is given a place", "ElsewhereCountsForNothing", 'IF e[3] # "local" THEN Close(s, "elsewhere")',
                      'IF FALSE THEN Close(s, "elsewhere")'),
     admission_mutant("a data connection gets a place with no drop in progress", "NoDropNoPlace", 'IN IF e[3] = 0 THEN Close(t, "noDrop")',

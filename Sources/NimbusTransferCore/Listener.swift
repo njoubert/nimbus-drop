@@ -131,6 +131,14 @@ public final class DropListener: @unchecked Sendable {
                          unpaired: Tuning.unpaired, pairedWaiting: Tuning.pairedWaiting)
     }
 
+    /// The time `admission` is given with each arrival: seconds on the clock that cannot be set
+    /// (it counts from boot, through sleep), as for the lifetimes of keys. It was the calendar
+    /// until 2026-11-24. Whoever sets that back (a time server, a person) kept the arrivals of
+    /// the moment counted until the calendar came round to them again, and held still it never
+    /// forgot one: with the rate full, every connection was turned away for as long
+    /// (formal/tla/AdmissionSystem.tla, the run on a clock that can be set back).
+    static func elapsed() -> Double { SystemClock().continuous }
+
     /// With the lock held. Tells `admission` what has happened to a connection; returns what it
     /// says to do, and the connection that is to give way (for the caller to close, once the
     /// lock is let go). Nothing else in this class decides who has a place.
@@ -150,7 +158,7 @@ public final class DropListener: @unchecked Sendable {
         let from = socket.peerAddress
         let local = allows.map { $0(from) } ?? (!localOnly || LocalNetwork.isLocal(from, among: LocalNetwork.current()))
         let (answer, displaced) = lock.withLock { () -> (Admission.Answer, Socket?) in
-            let said = ask(.arrive(from: from, local: local, now: Date().timeIntervalSinceReferenceDate))
+            let said = ask(.arrive(from: from, local: local, now: Self.elapsed()))
             if case .admitted(let ticket, _) = said.answer { connections[ticket] = socket }
             return said
         }

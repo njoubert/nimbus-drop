@@ -48,4 +48,18 @@ extension ReviewTests {
         second.channel.socket.shutdown()
         waiting.cancel()
     }
+
+    /// Found on the way to the model of admission (2026-11-24). The rate is so many arrivals in
+    /// a second, and the listener read the second off the calendar: set back, the calendar left
+    /// the arrivals of the moment counted until it came round to them again, and with the rate
+    /// full nobody was let in for as long. A test cannot set this Mac's calendar, so this holds
+    /// the listener to WHICH clock it reads: the one that counts from boot and cannot be set,
+    /// as the lifetimes of keys are counted. (What a clock that goes back does to the machine
+    /// is `AdmissionTests.testAnArrivalFromLaterThanNowIsForgotten`.)
+    func testArrivalsAreTimedOnTheClockThatCannotBeSet() {
+        let read = DropListener.elapsed()
+        XCTAssertEqual(read, SystemClock().continuous, accuracy: 5)
+        XCTAssertGreaterThan(abs(read - Date().timeIntervalSinceReferenceDate), 86400, "that is the calendar")
+        XCTAssertGreaterThan(abs(read - Date().timeIntervalSince1970), 86400, "and so is that")
+    }
 }

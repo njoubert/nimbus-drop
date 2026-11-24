@@ -64,7 +64,9 @@ final class AdmissionTests: XCTestCase {
         let limits: Limits
         let addresses: [String]
         let keys: [String]
-        /// How far the clock has moved since the last arrival from the local network, for the next.
+        /// How far the clock has moved since the last arrival from the local network, for the
+        /// next: from one tick more than the window (everything is forgotten) to as far BACK
+        /// (everything counted is from later than now, and is forgotten too).
         let gaps: [Int]
         /// How many drops may be in progress when a connection says it is a data connection.
         let drops: [Int]
@@ -79,20 +81,20 @@ final class AdmissionTests: XCTestCase {
     /// `Pools`: three places for strangers and two an address, so that the oldest of an address
     /// is neither the oldest of the pool nor the newest; the pool of data connections with one
     /// place for each drop in progress, and none, one or two drops; two keys. The rate is one
-    /// arrival in a window of no length: two at the same instant, or not.
+    /// arrival in a window of no length: two at the same instant, or not, or a clock set back.
     ///
     /// `Rate`: three arrivals in a window from all and two from one address, a window of one
     /// tick, and a clock that moves by nothing, by one tick (some arrivals are forgotten and
-    /// some are not) or by two (all are). One place of each kind.
+    /// some are not) or by two (all are), forward or back. One place of each kind.
     static let walks = [
         Walk(name: "Pools",
              limits: Limits(strangers: 3, strangersPerAddress: 2, arrivals: 1, arrivalsPerAddress: 1, window: 0,
                             unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1),
-             addresses: ["a", "b"], keys: ["k1", "k2"], gaps: [0, 1], drops: [0, 1, 2]),
+             addresses: ["a", "b"], keys: ["k1", "k2"], gaps: [-1, 0, 1], drops: [0, 1, 2]),
         Walk(name: "Rate",
              limits: Limits(strangers: 1, strangersPerAddress: 1, arrivals: 3, arrivalsPerAddress: 2, window: 1,
                             unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1),
-             addresses: ["a", "b"], keys: ["k1"], gaps: [0, 1, 2], drops: [0]),
+             addresses: ["a", "b"], keys: ["k1"], gaps: [-2, -1, 0, 1, 2], drops: [0]),
     ]
 
     /// What the specification is not told: which strings its addresses are, which keys its
@@ -212,9 +214,10 @@ final class AdmissionTests: XCTestCase {
             guard let name = n.addresses[from] else { return nil }
             guard local else { return .arrive(name, local: false, gap: 0) }
             let ticks = (now - (m.asOf ?? n.origin)) / n.tick
-            guard ticks == ticks.rounded(), ticks >= Double(walk.gaps.min()!) else { return nil }
-            // Longer than the window forgets everything, however much longer.
-            return .arrive(name, local: true, gap: Int(min(ticks, Double(walk.gaps.max()!))))
+            guard ticks == ticks.rounded(), walk.gaps.min() == -walk.window - 1, walk.gaps.max() == walk.window + 1 else { return nil }
+            // More than a window on forgets everything, however much more; and so does more
+            // than a window back.
+            return .arrive(name, local: true, gap: Int(max(Double(-walk.window - 1), min(ticks, Double(walk.window + 1)))))
         case .data(let id, let drops):
             return walk.drops.contains(drops) ? .data(who(id, in: m, n), drops: drops) : nil
         case .proved(let id, let what):
@@ -376,6 +379,7 @@ final class AdmissionTests: XCTestCase {
         \\* listener first; every event; every answer; and for each state, in the same order,
         \\* what each event did there, as << event, state after, answer >>: each the place of
         \\* one in the lists above.
+        EXTENDS Integers
 
 
         """
@@ -478,7 +482,7 @@ final class AdmissionTests: XCTestCase {
                     // Mostly arrivals and what a stranger does next, so that the pools fill.
                     switch Int.random(in: 0..<16, using: &rng) {
                     case 0..<6:
-                        let ticks = [0, 0, 0, 1, 1, 2, 3, 17, 100_000].randomElement(using: &rng)!
+                        let ticks = [0, 0, 0, 1, 1, 2, 3, 17, 100_000, -1, -1, -2, -3, -40_000].randomElement(using: &rng)!
                         event = .arrive(from: addresses.randomElement(using: &rng)!, local: Int.random(in: 0..<8, using: &rng) > 0,
                                         now: (d.m.asOf ?? d.naming.origin) + Double(ticks) * d.naming.tick)
                     case 6, 7: event = .data(stranger(&rng), drops: walk.drops.randomElement(using: &rng)!)
@@ -550,7 +554,8 @@ final class AdmissionTests: XCTestCase {
             switch event {
             case .arrive(let from, let local, let now):
                 guard local else { return .close(.elsewhere) }
-                taken.removeAll { now - $0.at > l.window }
+                // It counts for one window after it, and not at all from before it.
+                taken = taken.filter { $0.at <= now && now - $0.at <= l.window }
                 if taken.count >= l.arrivals || taken.filter({ $0.address == from }).count >= l.arrivalsPerAddress { return .close(.rate) }
                 taken.append(Admission.Arrival(at: now, address: from))
                 let out = givesWay(.stranger, for: from, limit: l.strangers, perAddress: l.strangersPerAddress)
@@ -645,7 +650,8 @@ final class AdmissionTests: XCTestCase {
                 switch Int.random(in: 0..<16, using: &rng) {
                 case 0..<6:
                     let w = m.limits.window
-                    now += [0, 0, 0.001, w / 2, w, w, w + 0.001, 3 * w + 1, Double.random(in: 0...2, using: &rng)].randomElement(using: &rng)!
+                    now += [0, 0, 0.001, w / 2, w, w, w + 0.001, 3 * w + 1, Double.random(in: 0...2, using: &rng),
+                            -0.001, -w / 2, -w, -3 * w - 1].randomElement(using: &rng)!
                     event = .arrive(from: addresses.randomElement(using: &rng)!, local: Int.random(in: 0..<8, using: &rng) > 0, now: now)
                 case 6, 7: event = .data(stranger(&rng), drops: Int.random(in: 0...3, using: &rng))
                 case 8: event = .proved(stranger(&rng), .unpaired)
@@ -788,6 +794,35 @@ final class AdmissionTests: XCTestCase {
         XCTAssertEqual(arrive("e", 11.125), .close(.rate))
         XCTAssertEqual(arrive("a", 11.5), .nothing, "its first two are both more than a window ago")
         XCTAssertEqual(m.arrivals.count, 4)
+    }
+
+    /// Found by the model (AdmissionSystem.tla, on a clock that can be set back), 2026-11-24.
+    /// The listener timed arrivals by the calendar. Set back an hour, the calendar leaves every
+    /// arrival of the last second an hour ahead of now: none more than a second old, so all
+    /// still counted, for the hour. With the rate full (three addresses can fill it) every
+    /// connection from every Mac was turned away until the calendar came round again. The
+    /// listener now reads a clock that cannot be set; and the machine, whatever clock it is
+    /// given, forgets an arrival that is from later than now.
+    func testAnArrivalFromLaterThanNowIsForgotten() {
+        var m = Admission(limits: Limits(strangers: 10, strangersPerAddress: 10, arrivals: 3, arrivalsPerAddress: 2, window: 1,
+                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1))
+        func arrives(_ from: String, _ now: Double) -> Bool {
+            if case .admitted = m.step(.arrive(from: from, local: true, now: now)) { return true }
+            return false
+        }
+        XCTAssertTrue(arrives("a", 5000))
+        XCTAssertTrue(arrives("a", 5000.5))
+        XCTAssertTrue(arrives("b", 5000.5))
+        XCTAssertFalse(arrives("c", 5000.75), "the rate is full")
+        // The clock is set back an hour, and half a minute goes by.
+        XCTAssertTrue(arrives("c", 1430), "a Mac was turned away for arrivals that are an hour in the future")
+        XCTAssertTrue(arrives("a", 1430.5), "and one address for its own")
+        XCTAssertEqual(m.arrivals.map(\.at), [1430, 1430.5])
+        // Set back by less than a window: what is still from before now goes on counting.
+        XCTAssertTrue(arrives("b", 1430.25))
+        XCTAssertEqual(m.arrivals.map(\.at), [1430, 1430.25], "the arrival at 1430.5 is from later than now")
+        XCTAssertTrue(arrives("b", 1430.25))
+        XCTAssertFalse(arrives("c", 1431), "three in the window that ends now")
     }
 
     /// A connection from outside the local network gets no place, pushes nobody out and is not

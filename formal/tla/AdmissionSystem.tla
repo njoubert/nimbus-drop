@@ -30,7 +30,12 @@
 (* network. The machine is given the gap its clock shows, which is the     *)
 (* true one unless the clock was set back in between (at most SetBack      *)
 (* ticks in all). The listener's clock cannot be set (it counts from       *)
-(* boot); until 2026-11-24 it read the calendar, which can.                *)
+(* boot); until 2026-11-24 it read the calendar, which can. Making the     *)
+(* time an argument of the machine is what showed that, and this model is  *)
+(* what it costs: with SetBack above nothing a Mac within the rate is      *)
+(* turned away, and no rule inside the machine can prevent it (a clock     *)
+(* held still forgets nothing). What the machine does promise of any clock *)
+(* is NothingIsCountedFromLaterThanNow.                                    *)
 (*                                                                         *)
 (* Outside this model: the sockets and the threads (each fact is one step  *)
 (* here because the listener's lock makes it one), the ten seconds a       *)
@@ -279,6 +284,12 @@ UnattachedWithinItsLimit == Len(m.unattached) <= UnattachedPerDrop * drops
 
 \* By the true time: no more arrivals taken within a window than the rate, in all and from one address.
 TheRateHolds == Len(log) <= Arrivals /\ \A a \in Addresses: Taken(log, a) <= ArrivalsPerAddress
+
+\* Whatever the clock does, the machine counts no arrival from later than the time it was last
+\* given. (Set back an hour, a clock used to leave the arrivals of the last second counted for
+\* the hour. What a clock that can be set back still costs is in formal/check.py: the listener's
+\* cannot be.)
+NothingIsCountedFromLaterThanNow == \A i \in 1..Len(m.arrivals): m.arrivals[i].age >= 0
 
 \* What the machine counts is what is there. Its two pools are exactly the connections that
 \* have proved nothing, place for place; its counts are the connections that proved a key and

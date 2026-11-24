@@ -94,8 +94,13 @@ first, and what each is worth:
 
 1. **D-4, a resume after a power cut.** The cheap fix (believe a ledger only within the boot it
    was written in; a resume across a reboot starts over) changes what a resume does, so it was
-   not made. The thorough fix is a hash of each file in the manifest, which changes the wire
-   and costs speed.
+   not made. A middle one keeps a CRC-32 of each chunk beside its ledger record and reads the
+   chunks back before a resume believes them: nothing on the wire, and next to nothing on the
+   data path (zlib's CRC-32 runs at 41 GB/s on one core of the MacBook Pro), at the cost of
+   reading the partial data once on resume. The thorough one is a hash of each file in the
+   manifest, which changes the wire and costs speed: SHA-256 runs at 3.0 GB/s (24 Gbit/s) on
+   one core here, against about 8 GB/s for the AES-GCM the data path already pays, so one
+   connection on a fast link would be held to the hash.
 2. **T-3, "for good".** Leave the 2000, raise it, or never evict a tombstone made by a retire
    or a replacement (`trust-lifetime.md`).
 3. **T-4, the hourly write.** Writing the count more often (every five minutes) shrinks what

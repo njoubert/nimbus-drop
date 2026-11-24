@@ -18,19 +18,45 @@ import NimbusBase
 /// directory; and whatever is found already in place (a resumed drop, or a name the disk
 /// considers taken) must be exactly the kind of thing the manifest says, or the drop ends.
 package final class SafeTree {
+    /// The folder the root is in: a drop's partial folder. Held from the start, like the root,
+    /// so that what is done later is done to these two folders and not to whatever has been
+    /// given their names since.
+    private let holder: Int32
     private let root: Int32
     /// The directory the last operation was in: entries arrive folder by folder.
     private var cachedPath: String?
     private var cachedFD: Int32 = -1
 
+    /// Opens the tree at `url`, making it and the folder that holds it if they are not there.
+    /// Neither is reached through a symlink. Refusing one at the root alone was not enough: a
+    /// partial folder that was itself a link to somewhere else had the whole drop built
+    /// there (`…/items` under it is a real folder, wherever it is). What leads to the folder
+    /// that holds the root is the destination the person chose, and is taken as given.
     package init(root url: URL) throws {
-        root = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
-        guard root >= 0 else { throw errnoError("Cannot open \(url.path)") }
+        let folder = url.deletingLastPathComponent().path, name = url.lastPathComponent
+        // (`mkdir` makes nothing where a link has the name, and `open` is told not to follow one.)
+        mkdir(folder, 0o777)
+        let holder = open(folder, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard holder >= 0 else {
+            throw errno == ELOOP || errno == ENOTDIR
+                ? DropError("\(Sanitize.label(url.deletingLastPathComponent().lastPathComponent, limit: 160)) is in the way and is not a folder; the drop was refused")
+                : errnoError("Cannot write to \(folder)")
+        }
+        mkdirat(holder, name, 0o777)
+        let root = openat(holder, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard root >= 0 else {
+            let error = errnoError("Cannot open \(url.path)")
+            close(holder)
+            throw error
+        }
+        self.holder = holder
+        self.root = root
     }
 
     deinit {
         if cachedFD >= 0 { close(cachedFD) }
         close(root)
+        close(holder)
     }
 
     private static func split(_ path: String) -> (parent: String, name: String) {

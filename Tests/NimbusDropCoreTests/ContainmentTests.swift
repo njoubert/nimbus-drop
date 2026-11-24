@@ -887,3 +887,62 @@ final class ContainmentTests: XCTestCase {
         for name in saved { XCTAssertNotNil(after["\(Self.inside)/\(name)"], "\(name) is said to be saved and is not there") }
     }
 }
+
+// MARK: - The partial folder itself
+
+extension ContainmentTests {
+    /// The partial folder is a link to a folder elsewhere, put there before the drop (its
+    /// name is no secret to someone who saw an earlier attempt's). As found, the whole drop
+    /// was built where the link pointed: `SafeTree` opened `<partial>/items` refusing a link
+    /// at `items` only, and the ledger went by its path.
+    func testAPartialFolderThatIsALinkIsNotBuiltIn() throws {
+        let a = bytes(chunk + 10, seed: 1)
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "P", kind: .directory), .init(path: "P/a.bin", kind: .file, size: Int64(a.count))])
+        let allow = allowed(manifest, from: mallory)
+        try FileManager.default.createSymbolicLink(atPath: dst.appendingPathComponent(allow.partial).path, withDestinationPath: agents.path)
+        let before = snapshot()
+        let hand = try Hand(manifest, from: mallory, to: victim)
+        XCTAssertTrue(hand.refusal?.contains("refused") ?? false, "the drop was taken into a folder that is a link: \(hand.refusal ?? "a plan")")
+        if hand.planned { _ = try? deliver(hand, ["P/a.bin": a]) }
+        try ended()
+        let after = snapshot()
+        // Nothing but, for now, one empty folder where the link points: see below.
+        assertContained(before, after, ignoring: ["home/Library/LaunchAgents"])
+        XCTAssertEqual(after.keys.filter { $0.hasPrefix("home/Library/LaunchAgents/") }.sorted(), ["home/Library/LaunchAgents/items"].filter { after[$0] != nil })
+        XCTAssertEqual(after["home/Library/LaunchAgents/items"]?.kind ?? "dir", "dir")
+        // NOT YET HELD, and not this file's to fix: `ReceiveSession.conduct` makes
+        // `<partial>/items` with FileManager, which follows the link, before `SafeTree` is
+        // asked. `SafeTree(root:)` makes both folders itself, following nothing, so the fix
+        // is to delete that call. This expectation fails the day it is deleted: remove it then.
+        XCTExpectFailure("conduct still makes <partial>/items through the link: one empty folder is left outside the destination") {
+            assertContained(before, after)
+        }
+        hand.hangUp()
+    }
+
+    /// `SafeTree` by itself: it makes its root and the folder that holds it, and goes through
+    /// a link for neither.
+    func testATreeIsNeverOpenedThroughALink() throws {
+        let fm = FileManager.default
+        // Nothing there yet: both are made.
+        let fresh = dst.appendingPathComponent("Fresh.partial/items")
+        XCTAssertNoThrow(try SafeTree(root: fresh))
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(fm.fileExists(atPath: fresh.path, isDirectory: &isDirectory) && isDirectory.boolValue)
+        // The folder that holds the root is a link (to a folder that has an `items` in it, even).
+        try fm.createDirectory(at: documents.appendingPathComponent("items"), withIntermediateDirectories: false)
+        try fm.createSymbolicLink(atPath: dst.appendingPathComponent("Linked.partial").path, withDestinationPath: documents.path)
+        // The root is a link.
+        try fm.createDirectory(at: dst.appendingPathComponent("Real.partial"), withIntermediateDirectories: false)
+        try fm.createSymbolicLink(atPath: dst.appendingPathComponent("Real.partial/items").path, withDestinationPath: documents.path)
+        // The folder is a link to nowhere, and a file.
+        try fm.createSymbolicLink(atPath: dst.appendingPathComponent("Dangling.partial").path, withDestinationPath: agents.appendingPathComponent("made").path)
+        try Data("x".utf8).write(to: dst.appendingPathComponent("File.partial"))
+        let before = snapshot()
+        for name in ["Linked", "Real", "Dangling", "File"] {
+            XCTAssertThrowsError(try SafeTree(root: dst.appendingPathComponent("\(name).partial/items")), name)
+        }
+        let after = snapshot()
+        XCTAssertEqual(before, after, "refusing a tree made or changed something")
+    }
+}

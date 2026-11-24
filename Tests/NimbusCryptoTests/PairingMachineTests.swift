@@ -822,7 +822,9 @@ final class PairingMachineTests: XCTestCase {
 
         var summary: String {
             let fewest = fewest
-            return "pairing machine: seeds \(seeds.map { String(format: "0x%llx", $0) }.joined(separator: " ")); \(walks) walks; "
+            let named = seeds.count <= 4 ? "seeds " + seeds.map { String(format: "0x%llx", $0) }.joined(separator: " ")
+                                         : "\(seeds.count) seeds, the clock's from " + String(format: "0x%llx", seeds[2])
+            return "pairing machine: \(named); \(walks) walks; "
                 + "\(representatives.values.reduce(0, +)) representatives of \(representatives.count) states (at least \(representatives.values.min() ?? 0) of each) "
                 + "by \(histories.values.reduce(0) { $0 + $1.count }) different histories; \(steps) steps; "
                 + "each of \(fewest.pairs) (state, event) pairs at least \(fewest.always) times (\(fewest.sometimes) where not every machine can be sent it); "
@@ -838,10 +840,11 @@ final class PairingMachineTests: XCTestCase {
     static let freeWalks = 150
 
     /// Many machines for every state of the specification, and every form of every event at
-    /// each of them. Deterministic from its seeds: two that never change, and the clock (said
-    /// in the summary line, and in any failure, with the whole trace). To walk one again:
-    /// `NIMBUS_PAIRING_SEED=0x… swift test --filter PairingMachineTests`; for more of the same,
-    /// `NIMBUS_PAIRING_ROUNDS=50`.
+    /// each of them. Deterministic from its seeds: two that never change, so that a failure can
+    /// be had again, and one from the clock, so that every run also looks somewhere new. The
+    /// summary line says which; a failure says its seed and its whole walk. To walk one seed
+    /// again: `NIMBUS_PAIRING_SEED=0x… swift test --filter PairingMachineTests`. For a longer
+    /// hunt, as for the trust core's walks: `NIMBUS_WALK_SEEDS=300` (that many from the clock).
     static func explore() -> Outcome {
         var out = Outcome()
         out.relation = relation()
@@ -855,10 +858,11 @@ final class PairingMachineTests: XCTestCase {
         if let given = number(environment["NIMBUS_PAIRING_SEED"]) {
             out.seeds = [given]
         } else {
-            out.seeds = [0x4E69_6D62_7573, 0x0D72_6F70, UInt64(Date().timeIntervalSince1970 * 1_000_000)]
+            let now = UInt64(Date().timeIntervalSince1970 * 1_000_000)
+            let extra = Int(environment["NIMBUS_WALK_SEEDS"] ?? "") ?? 1
+            out.seeds = [0x4E69_6D62_7573, 0x0D72_6F70] + (0..<max(1, extra)).map { now &+ UInt64($0) &* 7919 }
             out.ordinary = true
         }
-        let rounds = Int(number(environment["NIMBUS_PAIRING_ROUNDS"]) ?? 1)
         // Into each state: every way of arriving that changes the state, to walk backwards along.
         var into: [Abstract: [(from: Abstract, label: String)]] = [:]
         for (state, row) in rows {
@@ -1000,10 +1004,8 @@ final class PairingMachineTests: XCTestCase {
                 _ = fan(rep, target: nil)
             }
 
-            for _ in 0..<rounds {
-                for _ in 0..<perState { for target in targets { directed(to: target) } }
-                for _ in 0..<freeWalks { free() }
-            }
+            for _ in 0..<perState { for target in targets { directed(to: target) } }
+            for _ in 0..<freeWalks { free() }
         }
         out.seconds = Date().timeIntervalSince(started)
         print(out.summary)

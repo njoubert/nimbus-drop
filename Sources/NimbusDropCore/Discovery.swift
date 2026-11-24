@@ -371,8 +371,10 @@ public final class PeerBrowser: @unchecked Sendable {
                 }
                 finish(table.peers[id])
             case .failed, .cancelled:
-                // The interface that was preferred did not answer: any will do.
-                if chosen != nil, !finished {
+                // The interface that was preferred did not answer: any will do. Only when this
+                // resolve is still the one wanted: one that was superseded by another, or
+                // cancelled because the browser stopped, starts nothing.
+                if case .failed = state, chosen != nil, !finished, !stopped, resolving[id] === connection {
                     finished = true
                     connection.cancel()
                     resolve(id, anyInterface: true, completion: completion)
@@ -385,10 +387,10 @@ public final class PeerBrowser: @unchecked Sendable {
         }
         connection.start(queue: .main)
         DispatchQueue.main.asyncAfter(deadline: .now() + (chosen != nil ? 2 : 5)) { [weak self] in
-            if chosen != nil, !finished {
+            if chosen != nil, !finished, let self, !self.stopped, self.resolving[id] === connection {
                 finished = true
                 connection.cancel()
-                self?.resolve(id, anyInterface: true, completion: completion)
+                self.resolve(id, anyInterface: true, completion: completion)
                 return
             }
             finish(self?.table.peers[id].map { var p = $0; p.address = nil; p.port = nil; return p })

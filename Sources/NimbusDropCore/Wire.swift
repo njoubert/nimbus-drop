@@ -70,6 +70,9 @@ enum Tuning {
     nonisolated(unsafe) static var arrivalsPerAddress = 200
     /// Of `unattachedPerDrop`, from one address.
     nonisolated(unsafe) static var unattachedPerAddress = 4
+    /// After a speed test from a key is answered (run, or declined): no other from that key
+    /// for this long.
+    nonisolated(unsafe) static var speedPauseSeconds: Double = 10
     /// Connections from one paired key that have not yet said what they came for.
     nonisolated(unsafe) static var pairedWaiting = 8
     /// Offers waiting for the person's answer at once, in all and from one address; more are

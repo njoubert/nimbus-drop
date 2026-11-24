@@ -352,8 +352,11 @@ enum CLI {
                 return 1
             }
             let r = test.result
-            Swift.print("to \(peerName):    \(Format.bitRate(r.upRate))  (\(Format.bytes(r.upBytes)) in \(String(format: "%.1f", r.upSeconds)) s)")
-            Swift.print("from \(peerName):  \(Format.bitRate(r.downRate))  (\(Format.bytes(r.downBytes)) in \(String(format: "%.1f", r.downSeconds)) s)")
+            // By the name this identity has for the key that answered, not the address typed.
+            var shown = peerName
+            if let key = test.peerKey, case .paired(let mac) = trust.standing(of: key) { shown = "\(mac.name) [\(key.tag)]" }
+            Swift.print("to \(shown):    \(Format.bitRate(r.upRate))  (\(Format.bytes(r.upBytes)) in \(String(format: "%.1f", r.upSeconds)) s)")
+            Swift.print("from \(shown):  \(Format.bitRate(r.downRate))  (\(Format.bytes(r.downBytes)) in \(String(format: "%.1f", r.downSeconds)) s)")
             Swift.print("\(Format.connections(r.streams))" + (test.linkInterface.map { ", over \(LinkName.display($0))" } ?? ""))
             return 0
 

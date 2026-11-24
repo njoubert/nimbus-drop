@@ -291,6 +291,11 @@ public class Transfer: @unchecked Sendable, Identifiable {
         if state != .completed { for s in all { s.shutdown() } }
     }
 
+    /// Closes every connection this transfer has, whatever its state. A drop that completed
+    /// leaves its last words to be read; something that has no last words (a speed test) closes
+    /// everything it opened, or its data connections outlive it.
+    func closeAll() { for s in lock.withLock({ sockets }) { s.shutdown() } }
+
     private var _needsPairing = false
     private var _wrongIdentity = false
     /// It failed because the two Macs are not paired (any more): pair, then send again.

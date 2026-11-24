@@ -9,8 +9,8 @@ import XCTest
 final class SpeedTests: XCTestCase {
     typealias RawPeer = ReviewTests.RawPeer
 
-    override func setUp() { Tuning.arrivalsPerAddress = 500 }
-    override func tearDown() { Tuning.arrivalsPerAddress = 200 }
+    override func setUp() { Tuning.arrivalsPerAddress = 500; Tuning.speedPauseSeconds = 0 }
+    override func tearDown() { Tuning.arrivalsPerAddress = 200; Tuning.speedPauseSeconds = 10 }
 
     func pairedMacs() throws -> (TestMac, TestMac) {
         let (a, b) = Trust.paired("tester", "asked")

@@ -53,8 +53,12 @@ public final class DropListener: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
     private var sessions: [Data: DataSession] = [:]
-    /// One speed test at a time on this Mac, whoever asks.
+    /// One speed test (or one question about one) at a time on this Mac, whoever asks. Set by
+    /// the one that is let in and cleared by it alone, when it has ended and not before: an
+    /// earlier version cleared it early as well, and a third test got in beside a second.
     private var speedTesting = false
+    /// When each key last had a speed test answered, allowed or not: a pause before its next.
+    private var speedAsked: [PublicKey: Date] = [:]
     private var holders: [String: ReceiveSession] = [:]
     /// A connection that has proved nothing yet, and where it came from. Each pool is in order
     /// of arrival: when it is full, the first (the one that has waited longest without proving
@@ -396,24 +400,36 @@ public final class DropListener: @unchecked Sendable {
             guard hello.paired, case .paired(let mac) = standing else { socket.shutdown(); return }
             guard let frame = try? channel.read(), frame.type == .speed, let ask = try? decode(SpeedAsk.self, from: frame.body) else { socket.shutdown(); return }
             saidWhatItCameFor()
-            guard lock.withLock({ () -> Bool in
-                guard !speedTesting else { return false }
+            let refusal = lock.withLock { () -> String? in
+                let now = Date()
+                speedAsked = speedAsked.filter { now.timeIntervalSince($0.value) < Tuning.speedPauseSeconds }
+                // A pause for each key after its last: a paired Mac cannot put question after
+                // question on screen, or run test after test, without a gap.
+                if let last = speedAsked[key] {
+                    return "\(identity.name) answered a speed test from this Mac a moment ago; try again in \(Int((Tuning.speedPauseSeconds - now.timeIntervalSince(last)).rounded(.up))) s"
+                }
+                guard !speedTesting else { return "\(identity.name) is in the middle of another speed test" }
                 speedTesting = true
-                return true
-            }) else {
-                try? channel.send(.busy, Reason(message: "\(identity.name) is in the middle of another speed test"))
+                return nil
+            }
+            if let refusal {
+                try? channel.send(.busy, Reason(message: refusal))
                 Thread.sleep(forTimeInterval: 0.2)
                 socket.shutdown()
                 return
             }
-            defer { lock.withLock { speedTesting = false } }
             deadline.cancel()
             socket.setReadTimeout(0)
             socket.setNoDelay()
             let test = SpeedResponder(channel: channel, ask: ask, mac: mac, listener: self)
-            // Free for the next one from the moment this one has its answer, not a moment after.
-            test.served = { [weak self] in self?.lock.withLock { self?.speedTesting = false } }
             test.run()
+            // Free for the next only now; then every connection it had is closed, the control
+            // connection last of all.
+            lock.withLock {
+                speedTesting = false
+                speedAsked[key] = Date()
+            }
+            test.closeAll()
             socket.shutdown()
 
         case nil:

@@ -994,10 +994,13 @@ final class AppModel: ObservableObject {
             RunLoop.main.add(t, forMode: .common)
             timer = t
         }
-        if active, activity == nil {
+        // The Mac is held awake for its own drops and tests, not for a speed test another Mac
+        // asked for: that one may not keep this Mac from sleeping.
+        let holding = transfers.contains { !$0.state.isFinal && !($0.isSpeedTest && $0.direction == .receive) }
+        if holding, activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
                                                              reason: "A drop is under way")
-        } else if !active, let a = activity {
+        } else if !holding, let a = activity {
             ProcessInfo.processInfo.endActivity(a)
             activity = nil
         }

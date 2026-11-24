@@ -29,6 +29,12 @@ enum SpeedWire {
     static let longest = 30.0
     static let mostStreams = 32
 
+    /// Whether `seconds` is a time a direction granted `granted` seconds could have taken, as
+    /// its receiver counts it (first record to last).
+    static func plausible(_ seconds: Double, for granted: Double) -> Bool {
+        seconds.isFinite && seconds >= granted / 2 && seconds <= granted + 10
+    }
+
     /// Bytes received and when, across the connections of one direction.
     final class Meter: @unchecked Sendable {
         private let lock = NSLock()
@@ -60,7 +66,8 @@ enum SpeedWire {
         arc4random_buf(buffer, chunk)
         var counter: UInt32 = 0
         var total: Int64 = 0
-        while Date() < until, !over(), cipher.count + 3 <= cipher.limit {
+        // One stream key carries so many seals and so many bytes, here as in a drop.
+        while Date() < until, !over(), cipher.count + 3 <= cipher.limit, total + Int64(chunk) <= DropKeys.streamBytes {
             let record = try RecordHeader.seal(&cipher, file: 0, chunk: counter, bytes: buffer, count: chunk)
             try socket.writeAll(record.header, record.ciphertext, record.tag, slice: 256 << 10)
             counter &+= 1
@@ -150,7 +157,7 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
                                              paired: true, purpose: .speed))
         // A copy from before the speed test does not know the purpose and hangs up here.
         guard let reply = try? control.read(), reply.type == .hello else {
-            throw DropError("\(peerName) did not answer a speed test; it may need a newer Nimbus Drop")
+            throw DropError("\(peerName) did not answer a speed test; it may be busy, or need a newer Nimbus Drop")
         }
         guard try decode(SecureHello.self, from: reply.body).paired else {
             trust.notePairingGone(control.remote)
@@ -182,6 +189,12 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         }
         update { $0.connections = n; $0.totalBytes = 0 }
         setState(.transferring)
+        // This Mac's own limit on the whole, as the Mac that is asked keeps one: against a Mac
+        // that stops reading, the senders would otherwise wait for ever.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2 * time + 15) { [weak self] in
+            guard let self, !self.state.isFinal else { return }
+            self.fail(DropError("\(name) stopped answering during the speed test"))
+        }
         lock.withLock { _result.streams = n; _phase = "to \(name)" }
         socket.setReadTimeout(Int(time.rounded(.up)) + 15)
 
@@ -205,7 +218,11 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         let counted = try control.read()
         guard counted.type == .speedCount else { throw DropError("Unexpected answer from \(peerName)") }
         let count = try decode(SpeedCount.self, from: counted.body)
-        guard count.bytes >= 0, count.seconds.isFinite, count.seconds >= 0 else { throw DropError("Unexpected answer from \(peerName)") }
+        // Numbers from another machine: no more than this Mac sent, over a time a test of this
+        // length could have taken. Anything else is not a measurement and is not shown.
+        guard count.bytes >= 0, count.bytes <= progress.doneBytes, SpeedWire.plausible(count.seconds, for: time) || count.bytes == 0 else {
+            throw DropError("\(peerName) reported a result that cannot be right")
+        }
         lock.withLock { _result.upBytes = count.bytes; _result.upSeconds = count.seconds; _phase = "from \(name)" }
         setSpeedResult(result)
         log("to \(peerName): \(Format.bytes(count.bytes)) in \(String(format: "%.2f", count.seconds)) s = \(Format.bitRate(result.upRate))")
@@ -236,7 +253,11 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         // What this Mac counted, for the other Mac to show beside what it counted itself.
         try? control.send(.speedCount, SpeedCount(bytes: meter.bytes, seconds: meter.seconds))
         log("from \(peerName): \(Format.bytes(meter.bytes)) in \(String(format: "%.2f", meter.seconds)) s = \(Format.bitRate(result.downRate))")
+        // The other Mac closes when it has read that; then it is free for the next test.
+        socket.setReadTimeout(2)
+        _ = try? control.read()
         finish(.completed)
+        closeAll()
     }
 
     /// As a drop attaches a data connection: the other Mac's challenge, answered under a key
@@ -291,8 +312,6 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
     private var upOpen = 0, upDone = 0, downOpen = 0, downDone = 0
     private var sendUntil: Date?
     private var sentBytes: Int64 = 0
-    /// Called just before the last word is said: the Mac may take another speed test.
-    var served: (() -> Void)?
 
     init(channel: Channel, ask: SpeedAsk, mac: KnownMac, listener: DropListener) {
         control = channel
@@ -336,6 +355,9 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
         if conn <= UInt64(streams) {
             phase.withLock { upOpen += 1 }
             socket.setReadTimeout(Int(seconds.rounded(.up)) + 10)
+            // The seconds granted, and a little for the last records: not for as long as bytes keep coming.
+            let limit = Deadline(socket, seconds: seconds + 5)
+            defer { limit.cancel() }
             try? SpeedWire.receive(socket, cipher: &cipher, meter: up, over: { self.isOver })
             phase.lock(); upDone += 1; phase.broadcast(); phase.unlock()
         } else {
@@ -407,7 +429,6 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
             while downDone < downOpen, !isOver, phase.wait(until: finished) {}
             let sent = sentBytes
             phase.unlock()
-            served?()
             try control.send(.speedDone, SpeedCount(bytes: sent, seconds: seconds))
             log("to \(peerName): \(Format.bytes(sent)) sent in \(Int(seconds)) s")
             // The tester says what it counted, so that this Mac can show both rates too. A
@@ -415,7 +436,7 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
             var result = SpeedResult(upBytes: 0, upSeconds: 0, downBytes: up.bytes, downSeconds: up.seconds, streams: streams)
             control.socket.setReadTimeout(3)
             if let last = try? control.read(), last.type == .speedCount, let c = try? decode(SpeedCount.self, from: last.body),
-               c.bytes >= 0, c.bytes <= sent, c.seconds.isFinite, c.seconds > 0 {
+               c.bytes >= 0, c.bytes <= sent, SpeedWire.plausible(c.seconds, for: seconds) {
                 result.upBytes = c.bytes
                 result.upSeconds = c.seconds
             }
@@ -424,6 +445,11 @@ public final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
         } catch {
             fail(error)
         }
+        // Over, however it ended: nothing more attaches, and (by the listener, once the Mac is
+        // free for the next test) every connection is closed. A test that completed used to
+        // close only its control connection, and its data connections lived as long as the
+        // tester liked: without limit, across tests (the review of the speed test, F1).
+        lock.withLock { self.keys = nil }
         phase.lock(); phase.broadcast(); phase.unlock()
     }
 }

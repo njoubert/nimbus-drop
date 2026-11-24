@@ -175,7 +175,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  157 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  164 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -404,7 +404,13 @@ speed (3.1)           speed {seconds, streams} -> speed-go (as granted) | busy; 
   paired key only, and the person at the other Mac is asked (`SpeedResponder.accept` /
   `decline`; the Allow / Decline panel is `OfferPanel(speed:)`; nothing attaches, is sent or
   is counted before the yes). Bounded as well: one question or test at a time on a Mac, 30 s
-  each way and 32 connections at most, an absolute deadline once allowed. Each rate is counted by the end
+  each way and 32 connections each way at most, an absolute deadline once allowed, 10 s
+  before the same key may ask again (`Tuning.speedPauseSeconds`), and every connection closed
+  when it ends (`Transfer.closeAll`; `finish(.completed)` closes nothing by design, which is
+  right for a drop and left a finished test's data connections open for as long as the tester
+  liked). An independent review found that, a way for a third test in beside a second, and no
+  gap between tests (a thousand served to one key in two seconds): `SpeedReviewTests`. The Mac
+  is not held awake for a test another Mac asked for. Each rate is counted by the end
   that receives. It is the drop's data path with the files taken out, so the difference
   between it and a real drop is the two disks. A 3.0 copy does not know the purpose and hangs
   up; the tester says it may need a newer Nimbus Drop. Its first version deadlocked on itself

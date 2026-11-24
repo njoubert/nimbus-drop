@@ -1332,3 +1332,68 @@ extension ContainmentTests {
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("ok").path)), [".hidden", "..two", "a:b", "a\\..\\b", " ", "~", "file"])
     }
 }
+
+// MARK: - A partial folder is nothing a drop can bring
+
+extension ContainmentTests {
+    /// Holly is about to send `Report`. Mallory can work out what her drop's partial folder
+    /// will be called here (the name is the manifest's key under her public key, which any Mac
+    /// on the network may ask her for; the manifest is no secret to someone who sent her the
+    /// folder, times and all). So Mallory sends, first, a folder of that name: a tree with
+    /// its own bytes in it and a ledger saying every chunk has arrived. As found, that folder
+    /// was put in the destination like any other, Holly's drop took it for its own earlier
+    /// attempt, asked for nothing, and put Mallory's bytes in place as hers, reported complete.
+    func testADropCannotBringAnotherDropsPartialFolder() throws {
+        let holly = try paired("holly")
+        let honest = bytes(chunk * 2 + 9, seed: 1), forged = bytes(chunk * 2 + 9, seed: 66)
+        try FileManager.default.createDirectory(at: src.appendingPathComponent("Report"), withIntermediateDirectories: false)
+        try honest.write(to: src.appendingPathComponent("Report/q3.bin"))
+        let hers = Manifest(chunkSize: chunk, entries: [.init(path: "Report", kind: .directory, mtime: 1_700_000_000, mode: 0o755),
+                                                       .init(path: "Report/q3.bin", kind: .file, size: Int64(honest.count), mtime: 1_700_000_000, mode: 0o644)])
+        let hersAllowed = allowed(hers, from: holly, contents: ["Report/q3.bin": honest])
+
+        let top = hersAllowed.partial
+        var ledger = Data()
+        for c in 0..<hers.chunkCount(1) { ledger += Crypto.be32(1) + Crypto.be32(UInt32(c)) }
+        let planted = ["\(top)/items/Report/q3.bin": forged, "\(top)/ledger": ledger]
+        let his = Manifest(chunkSize: chunk, entries: [
+            .init(path: top, kind: .directory), .init(path: "\(top)/items", kind: .directory), .init(path: "\(top)/items/Report", kind: .directory),
+            .init(path: "\(top)/items/Report/q3.bin", kind: .file, size: Int64(forged.count)), .init(path: "\(top)/ledger", kind: .file, size: Int64(ledger.count)),
+        ])
+        let before = snapshot()
+        let first = try Hand(his, from: mallory, to: victim)
+        XCTAssertNotNil(first.refusal, "a drop was taken that brings something named as a partial folder is")
+        if first.planned { _ = try? deliver(first, planted) }
+        try ended()
+        first.hangUp()
+
+        // Holly's own app sends her drop: it sends what it is asked for and no more.
+        let s = SendSession(urls: [], host: "127.0.0.1", port: victim.port, peerName: "victim", identity: holly.identity, trust: holly.trust, streams: 2, chunkSize: chunk,
+                            prescanned: ScannedDrop(manifest: hers, sources: [src.appendingPathComponent("Report").path, src.appendingPathComponent("Report/q3.bin").path]))
+        s.start()
+        XCTAssertTrue(until(20) { s.state.isFinal })
+        XCTAssertEqual(s.state, .completed)
+        XCTAssertEqual(s.progress.resumedBytes, 0, "her drop was told that bytes she never sent were already there")
+        try ended()
+        assertContained(before, snapshot(), allowing: [hersAllowed, allowed(his, from: mallory, contents: planted)])
+        XCTAssertEqual(try Data(contentsOf: dst.appendingPathComponent("Report/q3.bin")), honest, "what arrived as Holly's drop is not what she sent")
+    }
+
+    /// The rule as text: no part of a path ends as a partial folder's name does, in any
+    /// spelling a Mac's disk takes for it (capitals, and the long s, which it folds to s).
+    func testNoEntryMayBeNamedAsAPartialFolderIs() {
+        let key = String(repeating: "0a", count: 16)
+        func refused(_ entries: [Manifest.Entry]) -> Bool { (try? Manifest(chunkSize: chunk, entries: entries).validate()) == nil }
+        for name in ["Report.\(key).nimbusdrop-partial", "x.nimbusdrop-partial", "X.NIMBUSDROP-PARTIAL", "x.Nimbusdrop-Partial", "x.nimbu\u{17F}drop-partial", ".nimbusdrop-partial"] {
+            XCTAssertTrue(refused([.init(path: name, kind: .directory)]), "\(name) as a folder")
+            XCTAssertTrue(refused([.init(path: name, kind: .file, size: 1)]), "\(name) as a file")
+            XCTAssertTrue(refused([.init(path: name, kind: .symlink, link: "x")]), "\(name) as a link")
+            XCTAssertTrue(refused([.init(path: "d", kind: .directory), .init(path: "d/\(name)", kind: .directory)]), "\(name) inside a folder")
+            if folds(name, name.lowercased().replacingOccurrences(of: "\u{17F}", with: "s")) == false { XCTFail("this volume keeps \(name) apart from the plain spelling; the rule is wider than it need be here") }
+        }
+        // Names that only look near it are names.
+        for name in ["nimbusdrop-partial", "x.nimbusdrop-partial.txt", "x.nimbusdrop-partial ", "x.nimbusdrop-partia", "x.nimbusdrop-partiaI", "x-nimbusdrop-partial", "partial"] {
+            XCTAssertFalse(refused([.init(path: name, kind: .directory)]), name)
+        }
+    }
+}

@@ -69,7 +69,7 @@ public final class DropListener: @unchecked Sendable {
     /// needed, whose drop it was, when (on the clock that cannot be set), and the drop's
     /// conversation as it ended (`rounds`), which is what says that a finished drop answers
     /// "complete" again. See `remember`.
-    private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Double, rounds: RoundMachine.Receiver)] = [:]
+    private var completed: [Data: (answer: Complete, resumeKey: Secret, key: PublicKey, at: Double, rounds: RoundMachine.Receiver)] = [:]
     /// Tests only: how many finished drops' answers (and resume keys) are being kept.
     var remembered: Int { lock.withLock { completed.count } }
     private var showing: PairingSession?
@@ -537,7 +537,7 @@ public final class DropListener: @unchecked Sendable {
     /// `testAFinishedDropIsNotAnsweredForAfterItsTime`, `testAFinishedDropsKeyIsForgottenWhenItsTimeIsUp`).
     /// With them, the drop's conversation as it ended (`rounds`): what a sender that comes
     /// back is told is that machine's to say.
-    func remember(completed session: Data, _ answer: Complete, resumeKey: Data, key: PublicKey, rounds: RoundMachine.Receiver) {
+    func remember(completed session: Data, _ answer: Complete, resumeKey: Secret, key: PublicKey, rounds: RoundMachine.Receiver) {
         lock.withLock {
             forgetFinished()
             completed[session] = (answer, resumeKey, key, Self.elapsed(), rounds)
@@ -552,7 +552,7 @@ public final class DropListener: @unchecked Sendable {
     }
 
     /// A finished drop's answer, if it is still within its time.
-    private func finished(_ session: Data) -> (answer: Complete, resumeKey: Data, key: PublicKey, at: Double, rounds: RoundMachine.Receiver)? {
+    private func finished(_ session: Data) -> (answer: Complete, resumeKey: Secret, key: PublicKey, at: Double, rounds: RoundMachine.Receiver)? {
         lock.withLock {
             forgetFinished()
             return completed[session]

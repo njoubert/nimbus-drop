@@ -135,6 +135,19 @@ public struct PublicKey: Hashable, Sendable, Codable, CustomStringConvertible {
     public static func madeUp() -> PublicKey { KeyPair().publicKey }
 }
 
+/// Secret bytes: a key, or what keys are made from (`master`, a drop's resume key). Any part
+/// of the engine may hold one and hand it back to this module; only this module can read it,
+/// and this module does no I/O. So a secret cannot be written to a socket, a file or the log
+/// by code that merely has it: there is nothing in it that code can reach. It says nothing of
+/// itself when printed or dumped.
+package struct Secret: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let bytes: Data
+    init(_ bytes: Data) { self.bytes = bytes }
+    package var description: String { "<secret>" }
+    package var debugDescription: String { "<secret>" }
+    package var customMirror: Mirror { Mirror(self, children: [:]) }
+}
+
 /// A static key pair. The private half never leaves this module: other modules can hold a
 /// `KeyPair` and hand it to a handshake, and cannot read it. The one way out is the trust
 /// file's plaintext (`TrustCore.encoded`), which goes to be sealed and stored.
@@ -380,11 +393,11 @@ package final class Noise {
 
     /// The two transport keys (this side's sending one first) and the master. The chaining key
     /// is gone afterwards.
-    package func split() throws -> (send: CipherState, receive: CipherState, master: Data) {
+    package func split() throws -> (send: CipherState, receive: CipherState, master: Secret) {
         guard step == 3 else { throw DropError.notAuthentic }
         let out = Noise.hkdf(ck, Data(), 3)
         ck = Data()
         let first = CipherState(key: out[0]), second = CipherState(key: out[1])
-        return initiator ? (first, second, out[2]) : (second, first, out[2])
+        return initiator ? (first, second, Secret(out[2])) : (second, first, Secret(out[2]))
     }
 }

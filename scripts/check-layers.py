@@ -72,7 +72,7 @@ PURE_EXCEPTIONS = [
 
 # What holds key material, by name. The app (and the proxy's tool) may not say these: it has
 # no business with a key's bytes, and a reviewer should not have to wonder.
-SECRET_NAMES = r"\bkeyPair\b|\bKeyPair\b|\bDropKeys\b|\bCipherState\b|\bNoise\b|\.master\b|\bresumeKey\b|\battachKey\b|\bbeginReset\b|\.encoded\(\)|\bTrustCore\b"
+SECRET_NAMES = r"\bSecret\b|\bkeyPair\b|\bKeyPair\b|\bDropKeys\b|\bCipherState\b|\bNoise\b|\.master\b|\bresumeKey\b|\battachKey\b|\bbeginReset\b|\.encoded\(\)|\bTrustCore\b"
 APP_MODULES = ["NimbusDrop", "nimbus-chaos"]
 
 # The trust file's plaintext holds this Mac's private key. It is asked for here and nowhere else.

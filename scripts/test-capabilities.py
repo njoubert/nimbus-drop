@@ -64,6 +64,14 @@ CASES = [
     ("inside", "NimbusCrypto", "func f(c: TrustCore) { _ = c.file }", "'file' is inaccessible due to 'internal' protection level"),
     ("inside", "NimbusCrypto", "func f(k: DropKeys) { _ = k.attachKey }", "'attachKey' is inaccessible due to 'internal' protection level"),
     ("inside", "NimbusCrypto", "func f(k: DropKeys) { _ = k.master }", "'master' is inaccessible due to 'private' protection level"),
+    # A secret can be held and handed on anywhere in the engine; read, and made from bytes, only in the pure module.
+    ("inside", "NimbusCrypto", "func f(k: DropKeys) -> Secret { k.resumeKey }", None),
+    ("inside", "NimbusCrypto", "func f(k: DropKeys) { _ = k.resumeKey.bytes }", "'bytes' is inaccessible due to 'internal' protection level"),
+    ("inside", "NimbusCrypto", "_ = Secret(Data())", "'Secret' initializer is inaccessible due to 'internal' protection level"),
+    ("inside", "NimbusCrypto", "_ = DropKeys(master: Data())", "cannot convert value of type 'Data' to expected argument type 'Secret'"),
+    ("inside", "NimbusSecurityCore", "func f(c: Channel) { _ = c.master.bytes }", "'bytes' is inaccessible due to 'internal' protection level"),
+    ("inside", "NimbusSecurityCore", "func f(c: Channel) -> Data { c.master }", "cannot convert return expression of type 'Secret' to return type 'Data'"),
+    ("outside", "NimbusDropCore", "_ = Secret.self", "cannot find 'Secret' in scope"),
 ]
 
 

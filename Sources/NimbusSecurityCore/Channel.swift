@@ -98,7 +98,7 @@ package final class Channel: @unchecked Sendable {
     /// The handshake hash: what both ends saw. Pairing codes and resume proofs are bound to it.
     package let h: Data
     /// The third output of the handshake's Split: the root of a drop's data keys.
-    package let master: Data
+    package let master: Secret
     private var sending: CipherState
     private var receiving: CipherState
     private let writeLock = NSLock()

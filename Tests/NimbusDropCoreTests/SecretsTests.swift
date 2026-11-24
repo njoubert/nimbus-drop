@@ -10,6 +10,12 @@ import XCTest
 @testable import NimbusSecurityCore
 @testable import NimbusTransferCore
 
+extension DropKeys {
+    /// Tests only: a drop's keys from bytes a test holds (a vector, or a handshake a test ran by
+    /// hand). The engine itself has no way to make a `Secret` from bytes outside `NimbusCrypto`.
+    init(master: Data) { self.init(master: Secret(master)) }
+}
+
 /// The secrets must not flow. Key bytes are kept inside `NimbusCrypto` by the compiler
 /// (`scripts/test-capabilities.py`) and kept out of what says things by a lint
 /// (`scripts/check-layers.py`). This is the same claim tested from the other end: everything
@@ -90,6 +96,21 @@ final class SecretsTests: XCTestCase {
 
     /// What is said to the OTHER Mac when something goes wrong here: a reason, and nothing
     /// about this Mac's disk. (A reason is a `Reason(message:)` on the control connection.)
+    func testASecretSaysNothingOfItself() {
+        let bytes = Data((0..<32).map { UInt8($0 &* 7 &+ 3) })
+        let secret = Secret(bytes)
+        let keys = DropKeys(master: secret)
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        var dumped = ""
+        dump(secret, to: &dumped)
+        dump(keys.resumeKey, to: &dumped)
+        let said = "\(secret) \(String(describing: secret)) \(String(reflecting: secret)) \(keys.resumeKey) \(dumped) \(Mirror(reflecting: secret).children.count)"
+        XCTAssertFalse(said.lowercased().contains(hex.prefix(12)), said)
+        XCTAssertFalse(said.contains(bytes.base64EncodedString().prefix(10)), said)
+        XCTAssertFalse(said.contains("\(bytes.count) bytes"), "not even its length: \(said)")
+        XCTAssertTrue(said.contains("<secret>"))
+    }
+
     func testAKeyAndItsBytesNeverDescribeThemselves() {
         let pair = KeyPair()
         let said = "\(pair) \(String(describing: pair)) \(String(reflecting: pair.publicKey)) \(pair.publicKey)"

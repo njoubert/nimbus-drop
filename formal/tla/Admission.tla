@@ -5,7 +5,7 @@
 (*                                                                         *)
 (* This is Sources/NimbusCrypto/Admission.swift written as a               *)
 (* specification: Step(s, e) is Admission.step. The two are held equal.    *)
-(* AdmissionTests walks every state the Swift machine can reach, at two    *)
+(* AdmissionTests walks every state the Swift machine can reach, at four   *)
 (* small sets of limits, under every event, and writes the transition      *)
 (* relation to AdmissionImpl.tla; AdmissionRefinement.tla has TLC check    *)
 (* that relation against Step, both ways.                                  *)
@@ -19,20 +19,22 @@
 (*                                                                         *)
 (*   strangers    the address of each element of m.strangers, in order     *)
 (*   unattached   the address of each element of m.unattached, in order    *)
-(*   unpaired     how many numbers are in m.unpaired                       *)
+(*   unpaired     for each element of m.unpaired, in order: its address,   *)
+(*                and whether it has asked                                 *)
 (*   waiting[k]   how many numbers m.waiting gives the key k               *)
 (*   arrivals     for each element of m.arrivals, in order: its address,   *)
 (*                and its age, (m.asOf - at) in ticks                      *)
 (*                                                                         *)
 (* Every stored property of the Swift type, and where it went:             *)
 (*                                                                         *)
-(*   strangers, unattached   IN THE STATE, but for the number of each      *)
-(*       connection. A number is a name: the code never compares one but   *)
-(*       for equality, so a connection that has proved nothing is its      *)
-(*       place in its pool (1 is the oldest).                              *)
-(*   unpaired, waiting       IN THE STATE as counts. Which numbers they    *)
-(*       are is left out: a connection that has proved a key is told       *)
-(*       apart from another of its kind by nothing the code looks at.      *)
+(*   strangers, unattached, unpaired   IN THE STATE, but for the number of *)
+(*       each connection. A number is a name: the code never compares one  *)
+(*       but for equality, so a connection in one of the three pools where *)
+(*       someone can be told to give way is its place in its pool (1 is    *)
+(*       the oldest).                                                      *)
+(*   waiting                 IN THE STATE as counts. Which numbers they    *)
+(*       are is left out: a connection that has proved a paired key is     *)
+(*       told apart from another of its key by nothing the code looks at.  *)
 (*   arrivals                IN THE STATE as ages. The times are left      *)
 (*       out: the code only ever subtracts one from another.               *)
 (*   asOf                    LEFT OUT: the origin the ages are counted     *)
@@ -51,15 +53,16 @@
 (*   data(n, drops), proved(n, as), attached(n), purpose(n), closed(n)     *)
 (*       the same with `who` for the number n: << "stranger", i >> or      *)
 (*       << "unattached", i >> if n is the i-th of that pool,              *)
-(*       << "unpaired", 1 >> if n is in m.unpaired, << "waiting", k >> if  *)
-(*       m.waiting gives n the key k, and << "nobody", 1 >> for every      *)
-(*       other number (never given out, or holding nothing any more).      *)
+(*       << "unpaired", i >> likewise, << "waiting", k >> if m.waiting     *)
+(*       gives n the key k, and << "nobody", 1 >> for every other number   *)
+(*       (never given out, or holding nothing any more).                   *)
 (*   drops(count)              << "drops", count >>                        *)
 (*                                                                         *)
 (* An answer. admitted(n, displacing: d) is << "admitted", i >> where d is *)
 (* the i-th of m.strangers BEFORE the event (0: nobody gave way). Which    *)
 (* number n the arrival got is left out, except that the tests fail if it  *)
-(* was given before. moved(displacing: d) likewise with m.unattached.      *)
+(* was given before. moved(displacing: d) likewise with m.unattached (for  *)
+(* a data connection) or m.unpaired (for a key nobody paired).             *)
 (* giveWay(ds) is << "giveWay", k >> when ds are the first k of            *)
 (* m.unattached before the event, in order (and something that is no       *)
 (* answer of the specification's when they are any others). close(why)     *)
@@ -105,7 +108,7 @@ CONSTANTS Addresses, Keys,
           Strangers, StrangersPerAddress,           \* connections that have proved nothing: at once, and from one address
           Arrivals, ArrivalsPerAddress, Window,     \* arrivals taken within one window: from all, from one address
           UnattachedPerDrop, UnattachedPerAddress,  \* data connections that have not proved their drop
-          Unpaired,                                 \* connections that proved a key nobody paired
+          Unpaired, UnpairedPerAddress,             \* connections that proved a key nobody paired: at once, and from one address
           PairedWaiting,                            \* connections of one paired key that have not said what they came for
           Gaps,                                     \* how far the clock may move between one arrival and the next
           Drops                                     \* how many drops may be in progress
@@ -113,7 +116,7 @@ CONSTANTS Addresses, Keys,
 \* What a proved key can be to this Mac, besides a paired key (which is named).
 Standings == {"mine", "retired", "unpaired"}
 
-Start == [strangers |-> << >>, unattached |-> << >>, unpaired |-> 0,
+Start == [strangers |-> << >>, unattached |-> << >>, unpaired |-> << >>,
           waiting |-> [k \in Keys |-> 0], arrivals |-> << >>]
 
 Count(pool, a) == Cardinality({i \in 1..Len(pool): pool[i] = a})
@@ -137,6 +140,26 @@ Place(pool, a, limit, perAddress) ==
     LET out == GivesWay(pool, a, limit, perAddress)
     IN << Append(IF out = 0 THEN pool ELSE Remove(pool, out), a), out >>
 
+(***************************************************************************)
+(* Who gives way among the connections that proved a key nobody paired,    *)
+(* for another from address a. Anyone can make a key, so it is the rule    *)
+(* above, with one difference: only a connection that has asked for        *)
+(* nothing can give way. A request to pair that has been read (and may be  *)
+(* in front of a person for minutes) is not closed to make room, and where *)
+(* nobody else can give way the answer is -1: the newcomer is turned away. *)
+(* (It always was, until 2026-11-24: F1, in the pool its fix had not       *)
+(* reached.)                                                               *)
+(***************************************************************************)
+Held(pool, a) == {i \in 1..Len(pool): pool[i].from = a}
+Silent(pool)  == {i \in 1..Len(pool): ~pool[i].asked}
+Oldest(S)     == CHOOSE i \in S: \A j \in S: i <= j
+KeyGivesWay(pool, a, limit, perAddress) ==
+    IF Held(pool, a) # {} /\ Cardinality(Held(pool, a)) >= perAddress
+       THEN IF Held(pool, a) \cap Silent(pool) # {} THEN Oldest(Held(pool, a) \cap Silent(pool)) ELSE -1
+    ELSE IF Len(pool) > 0 /\ Len(pool) >= limit
+       THEN IF Silent(pool) # {} THEN Oldest(Silent(pool)) ELSE -1
+    ELSE 0
+
 \* The arrivals that still count when the clock has moved by gap: for one window after each,
 \* and not at all once the clock says a time before it (a gap may be less than nothing: the
 \* clock is the listener's, and a clock can be set back).
@@ -151,7 +174,7 @@ Recent(arrivals, gap) ==
 (***************************************************************************)
 Whos(s) == {<< "stranger", i >> : i \in 1..Len(s.strangers)}
            \cup {<< "unattached", i >> : i \in 1..Len(s.unattached)}
-           \cup (IF s.unpaired > 0 THEN {<< "unpaired", 1 >>} ELSE {})
+           \cup {<< "unpaired", i >> : i \in 1..Len(s.unpaired)}
            \cup {<< "waiting", k >> : k \in {k \in Keys: s.waiting[k] > 0}}
            \cup {<< "nobody", 1 >>}
 
@@ -201,9 +224,13 @@ Step(s, e) ==
         ELSE LET t == [s EXCEPT !.strangers = Remove(@, who[2])]
              IN IF e[3] \in {"mine", "retired"} THEN Close(t, e[3])
                 ELSE IF e[3] = "unpaired" THEN
-                    IF s.unpaired < Unpaired THEN << [t EXCEPT !.unpaired = @ + 1], << "moved", 0 >> >>
-                    ELSE Close(t, "tooManyUnpaired")
+                    LET a   == s.strangers[who[2]]
+                        out == KeyGivesWay(s.unpaired, a, Unpaired, UnpairedPerAddress)
+                    IN IF out < 0 THEN Close(t, "tooManyUnpaired")
+                       ELSE << [t EXCEPT !.unpaired = Append(IF out = 0 THEN @ ELSE Remove(@, out), [from |-> a, asked |-> FALSE])],
+                               << "moved", out >> >>
                 ELSE
+                    \* a paired key: where it came from plays no part
                     IF s.waiting[e[3]] < PairedWaiting THEN << [t EXCEPT !.waiting[e[3]] = @ + 1], << "moved", 0 >> >>
                     ELSE Close(t, "tooManyWaiting")
     ELSE IF e[1] = "attached" THEN
@@ -211,11 +238,13 @@ Step(s, e) ==
         ELSE Noted(s)
     ELSE IF e[1] = "purpose" THEN
         IF who[1] = "waiting" THEN Noted([s EXCEPT !.waiting[who[2]] = @ - 1])
+        \* a key nobody paired stays counted, and from here keeps its place
+        ELSE IF who[1] = "unpaired" THEN Noted([s EXCEPT !.unpaired[who[2]].asked = TRUE])
         ELSE Noted(s)
     ELSE \* closed: whatever it held is given back
         IF who[1] = "stranger" THEN Noted([s EXCEPT !.strangers = Remove(@, who[2])])
         ELSE IF who[1] = "unattached" THEN Noted([s EXCEPT !.unattached = Remove(@, who[2])])
-        ELSE IF who[1] = "unpaired" THEN Noted([s EXCEPT !.unpaired = @ - 1])
+        ELSE IF who[1] = "unpaired" THEN Noted([s EXCEPT !.unpaired = Remove(@, who[2])])
         ELSE IF who[1] = "waiting" THEN Noted([s EXCEPT !.waiting[who[2]] = @ - 1])
         ELSE Noted(s)
 

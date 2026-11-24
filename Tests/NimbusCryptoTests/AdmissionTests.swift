@@ -74,27 +74,41 @@ final class AdmissionTests: XCTestCase {
         var window: Int { Int(limits.window) }
     }
 
-    /// Two walks, because one with every limit above one has more states than a file should
-    /// hold (a million transitions). Each has the part it is named for at sizes where every
-    /// branch of it is taken, and the rest at one.
+    /// Four walks, because one with every limit above one has more states than a file should
+    /// hold (millions of transitions). Each has the part it is named for at sizes where every
+    /// branch of it is taken, and the rest at one, or (paired keys) not there at all.
     ///
     /// `Pools`: three places for strangers and two an address, so that the oldest of an address
     /// is neither the oldest of the pool nor the newest; the pool of data connections with one
-    /// place for each drop in progress, and none, one or two drops; two keys. The rate is one
-    /// arrival in a window of no length: two at the same instant, or not, or a clock set back.
+    /// place for each drop in progress, and none, one or two drops. The rate is one arrival in
+    /// a window of no length: two at the same instant, or not, or a clock set back.
     ///
     /// `Rate`: three arrivals in a window from all and two from one address, a window of one
     /// tick, and a clock that moves by nothing, by one tick (some arrivals are forgotten and
-    /// some are not) or by two (all are), forward or back. One place of each kind.
+    /// some are not) or by two (all are), forward or back.
+    ///
+    /// `Keys`: three places for keys nobody paired and two an address, any of them having asked
+    /// or not: the oldest of an address that has asked for nothing is neither the oldest of
+    /// all, nor the oldest of its address, nor the newest. One paired key beside them.
+    ///
+    /// `Waiting`: two paired keys, each counted by itself, and a key nobody paired.
     static let walks = [
         Walk(name: "Pools",
              limits: Limits(strangers: 3, strangersPerAddress: 2, arrivals: 1, arrivalsPerAddress: 1, window: 0,
-                            unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1),
-             addresses: ["a", "b"], keys: ["k1", "k2"], gaps: [-1, 0, 1], drops: [0, 1, 2]),
+                            unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, unpairedPerAddress: 1, pairedWaiting: 1),
+             addresses: ["a", "b"], keys: [], gaps: [-1, 0, 1], drops: [0, 1, 2]),
         Walk(name: "Rate",
              limits: Limits(strangers: 1, strangersPerAddress: 1, arrivals: 3, arrivalsPerAddress: 2, window: 1,
-                            unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1),
-             addresses: ["a", "b"], keys: ["k1"], gaps: [-2, -1, 0, 1, 2], drops: [0]),
+                            unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, unpairedPerAddress: 1, pairedWaiting: 1),
+             addresses: ["a", "b"], keys: [], gaps: [-2, -1, 0, 1, 2], drops: [0]),
+        Walk(name: "Keys",
+             limits: Limits(strangers: 1, strangersPerAddress: 1, arrivals: 1, arrivalsPerAddress: 1, window: 0,
+                            unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 3, unpairedPerAddress: 2, pairedWaiting: 1),
+             addresses: ["a", "b"], keys: ["k1"], gaps: [-1, 0, 1], drops: [0]),
+        Walk(name: "Waiting",
+             limits: Limits(strangers: 1, strangersPerAddress: 1, arrivals: 1, arrivalsPerAddress: 1, window: 0,
+                            unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, unpairedPerAddress: 1, pairedWaiting: 1),
+             addresses: ["a", "b"], keys: ["k1", "k2"], gaps: [-1, 0, 1], drops: [0]),
     ]
 
     /// What the specification is not told: which strings its addresses are, which keys its
@@ -145,7 +159,7 @@ final class AdmissionTests: XCTestCase {
     enum Who: Hashable {
         case stranger(Int)
         case unattached(Int)
-        case unpaired
+        case unpaired(Int)
         case waiting(String)
         /// A number that holds nothing: never given out, or long gone.
         case nobody
@@ -154,7 +168,7 @@ final class AdmissionTests: XCTestCase {
             switch self {
             case .stranger(let i): return "<< \"stranger\", \(i) >>"
             case .unattached(let i): return "<< \"unattached\", \(i) >>"
-            case .unpaired: return "<< \"unpaired\", 1 >>"
+            case .unpaired(let i): return "<< \"unpaired\", \(i) >>"
             case .waiting(let k): return "<< \"waiting\", \"\(k)\" >>"
             case .nobody: return "<< \"nobody\", 1 >>"
             }
@@ -196,15 +210,18 @@ final class AdmissionTests: XCTestCase {
         let age = { (a: Admission.Arrival) in Int(((m.asOf! - a.at) / n.tick).rounded()) }
         let arrivals = m.arrivals.isEmpty ? "<< >>"
             : "<< " + m.arrivals.map { "[age |-> \(age($0)), from |-> \"\(n.addresses[$0.address]!)\"]" }.joined(separator: ", ") + " >>"
-        return "[strangers |-> \(pool(m.strangers)), unattached |-> \(pool(m.unattached)), unpaired |-> \(m.unpaired.count), "
-            + "waiting |-> [\(waiting)], arrivals |-> \(arrivals)]"
+        let unpaired = m.unpaired.isEmpty ? "<< >>"
+            : "<< " + m.unpaired.map { "[from |-> \"\(n.addresses[$0.address]!)\", asked |-> \($0.asked ? "TRUE" : "FALSE")]" }.joined(separator: ", ") + " >>"
+        // (With no paired key at all, the function from keys to counts is the empty one.)
+        return "[strangers |-> \(pool(m.strangers)), unattached |-> \(pool(m.unattached)), unpaired |-> \(unpaired), "
+            + "waiting |-> \(walk.keys.isEmpty ? "<< >>" : "[\(waiting)]"), arrivals |-> \(arrivals)]"
     }
 
     /// Whom a number is, in a machine's value.
     static func who(_ id: UInt64, in m: Admission, _ n: Naming) -> Who {
         if let i = m.strangers.firstIndex(where: { $0.id == id }) { return .stranger(i + 1) }
         if let i = m.unattached.firstIndex(where: { $0.id == id }) { return .unattached(i + 1) }
-        if m.unpaired.contains(id) { return .unpaired }
+        if let i = m.unpaired.firstIndex(where: { $0.id == id }) { return .unpaired(i + 1) }
         if let key = m.waiting[id] { return .waiting(n.keys[key]!) }
         return .nobody
     }
@@ -238,11 +255,15 @@ final class AdmissionTests: XCTestCase {
     }
 
     /// The specification's answer for one of the machine's, given the value it was asked in:
-    /// WHO gives way is said by its place in its pool before the event, counted from one.
+    /// WHO gives way is said by its place in its pool before the event, counted from one (for
+    /// a data connection the pool of those that have not attached; for a key nobody paired,
+    /// the pool of those).
     static func answer(_ answer: Admission.Answer, before m: Admission) -> String {
         switch answer {
         case .admitted(_, let out): return "<< \"admitted\", \(out.map { id in m.strangers.firstIndex { $0.id == id }! + 1 } ?? 0) >>"
-        case .moved(let out): return "<< \"moved\", \(out.map { id in m.unattached.firstIndex { $0.id == id }! + 1 } ?? 0) >>"
+        case .moved(let out):
+            let place = out.map { id in (m.unattached.firstIndex { $0.id == id } ?? m.unpaired.firstIndex { $0.id == id }!) + 1 }
+            return "<< \"moved\", \(place ?? 0) >>"
         case .close(let why): return "<< \"close\", \"\(why.rawValue)\" >>"
         case .giveWay(let out):
             // The specification says how many give way, and means the ones that have waited longest.
@@ -259,8 +280,8 @@ final class AdmissionTests: XCTestCase {
         var m: Admission
         /// Every number given out so far: an arrival must be given a new one.
         var given = Set<UInt64>()
-        /// For a walk at random: which of several equal holders is meant, and a number that
-        /// holds nothing. The walk of every state takes the lowest, and zero.
+        /// For a walk at random: which of several connections of one paired key is meant, and a
+        /// number that holds nothing. The walk of every state takes the lowest, and zero.
         var pick: (Set<UInt64>) -> UInt64 = { $0.min()! }
         var stale: UInt64 = 0
 
@@ -271,12 +292,12 @@ final class AdmissionTests: XCTestCase {
         }
 
         var state: String { AdmissionTests.abstract(m, walk, naming) }
-        var held: Set<UInt64> { Set(m.strangers.map(\.id) + m.unattached.map(\.id)).union(m.unpaired).union(m.waiting.keys) }
+        var held: Set<UInt64> { Set(m.strangers.map(\.id) + m.unattached.map(\.id) + m.unpaired.map(\.id)).union(m.waiting.keys) }
 
         /// Everyone a fact can be about, in this state.
         var whos: [Who] {
             m.strangers.indices.map { Who.stranger($0 + 1) } + m.unattached.indices.map { Who.unattached($0 + 1) }
-                + (m.unpaired.isEmpty ? [] : [.unpaired])
+                + m.unpaired.indices.map { Who.unpaired($0 + 1) }
                 + walk.keys.filter { k in m.waiting.values.contains { naming.keys[$0] == k } }.map { Who.waiting($0) }
                 + [.nobody]
         }
@@ -304,7 +325,7 @@ final class AdmissionTests: XCTestCase {
             switch who {
             case .stranger(let i): return m.strangers[i - 1].id
             case .unattached(let i): return m.unattached[i - 1].id
-            case .unpaired: return pick(m.unpaired)
+            case .unpaired(let i): return m.unpaired[i - 1].id
             case .waiting(let k): return pick(Set(m.waiting.filter { naming.keys[$0.value] == k }.keys))
             case .nobody: return stale
             }
@@ -387,8 +408,8 @@ final class AdmissionTests: XCTestCase {
         \\*
         \\* For each walk: its limits and what was thrown at it; every state reached, the empty
         \\* listener first; every event; every answer; and for each state, in the same order,
-        \\* what each event did there, as << event, state after, answer >>: each the place of
-        \\* one in the lists above.
+        \\* what each event did there, three numbers a step and one step after another:
+        \\* event, state after, answer, each the place of one in the lists above.
         EXTENDS Integers
 
 
@@ -404,7 +425,7 @@ final class AdmissionTests: XCTestCase {
             let answerAt = Dictionary(uniqueKeysWithValues: answers.enumerated().map { ($1, $0 + 1) })
             var rows = [[String]](repeating: [], count: states.count)
             for s in steps.sorted(by: { (eventAt[$0.event]!, $0.from) < (eventAt[$1.event]!, $1.from) }) {
-                rows[stateAt[s.from]! - 1].append("<<\(eventAt[s.event]!),\(stateAt[s.to]!),\(answerAt[s.answer]!)>>")
+                rows[stateAt[s.from]! - 1].append("\(eventAt[s.event]!),\(stateAt[s.to]!),\(answerAt[s.answer]!)")
             }
             let l = walk.limits
             let set = { (items: [String]) in "{" + items.joined(separator: ", ") + "}" }
@@ -415,7 +436,7 @@ final class AdmissionTests: XCTestCase {
               strangers |-> \(l.strangers), strangersPerAddress |-> \(l.strangersPerAddress),
               arrivals |-> \(l.arrivals), arrivalsPerAddress |-> \(l.arrivalsPerAddress), window |-> \(walk.window),
               unattachedPerDrop |-> \(l.unattachedPerDrop), unattachedPerAddress |-> \(l.unattachedPerAddress),
-              unpaired |-> \(l.unpaired), pairedWaiting |-> \(l.pairedWaiting)]
+              unpaired |-> \(l.unpaired), unpairedPerAddress |-> \(l.unpairedPerAddress), pairedWaiting |-> \(l.pairedWaiting)]
 
             \\* \(states.count) states
             \(walk.name)States == <<
@@ -432,7 +453,7 @@ final class AdmissionTests: XCTestCase {
 
             \\* \(steps.count) steps
             \(walk.name)Steps == <<
-              \(rows.map { "{" + $0.joined(separator: ",") + "}" }.joined(separator: ",\n  "))
+              \(rows.map { "<<" + $0.joined(separator: ", ") + ">>" }.joined(separator: ",\n  "))
             >>
 
 
@@ -497,10 +518,10 @@ final class AdmissionTests: XCTestCase {
                                         now: (d.m.asOf ?? d.naming.origin) + Double(ticks) * d.naming.tick)
                     case 6, 7: event = .data(stranger(&rng), drops: walk.drops.randomElement(using: &rng)!)
                     case 8: event = .proved(stranger(&rng), .unpaired)
-                    case 9, 10: event = .proved(stranger(&rng), .paired(keys.randomElement(using: &rng)!))
+                    case 9, 10: event = .proved(stranger(&rng), keys.randomElement(using: &rng).map { .paired($0) } ?? .unpaired)
                     case 11: event = .proved(anyone(&rng), [.mine, .retired].randomElement(using: &rng)!)
                     case 12: event = .attached(d.m.unattached.randomElement(using: &rng)?.id ?? anyone(&rng))
-                    case 13: event = .purpose(anyone(&rng))
+                    case 13: event = .purpose((Bool.random(using: &rng) ? d.m.unpaired.randomElement(using: &rng)?.id : nil) ?? anyone(&rng))
                     case 14: event = .closed(anyone(&rng))
                     case 15: event = .drops(walk.drops.randomElement(using: &rng)!)
                     default: event = .data(anyone(&rng), drops: walk.drops.randomElement(using: &rng)!)
@@ -533,6 +554,8 @@ final class AdmissionTests: XCTestCase {
         enum Place: Equatable { case stranger, unattached, unpaired, waiting(PublicKey) }
         var place: [UInt64: Place] = [:]
         var address: [UInt64: String] = [:]
+        /// Those that proved a key nobody paired and have since said what they came for.
+        var asked = Set<UInt64>()
         /// When each took its present place among those that have proved nothing: a count.
         var since: [UInt64: Int] = [:]
         var placements = 0
@@ -587,8 +610,22 @@ final class AdmissionTests: XCTestCase {
                 case .mine: return .close(.mine)
                 case .retired: return .close(.retired)
                 case .unpaired:
-                    guard those(.unpaired).count < l.unpaired else { return .close(.tooManyUnpaired) }
+                    // As among the strangers, except that only one that has asked for nothing
+                    // can be the one that gives way; if there is none where one is needed, the
+                    // newcomer is turned away.
+                    let pool = those(.unpaired), a = address[id]!
+                    let own = pool.filter { address[$0] == a }
+                    var out: UInt64?
+                    if !own.isEmpty, own.count >= l.unpairedPerAddress {
+                        guard let silent = own.first(where: { !asked.contains($0) }) else { return .close(.tooManyUnpaired) }
+                        out = silent
+                    } else if !pool.isEmpty, pool.count >= l.unpaired {
+                        guard let silent = pool.first(where: { !asked.contains($0) }) else { return .close(.tooManyUnpaired) }
+                        out = silent
+                    }
+                    if let out { place[out] = nil }
                     put(id, .unpaired)
+                    return .moved(displacing: out)
                 case .paired(let key):
                     guard those(.waiting(key)).count < l.pairedWaiting else { return .close(.tooManyWaiting) }
                     put(id, .waiting(key))
@@ -599,6 +636,7 @@ final class AdmissionTests: XCTestCase {
                 return .nothing
             case .purpose(let id):
                 if case .waiting = place[id] { place[id] = nil }
+                if place[id] == .unpaired { asked.insert(id) }
                 return .nothing
             case .closed(let id):
                 place[id] = nil
@@ -626,7 +664,8 @@ final class AdmissionTests: XCTestCase {
             let pool = { (p: Place) in those(p).map { Admission.Unproved(id: $0, address: address[$0]!) } }
             var waiting: [UInt64: PublicKey] = [:]
             for (id, p) in place { if case .waiting(let key) = p { waiting[id] = key } }
-            return m.strangers == pool(.stranger) && m.unattached == pool(.unattached) && m.unpaired == Set(those(.unpaired)) && m.waiting == waiting
+            let unpaired = those(.unpaired).map { Admission.Unpaired(id: $0, address: address[$0]!, asked: asked.contains($0)) }
+            return m.strangers == pool(.stranger) && m.unattached == pool(.unattached) && m.unpaired == unpaired && m.waiting == waiting
         }
     }
 
@@ -644,7 +683,7 @@ final class AdmissionTests: XCTestCase {
                    arrivals: Int.random(in: 1...9, using: &rng), arrivalsPerAddress: Int.random(in: 1...5, using: &rng),
                    window: [0, 0.5, 1, 1, 10].randomElement(using: &rng)!,
                    unattachedPerDrop: Int.random(in: 1...3, using: &rng), unattachedPerAddress: Int.random(in: 1...3, using: &rng),
-                   unpaired: Int.random(in: 1...3, using: &rng), pairedWaiting: Int.random(in: 1...3, using: &rng))
+                   unpaired: Int.random(in: 1...4, using: &rng), unpairedPerAddress: Int.random(in: 1...3, using: &rng), pairedWaiting: Int.random(in: 1...3, using: &rng))
         }
         var count = 0
         for _ in 0..<300 {
@@ -676,7 +715,7 @@ final class AdmissionTests: XCTestCase {
                 case 9, 10: event = .proved(stranger(&rng), .paired(keys.randomElement(using: &rng)!))
                 case 11: event = .proved(anyone(&rng), [.mine, .retired].randomElement(using: &rng)!)
                 case 12: event = .attached(world.those(.unattached).randomElement(using: &rng) ?? anyone(&rng))
-                case 13: event = .purpose(anyone(&rng))
+                case 13: event = .purpose((Bool.random(using: &rng) ? world.those(.unpaired).randomElement(using: &rng) : nil) ?? anyone(&rng))
                 case 14: event = .closed(anyone(&rng))
                 case 15: event = .drops(Int.random(in: 0...3, using: &rng))
                 default: event = .data(anyone(&rng), drops: Int.random(in: 0...3, using: &rng))
@@ -707,10 +746,10 @@ final class AdmissionTests: XCTestCase {
     // MARK: Attacks on the machine
 
     /// Limits that can be filled by hand: three places for strangers and two an address, two
-    /// places for data connections for each drop and two an address, two keys nobody paired,
-    /// two connections of a paired key. A rate nobody reaches.
+    /// places for data connections for each drop and two an address, three keys nobody paired
+    /// and two an address, two connections of a paired key. A rate nobody reaches.
     static let small = Limits(strangers: 3, strangersPerAddress: 2, arrivals: 1000, arrivalsPerAddress: 1000, window: 1,
-                              unattachedPerDrop: 2, unattachedPerAddress: 2, unpaired: 2, pairedWaiting: 2)
+                              unattachedPerDrop: 2, unattachedPerAddress: 2, unpaired: 3, unpairedPerAddress: 2, pairedWaiting: 2)
 
     /// A machine, and arrivals that are expected to be given a place.
     struct Desk {
@@ -728,7 +767,14 @@ final class AdmissionTests: XCTestCase {
         }
 
         /// Everyone who holds a place of any kind.
-        var held: Set<UInt64> { Set(m.strangers.map(\.id) + m.unattached.map(\.id)).union(m.unpaired).union(m.waiting.keys) }
+        var held: Set<UInt64> { Set(m.strangers.map(\.id) + m.unattached.map(\.id) + m.unpaired.map(\.id)).union(m.waiting.keys) }
+
+        /// A connection arrives from the local network and proves a key nobody has paired:
+        /// its number, and what it was told.
+        mutating func fresh(_ from: String, file: StaticString = #filePath, line: UInt = #line) -> (id: UInt64, answer: Admission.Answer) {
+            let c = arrive(from, file: file, line: line).id
+            return (c, m.step(.proved(c, .unpaired)))
+        }
     }
 
     /// F1. A pool full of connections that say nothing does not keep the next one out: it gets
@@ -777,7 +823,7 @@ final class AdmissionTests: XCTestCase {
             case 6: if let s = d.m.strangers.randomElement(using: &rng) { _ = d.m.step(.proved(s.id, .unpaired)) }
             case 7: if let s = d.m.strangers.randomElement(using: &rng) { _ = d.m.step(.proved(s.id, .paired(keys.randomElement(using: &rng)!))) }
             case 8: if let id = d.held.randomElement(using: &rng) { _ = d.m.step(.closed(id)) }
-            default: if let id = d.m.waiting.keys.randomElement(using: &rng) { _ = d.m.step(.purpose(id)) }
+            default: if let id = (d.m.waiting.keys + d.m.unpaired.map(\.id)).randomElement(using: &rng) { _ = d.m.step(.purpose(id)) }
             }
             XCTAssertLessThanOrEqual(d.m.strangers.count, 3)
             XCTAssertLessThanOrEqual(d.m.unattached.count, 2, "two places for each drop, and there is one")
@@ -785,7 +831,8 @@ final class AdmissionTests: XCTestCase {
                 XCTAssertLessThanOrEqual(d.m.strangers.filter { $0.address == a }.count, 2)
                 XCTAssertLessThanOrEqual(d.m.unattached.filter { $0.address == a }.count, 2)
             }
-            XCTAssertLessThanOrEqual(d.m.unpaired.count, 2)
+            XCTAssertLessThanOrEqual(d.m.unpaired.count, 3)
+            for a in addresses { XCTAssertLessThanOrEqual(d.m.unpaired.filter { $0.address == a }.count, 2) }
             for k in keys { XCTAssertLessThanOrEqual(d.m.waiting.values.filter { $0 == k }.count, 2) }
         }
     }
@@ -795,7 +842,7 @@ final class AdmissionTests: XCTestCase {
     /// closed, and one that was closed does not count against the next.
     func testArrivalsAreRationedInAllAndFromOneAddress() {
         var m = Admission(limits: Limits(strangers: 100, strangersPerAddress: 100, arrivals: 4, arrivalsPerAddress: 2, window: 1,
-                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1))
+                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, unpairedPerAddress: 1, pairedWaiting: 1))
         func arrive(_ from: String, _ now: Double) -> Admission.Answer {
             let answer = m.step(.arrive(from: from, local: true, now: now))
             if case .admitted = answer { return .nothing }
@@ -824,7 +871,7 @@ final class AdmissionTests: XCTestCase {
     /// given, forgets an arrival that is from later than now.
     func testAnArrivalFromLaterThanNowIsForgotten() {
         var m = Admission(limits: Limits(strangers: 10, strangersPerAddress: 10, arrivals: 3, arrivalsPerAddress: 2, window: 1,
-                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1))
+                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, unpairedPerAddress: 1, pairedWaiting: 1))
         func arrives(_ from: String, _ now: Double) -> Bool {
             if case .admitted = m.step(.arrive(from: from, local: true, now: now)) { return true }
             return false
@@ -848,7 +895,7 @@ final class AdmissionTests: XCTestCase {
     /// counted against the rate: whatever arrives from elsewhere, it costs a local Mac nothing.
     func testAConnectionFromElsewhereGetsNothingAndCountsForNothing() {
         var m = Admission(limits: Limits(strangers: 2, strangersPerAddress: 2, arrivals: 3, arrivalsPerAddress: 3, window: 1,
-                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, pairedWaiting: 1))
+                                         unattachedPerDrop: 1, unattachedPerAddress: 1, unpaired: 1, unpairedPerAddress: 1, pairedWaiting: 1))
         guard case .admitted(let first, _) = m.step(.arrive(from: "a", local: true, now: 5)) else { return XCTFail("not admitted") }
         for _ in 0..<100 { XCTAssertEqual(m.step(.arrive(from: "far", local: false, now: 5)), .close(.elsewhere)) }
         XCTAssertEqual(m.strangers.map(\.id), [first])
@@ -927,21 +974,57 @@ final class AdmissionTests: XCTestCase {
         XCTAssertTrue(d.held.isEmpty)
     }
 
-    /// A key nobody here has paired is one of so many at once, whoever they are, and for as
-    /// long as its connection lasts: saying what it came for (a request to pair) frees nothing.
-    func testAKeyNobodyPairedIsCountedForAsLongAsItsConnectionLasts() {
+    /// F1, in the pool its fix had not reached (an independent review, 2026-11-24; the model had
+    /// it written down as a limit). Anyone can make a key, so a connection that has proved one
+    /// nobody here has paired has proved nothing: when the places for such are all taken by
+    /// connections that have asked for nothing, the one that has waited longest gives way to
+    /// the newcomer. It was the newcomer that was closed, and one host holding every place
+    /// kept every Mac that was not paired at that moment from asking to pair.
+    func testKeysNobodyPairedGiveWayAsStrangersDo() {
         var d = Desk()
-        let one = d.arrive("a").id, two = d.arrive("b").id, three = d.arrive("c").id
-        XCTAssertEqual(d.m.step(.proved(one, .unpaired)), .moved(displacing: nil))
-        XCTAssertEqual(d.m.step(.proved(two, .unpaired)), .moved(displacing: nil))
-        XCTAssertEqual(d.m.step(.proved(three, .unpaired)), .close(.tooManyUnpaired), "a third, when two is all there may be")
-        XCTAssertFalse(d.held.contains(three), "and the one turned away holds nothing")
+        let silent = ["a", "b", "c"].map { d.fresh($0) }
+        XCTAssertEqual(silent.map(\.answer), [.moved(displacing: nil), .moved(displacing: nil), .moved(displacing: nil)])
+        let late = d.fresh("d")
+        XCTAssertEqual(late.answer, .moved(displacing: silent[0].id), "the pool is full of keys that have said nothing: the one that has waited longest gives way")
+        XCTAssertEqual(d.m.unpaired.map(\.id), [silent[1].id, silent[2].id, late.id], "and the newcomer has its place")
+        for i in 0..<40 { XCTAssertNotEqual(d.fresh("e\(i)").answer, .close(.tooManyUnpaired)) }
+        XCTAssertEqual(d.m.unpaired.count, 3)
+    }
+
+    /// An address holds its share of those places and no more, and at its share pushes out its
+    /// own: the oldest of its own that has asked for nothing, not the oldest of all.
+    func testAnAddressHasItsShareAmongTheKeysNobodyPaired() {
+        var d = Desk()
+        let b = d.fresh("b").id, first = d.fresh("a").id, second = d.fresh("a").id
+        XCTAssertEqual(d.m.step(.purpose(first)), .nothing)
+        let third = d.fresh("a")
+        XCTAssertEqual(third.answer, .moved(displacing: second), "the first has asked, and keeps its place; b's is not a's to take")
+        XCTAssertEqual(d.m.unpaired.map(\.id), [b, first, third.id])
+        for _ in 0..<20 { XCTAssertNotEqual(d.fresh("a").answer, .moved(displacing: b), "one address can only ever push out its own") }
+        XCTAssertEqual(d.m.unpaired.filter { $0.address == "a" }.count, 2)
+        XCTAssertEqual(d.m.unpaired.first?.id, b)
+    }
+
+    /// A connection whose request has been read (to pair: it may be on a person's screen for
+    /// minutes) is never closed to make room. Asking does not end the counting either: it
+    /// keeps its place and it is still one of so many. Where everyone who could give way has
+    /// asked, the newcomer is the one turned away, and holds nothing.
+    func testAKeyNobodyPairedThatHasAskedKeepsItsPlace() {
+        var d = Desk()
+        let one = d.fresh("a").id, two = d.fresh("a").id
         XCTAssertEqual(d.m.step(.purpose(one)), .nothing)
-        let four = d.arrive("d").id
-        XCTAssertEqual(d.m.step(.proved(four, .unpaired)), .close(.tooManyUnpaired), "asking to pair does not end the counting")
+        XCTAssertEqual(d.m.step(.purpose(two)), .nothing)
+        XCTAssertEqual(d.m.unpaired.map(\.asked), [true, true])
+        let third = d.fresh("a")
+        XCTAssertEqual(third.answer, .close(.tooManyUnpaired), "its address holds its share, and both have asked")
+        XCTAssertFalse(d.held.contains(third.id), "the one turned away holds nothing")
+        let other = d.fresh("b").id
+        XCTAssertEqual(d.m.step(.purpose(other)), .nothing)
+        XCTAssertEqual(d.fresh("c").answer, .close(.tooManyUnpaired), "the pool is full, and everyone in it has asked")
+        for i in 0..<50 { _ = d.fresh("z\(i)") }
+        XCTAssertEqual(d.m.unpaired.map(\.id), [one, two, other], "fifty strangers with fresh keys later")
         XCTAssertEqual(d.m.step(.closed(one)), .nothing)
-        let five = d.arrive("e").id
-        XCTAssertEqual(d.m.step(.proved(five, .unpaired)), .moved(displacing: nil), "its connection ending does")
+        XCTAssertEqual(d.fresh("c").answer, .moved(displacing: nil), "a place is given back when its connection ends")
     }
 
     /// A paired key is counted too, by itself, from its handshake until it says what it came
@@ -955,9 +1038,9 @@ final class AdmissionTests: XCTestCase {
         let three = d.arrive("a").id
         XCTAssertEqual(d.m.step(.proved(three, .paired(k))), .close(.tooManyWaiting))
         XCTAssertFalse(d.held.contains(three))
-        let theirs = d.arrive("a").id, nobodys = d.arrive("a").id
+        let theirs = d.arrive("a").id
         XCTAssertEqual(d.m.step(.proved(theirs, .paired(other))), .moved(displacing: nil), "another key's connections are another count")
-        XCTAssertEqual(d.m.step(.proved(nobodys, .unpaired)), .moved(displacing: nil))
+        XCTAssertEqual(d.fresh("a").answer, .moved(displacing: nil))
         XCTAssertEqual(d.m.step(.purpose(one)), .nothing)
         XCTAssertFalse(d.held.contains(one), "it has said what it came for, and is no longer counted")
         let four = d.arrive("a").id
@@ -967,21 +1050,21 @@ final class AdmissionTests: XCTestCase {
         XCTAssertEqual(d.m.step(.proved(five, .paired(k))), .moved(displacing: nil), "nor one that has gone")
     }
 
-    /// The one that gives way has proved nothing. A connection that has proved a key, paired
-    /// or not, is out of the pool at that moment and no number of newcomers closes it.
-    func testAConnectionThatHasProvedAKeyNeverGivesWay() {
+    /// The one that gives way has proved nothing that counts here. A connection that has proved
+    /// a PAIRED key is out of every pool where anyone gives way, and no number of newcomers,
+    /// with keys or without, closes it.
+    func testAConnectionThatHasProvedAPairedKeyNeverGivesWay() {
         var d = Desk()
-        let paired = d.arrive("a").id, stranger = d.arrive("a").id
+        let paired = d.arrive("a").id
         XCTAssertEqual(d.m.step(.proved(paired, .paired(Self.key(1)))), .moved(displacing: nil))
-        XCTAssertEqual(d.m.step(.proved(stranger, .unpaired)), .moved(displacing: nil))
         XCTAssertTrue(d.m.strangers.isEmpty, "a connection that proved a key was left among those that have proved nothing")
         for i in 0..<200 {
-            let out = d.arrive(i % 2 == 0 ? "a" : "z\(i)").out
-            XCTAssertNotEqual(out, paired)
-            XCTAssertNotEqual(out, stranger)
+            let from = i % 2 == 0 ? "a" : "z\(i)"
+            XCTAssertNotEqual(d.arrive(from).out, paired)
+            XCTAssertNotEqual(d.fresh(from).answer, .moved(displacing: paired))
         }
         XCTAssertTrue(d.held.contains(paired))
-        XCTAssertTrue(d.held.contains(stranger))
+        XCTAssertEqual(d.m.waiting[paired], Self.key(1))
     }
 
     /// A connection that has given way is closed, and whatever is then said of it (it may have
@@ -1005,17 +1088,21 @@ final class AdmissionTests: XCTestCase {
         XCTAssertTrue(d.m.waiting.isEmpty)
     }
 
-    /// An address decides who waits and nothing else. The same keys doing the same things get
-    /// the same answers wherever they come from, and whatever else that address is up to.
-    func testWhereAKeyComesFromDecidesNothing() {
-        let k = Self.key(1)
+    /// An address decides who waits and nothing else. The same paired keys doing the same
+    /// things get the same answers wherever they come from, whatever else that address is up
+    /// to, and whatever keys nobody paired are doing.
+    func testWhereAPairedKeyComesFromDecidesNothing() {
+        let k = Self.key(1), other = Self.key(2)
         func answers(_ addresses: [String], crowd: String?) -> [Admission.Answer] {
             var d = Desk()
             var out: [Admission.Answer] = []
             for (i, a) in addresses.enumerated() {
-                if let crowd { _ = d.arrive(crowd) }
+                if let crowd {
+                    _ = d.arrive(crowd)
+                    _ = d.fresh(crowd)
+                }
                 let c = d.arrive(a).id
-                out.append(d.m.step(.proved(c, i % 3 == 0 ? .unpaired : .paired(k))))
+                out.append(d.m.step(.proved(c, i % 3 == 0 ? .paired(other) : .paired(k))))
                 if i == 2 { out.append(d.m.step(.purpose(c))) }
             }
             return out
@@ -1023,7 +1110,7 @@ final class AdmissionTests: XCTestCase {
         let same = answers(["a", "a", "a", "a", "a", "a", "a"], crowd: "a")
         XCTAssertEqual(same, answers(["a", "b", "c", "d", "e", "f", "g"], crowd: nil))
         XCTAssertEqual(same, answers(["x", "x", "y", "y", "x", "y", "x"], crowd: "y"))
-        XCTAssertTrue(same.contains(.close(.tooManyUnpaired)) && same.contains(.close(.tooManyWaiting)), "the limits were reached, so the answers say something")
+        XCTAssertEqual(same.filter { $0 == .close(.tooManyWaiting) }.count, 2, "the limits were reached, so the answers say something")
     }
 
     /// This Mac's own key, and a key that was given up, are closed on proving themselves and
@@ -1042,8 +1129,7 @@ final class AdmissionTests: XCTestCase {
         var d = Desk()
         let data = d.arrive("a").id
         XCTAssertEqual(d.m.step(.data(data, drops: 1)), .moved(displacing: nil))
-        let unpaired = d.arrive("b").id
-        XCTAssertEqual(d.m.step(.proved(unpaired, .unpaired)), .moved(displacing: nil))
+        let unpaired = d.fresh("b").id
         let paired = d.arrive("b").id
         XCTAssertEqual(d.m.step(.proved(paired, .paired(Self.key(1)))), .moved(displacing: nil))
         let stranger = d.arrive("a").id

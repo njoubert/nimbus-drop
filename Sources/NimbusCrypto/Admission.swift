@@ -22,11 +22,20 @@ import Foundation
 ///   pool of its own whose size is so many for each drop in progress, and none when none is.
 ///   When a drop ends the places it gave end with it: the ones that have waited longest give
 ///   way, as they would to a newcomer;
-/// - a connection that has proved a key is never the one that gives way. One nobody here has
-///   paired is counted among so many at once, whoever they are; a paired one among so many of
-///   ITS key that have not yet said what they came for. There the newcomer is the one refused;
-/// - an address decides who waits and nothing else. Nothing a connection gets after it has
-///   proved a key depends on where it came from, or on what any other key has waiting.
+/// - a connection that has proved a key nobody here has paired has proved nothing either:
+///   anyone can make a key. It moves to a third pool of the same kind (so many at once, so
+///   many from one address, and the newcomer always gets a place while anyone can give way),
+///   with one difference. A connection there that has said what it came for (its request to
+///   pair has been read, and may be on screen for minutes) gives way to nobody; only those
+///   that have asked for nothing can be told to. Where everyone who could give way has asked,
+///   the newcomer is the one turned away. Until 2026-11-24 it always was, and one host
+///   holding every place with fresh keys kept every Mac that was not paired at that moment
+///   from asking to pair: F1 again, in the one pool its fix had not reached;
+/// - a connection that has proved a PAIRED key is never the one that gives way. It is counted
+///   among so many of its own key that have not yet said what they came for, and there the
+///   newcomer is the one refused: only that key's own connections can cost it a place;
+/// - an address decides who waits and nothing else. Nothing a paired key gets depends on where
+///   it came from, on what any other key has waiting, or on what strangers do.
 ///
 /// A connection is known here by the number it was given on arrival, counted from one and
 /// never used twice. A fact about a number that holds no place of the kind the fact is about
@@ -54,13 +63,15 @@ package struct Admission: Sendable {
         /// of them all from one address.
         package var unattachedPerDrop: Int
         package var unattachedPerAddress: Int
-        /// Connections that proved a key nobody here has paired, at once.
+        /// Connections that proved a key nobody here has paired, at once; and of those, from one
+        /// address.
         package var unpaired: Int
+        package var unpairedPerAddress: Int
         /// Connections from one paired key that have not yet said what they came for.
         package var pairedWaiting: Int
 
         package init(strangers: Int, strangersPerAddress: Int, arrivals: Int, arrivalsPerAddress: Int, window: Double,
-                     unattachedPerDrop: Int, unattachedPerAddress: Int, unpaired: Int, pairedWaiting: Int) {
+                     unattachedPerDrop: Int, unattachedPerAddress: Int, unpaired: Int, unpairedPerAddress: Int, pairedWaiting: Int) {
             self.strangers = strangers
             self.strangersPerAddress = strangersPerAddress
             self.arrivals = arrivals
@@ -69,6 +80,7 @@ package struct Admission: Sendable {
             self.unattachedPerDrop = unattachedPerDrop
             self.unattachedPerAddress = unattachedPerAddress
             self.unpaired = unpaired
+            self.unpairedPerAddress = unpairedPerAddress
             self.pairedWaiting = pairedWaiting
         }
     }
@@ -116,7 +128,8 @@ package struct Admission: Sendable {
         case noDrop
         case mine
         case retired
-        /// As many connections from keys nobody paired as there may be.
+        /// As many connections from keys nobody paired as there may be (in all, or from its
+        /// address), and every one that could give way has said what it came for.
         case tooManyUnpaired
         /// As many from this paired key that have asked for nothing as there may be.
         case tooManyWaiting
@@ -144,6 +157,14 @@ package struct Admission: Sendable {
         package let address: String
     }
 
+    /// A connection that proved a key nobody here has paired: where it came from, and whether
+    /// it has said what it came for.
+    package struct Unpaired: Equatable, Sendable {
+        package let id: UInt64
+        package let address: String
+        package var asked: Bool
+    }
+
     /// An arrival that still counts against the rate.
     package struct Arrival: Equatable, Sendable {
         package let at: Double
@@ -155,8 +176,8 @@ package struct Admission: Sendable {
     package private(set) var strangers: [Unproved] = []
     /// Data connections that have not proved their drop, in the order they said they were one.
     package private(set) var unattached: [Unproved] = []
-    /// Connections that proved a key nobody here has paired.
-    package private(set) var unpaired: Set<UInt64> = []
+    /// Connections that proved a key nobody here has paired, in the order they proved it.
+    package private(set) var unpaired: [Unpaired] = []
     /// Connections that proved a paired key and have not yet said what they came for.
     package private(set) var waiting: [UInt64: PublicKey] = [:]
     /// Arrivals within the last window, as of the last one.
@@ -218,18 +239,32 @@ package struct Admission: Sendable {
             return .moved(displacing: out)
 
         case .proved(let id, let who):
-            guard strangers.contains(where: { $0.id == id }) else { return .close(.gone) }
-            // No longer one that has proved nothing, and so no longer one that can be told to
-            // give way. Where it came from is forgotten here: it plays no part in what follows.
-            strangers.removeAll { $0.id == id }
+            guard let was = strangers.first(where: { $0.id == id }) else { return .close(.gone) }
+            // No longer one of the connections that have not said what they are.
+            strangers.removeAll { $0.id == was.id }
             switch who {
             case .mine: return .close(.mine)
             case .retired: return .close(.retired)
             case .unpaired:
-                guard unpaired.count < limits.unpaired else { return .close(.tooManyUnpaired) }
-                unpaired.insert(id)
-                return .moved(displacing: nil)
+                // A key nobody paired is a key anyone could have made a moment ago: the place
+                // it gets is given as a stranger's is. At its address's share, that address's
+                // oldest gives way; with the pool full, the oldest of all. But only one that has
+                // asked for nothing can give way: a request to pair that has been read is not
+                // closed to make room, and where there is nobody else the newcomer is.
+                let own = unpaired.filter { $0.address == was.address }
+                var out: Unpaired?
+                if !own.isEmpty, own.count >= limits.unpairedPerAddress {
+                    guard let silent = own.first(where: { !$0.asked }) else { return .close(.tooManyUnpaired) }
+                    out = silent
+                } else if !unpaired.isEmpty, unpaired.count >= limits.unpaired {
+                    guard let silent = unpaired.first(where: { !$0.asked }) else { return .close(.tooManyUnpaired) }
+                    out = silent
+                }
+                if let out { unpaired.removeAll { $0.id == out.id } }
+                unpaired.append(Unpaired(id: id, address: was.address, asked: false))
+                return .moved(displacing: out?.id)
             case .paired(let key):
+                // Where it came from is forgotten here: it plays no part in what a paired key gets.
                 guard waiting.values.filter({ $0 == key }).count < limits.pairedWaiting else { return .close(.tooManyWaiting) }
                 waiting[id] = key
                 return .moved(displacing: nil)
@@ -242,15 +277,17 @@ package struct Admission: Sendable {
 
         case .purpose(let id):
             // A paired key is counted until it has said what it came for. A key nobody paired
-            // stays counted for as long as its connection lasts.
+            // stays counted for as long as its connection lasts, and from here it keeps its
+            // place: what it asked for may take a person minutes to answer.
             waiting[id] = nil
+            if let at = unpaired.firstIndex(where: { $0.id == id }) { unpaired[at].asked = true }
             return .nothing
 
         case .closed(let id):
             // Whatever it held is given back.
             strangers.removeAll { $0.id == id }
             unattached.removeAll { $0.id == id }
-            unpaired.remove(id)
+            unpaired.removeAll { $0.id == id }
             waiting[id] = nil
             return .nothing
 

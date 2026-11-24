@@ -427,14 +427,20 @@ final class ProtocolTests: XCTestCase {
     func testCompletingAHandshakeWithAFreshKeyEarnsNothing() throws {
         // Anyone can make a key and complete a handshake. Fifty of them do, and hold on.
         Tuning.unpaired = 4
+        Tuning.unpairedPerAddress = 100   // (all fifty come from one address here; a real one has a share of two)
+        defer { Tuning.unpairedPerAddress = 2 }
         Tuning.strangerSeconds = 2
         let (sender, receiver) = try pairedMacs()
         var held: [Channel] = []
         for _ in 0..<50 {
             if let c = try? Channel.dial(host: "127.0.0.1", port: receiver.port, trust: Trust.inMemory(), name: "flood", purpose: .pair).channel { held.append(c) }
         }
-        // At most four got as far as an answer; the rest were closed at once.
-        XCTAssertLessThanOrEqual(held.count, 4)
+        // At most four hold a place at once. (Until 2026-11-24 the fifth and later were closed
+        // at once, and four that held on kept every Mac that was not yet paired from asking to
+        // pair. Now each that proves a key is answered, and the one that has waited longest
+        // without asking for anything gives way to it: AdmissionListenerTests.)
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertLessThanOrEqual(held.filter { !$0.socket.waitReadable(milliseconds: 0) }.count, 4)
         XCTAssertTrue(receiver.requests.withLock { $0.isEmpty }, "and nobody was asked anything: none of them even asked yet")
         // Meanwhile a paired Mac sends a drop as if nothing were happening.
         let src = try file("a.bin", bytes: chunk * 10)

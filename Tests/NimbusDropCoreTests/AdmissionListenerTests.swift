@@ -133,6 +133,58 @@ extension ReviewTests {
         XCTAssertTrue(until(6) { receiver.listener.remembered == 0 }, "its time is up and nobody has asked: the answer and the drop's resume key are still kept")
     }
 
+    /// Reported by an independent review (2026-11-24); the model of admission had it down as a
+    /// limit ("keys nobody paired, holding on, keep the next one out"), and this test showed it
+    /// through the listener before anything was changed. It is F1 in the one pool F1's fix did
+    /// not reach. Anyone can make a key and complete a handshake. One host did it as many times
+    /// as there are places for keys nobody has paired, said nothing more, and came back as
+    /// each connection's ten seconds ran out. Every other key that is not paired at the moment
+    /// (a new Mac, one whose pairing has run out, one this Mac's own person has just asked to
+    /// pair with) was then closed before its hello was read. Every pairing ends within ninety
+    /// days, so in time one host could stop two Macs from ever pairing again.
+    ///
+    /// Now such a key takes its place as a stranger does: the one that has waited longest
+    /// without asking for anything gives way. Once with the share one address has (the host
+    /// pushes out only its own), once as if they came from many addresses (the pool is full).
+    func testKeysNobodyPairedThatSayNothingDoNotKeepAMacFromAskingToPair() throws {
+        defer { Tuning.unpairedPerAddress = 2 }
+        for perAddress in [2, 100] {
+            Tuning.unpairedPerAddress = perAddress
+            let victim = try TestMac("victim"), newcomer = try TestMac("newcomer")
+            victim.onRequest = { $0.refuse() }
+            var held: [Channel] = []
+            for _ in 0..<Tuning.unpaired + 2 {
+                held.append(try Channel.dial(host: "127.0.0.1", port: victim.port, trust: Trust.inMemory(), name: "flood", purpose: .pair).channel)
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+            XCTAssertEqual(open(held.map(\.socket)), min(perAddress, Tuning.unpaired), "the ones that gave way were closed, and the newest hold the places")
+            let asking = newcomer.pair(with: victim)
+            XCTAssertTrue(until(4) { !victim.requests.withLock { $0 }.isEmpty },
+                          "connections that proved fresh keys and then said nothing kept a Mac from asking to pair (\(perAddress) places an address): \(asking.state)")
+            for c in held { c.socket.shutdown() }
+            Thread.sleep(forTimeInterval: 1.1)   // the next round's arrivals are counted afresh
+        }
+    }
+
+    /// What does not give way: a connection whose request to pair has been read. It may be in
+    /// front of a person for minutes, and is not closed to make room for anyone. With every
+    /// place so held, a newcomer with a fresh key is the one turned away, as before.
+    func testARequestToPairThatHasBeenReadIsNotClosedToMakeRoom() throws {
+        Tuning.unpaired = 1
+        Tuning.unpairedPerAddress = 100
+        defer { Tuning.unpaired = 8; Tuning.unpairedPerAddress = 2 }
+        let victim = try TestMac("victim"), asker = try TestMac("asker")
+        let asking = asker.pair(with: victim)   // nobody answers: the request stays on screen
+        XCTAssertTrue(until(4) { !victim.requests.withLock { $0 }.isEmpty })
+        for _ in 0..<6 {
+            XCTAssertThrowsError(try Channel.dial(host: "127.0.0.1", port: victim.port, trust: Trust.inMemory(), name: "flood", purpose: .pair),
+                                 "a stranger's fresh key was answered where the one place is held by a request that has been read")
+        }
+        XCTAssertFalse(asking.state.isFinal, "the request on screen was closed to make room for a stranger: \(asking.state)")
+        XCTAssertFalse(victim.requests.withLock { $0 }.first?.state.isFinal ?? true)
+        asking.cancel()
+    }
+
     /// Found on the way to the model of admission (2026-11-24). The rate is so many arrivals in
     /// a second, and the listener read the second off the calendar: set back, the calendar left
     /// the arrivals of the moment counted until it came round to them again, and with the rate

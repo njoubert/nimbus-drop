@@ -132,7 +132,7 @@ public final class DropListener: @unchecked Sendable {
         Admission.Limits(strangers: Tuning.strangers, strangersPerAddress: Tuning.strangersPerAddress,
                          arrivals: Tuning.arrivalsPerSecond, arrivalsPerAddress: Tuning.arrivalsPerAddress, window: 1,
                          unattachedPerDrop: Tuning.unattachedPerDrop, unattachedPerAddress: Tuning.unattachedPerAddress,
-                         unpaired: Tuning.unpaired, pairedWaiting: Tuning.pairedWaiting)
+                         unpaired: Tuning.unpaired, unpairedPerAddress: Tuning.unpairedPerAddress, pairedWaiting: Tuning.pairedWaiting)
     }
 
     /// The time `admission` is given with each arrival: seconds on the clock that cannot be set
@@ -253,7 +253,14 @@ public final class DropListener: @unchecked Sendable {
         case .retired: proved = .retired
         default: proved = standing.isPaired ? .paired(key) : .unpaired
         }
-        switch lock.withLock({ ask(.proved(ticket, proved)) }).answer {
+        let (answer, displaced) = lock.withLock { ask(.proved(ticket, proved)) }
+        // A key nobody paired takes its place as a stranger does: the one that has waited
+        // longest without asking for anything gives way to it.
+        for gone in displaced {
+            logCounted("displacedkey", "closed a connection that had proved a key nobody paired and asked for nothing, to make room for one from \(from)", .debug)
+            gone.shutdown()
+        }
+        switch answer {
         case .moved: break
         case .close(.retired):
             if case .retired(let t) = standing {

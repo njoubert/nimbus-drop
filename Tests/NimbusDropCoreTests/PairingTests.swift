@@ -74,12 +74,15 @@ extension PairingSession {
 final class PairingTests: XCTestCase {
     override func setUp() {
         Tuning.pairQuietSeconds = 0.3
+        // Every Mac of every test here is at one address, and several ask one Mac to pair at once.
+        Tuning.unpairedPerAddress = 8
     }
 
     override func tearDown() {
         Tuning.pairQuietSeconds = 10
         Tuning.pairSeconds = 120
         Tuning.unpaired = 8
+        Tuning.unpairedPerAddress = 2
     }
 
     /// Two people doing it properly: each reads their code out and types the other's.

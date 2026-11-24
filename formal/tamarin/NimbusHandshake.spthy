@@ -5,14 +5,22 @@
  *   Noise_XX_25519_AESGCM_SHA256        Noise.write / Noise.read
  *   the prologue                        Noise.prologue:     "nimbus-drop/3" ‖ both openings
  *   Split with a third output           Noise.split: the two transport keys and `master`
+ *   the hello                           SecureHello, the first sealed message each way: what the
+ *                                       connection is for (SendSession.open, DropListener.serve)
  *   the keys of a drop                  DropKeys: session id, attach key, resume key, stream keys
  *   attaching a data connection         DropKeys.attachTag; ReceiveSession.claim (transfer core)
  *   a record on a data connection       RecordHeader.seal; ReceiveSession.receive
  *   resuming on a new handshake         DropKeys.resumeProof; ReceiveSession.resume
+ *   a speed test                        SpeedTest, SpeedResponder: a drop's data path under the
+ *                                       `master` of a connection whose hello said `speed`, and
+ *                                       records coming back on connections of their own
  *
  * The attacker owns the network (Dolev-Yao), may run any number of Macs of its own, and may be
- * given any Mac's static key at any time (RevealStatic). Each lemma says which keys must not
- * have been given away, and until when.
+ * given any Mac's static key at any time (RevealStatic). Each lemma says which key must not
+ * have been given away, and until when: everywhere it is the OTHER Mac's key, until the
+ * handshake the lemma is about has finished at this Mac. This Mac's own key may be known from
+ * the start (no key-compromise impersonation), and either key may be given away afterwards
+ * (forward secrecy; and a drop that is running stays with the two Macs that began it).
  *
  * A KEY THAT IS NO MAC'S. The attacker can also make up a key pair, or present any value at
  * all as a static key. Nothing can be promised about a handshake with such a key (whoever
@@ -29,10 +37,16 @@
  *   - the limits on a key's use (2^24 seals, 2^38 bytes), the frame lengths, JSON;
  *   - AES-GCM, X25519, SHA-256 and HKDF themselves: they are ideal here. In particular a
  *     small-subgroup or non-canonical point is outside this model; PublicKey.init and
- *     KeyPair.agree refuse those in the code (TrustTests.testAKeyHasOneEncoding).
+ *     KeyPair.agree refuse those in the code (TrustTests.testAKeyHasOneEncoding);
+ *   - who may ask for what: that a key is paired, has not run out and was not retired is
+ *     Trust's to say, and what happens when that changes is formal/tla/TrustWithdraw.tla;
+ *   - the person: an offer accepted, a speed test allowed. Here a Mac takes whatever its
+ *     paired peer's keys prove, which is more than the code lets through.
  *
- * The counter nonce of a CipherState is modelled as a public number chosen by the sender, with
- * the receiver taking each (key, number) at most once: what a counter that only rises enforces.
+ * The counter nonce of a CipherState is modelled as a public number chosen by the sender. A
+ * connection carries one record here, so "the receiver takes each (key, number) at most
+ * once", which is what a counter that only rises enforces (CipherState.open), is the same as
+ * a connection number being taken once (Once, below).
  *
  * Opening a sealed value is written as a pattern: a rule takes aead(k, n, ad, p) only for the
  * k, n and ad it computes itself, which is what a tag that verifies means. (The first version
@@ -42,14 +56,47 @@
  * An agreement that comes out as the neutral element is not refused here, though the code
  * refuses it (KeyPair.agree): the lemmas hold without that check.
  *
+ * MUTANTS. Every guard the lemmas rest on is a macro (below, "The guards"), and each has a
+ * flag that takes it out. With the flag, the lemma named beside it must come out falsified;
+ * formal/check.py runs thirteen of them and fails if one does not. A guard whose removal
+ * falsified nothing was a lemma that said nothing about it: the prologue was like that (with
+ * the openings out of the hash every lemma still held), and has a lemma now.
+ * NOT SETTLED, four flags: NoConnInStreamKey and with it NoHeaderBinding, NoHashInResume,
+ * SameResumeLabel. Under each the search for a trace was stopped at 12 to 13 GB after two
+ * to three minutes (seven runs for the first two, one each for the others); the traces
+ * they need are long (two connections of one drop; a key given away and a second and third
+ * handshake). Nothing is claimed of those four: they are not in check.py, and the lemmas
+ * beside them are NOT shown to depend on those guards. What is written beside each is what
+ * a reading of the rules says should happen, and no more than that.
+ *
  * HOW IT IS PROVED. The lemmas are in order and the later ones use the earlier ([reuse]):
  * first the handshake by itself, then two helpers saying that `master` names one handshake,
- * then the drop, searched with a tactic that looks at the drop's own messages before the
- * handshake's. All of it is one theory and one run; nothing is assumed between the parts.
+ * then the hello, then the drop. All of it is one theory and one run; nothing is assumed
+ * between the parts. Three things made it finish:
+ *   - A tactic (`drop`) that looks at the drop's own messages before the handshake's: the
+ *     helpers already say what a finished handshake gives, so its messages need not be taken
+ *     apart again.
+ *   - Each helper ends "... or the other Mac's key was given away before this handshake
+ *     finished". For the handshake a lemma is about (its time is always called #done) that
+ *     is settled at once. For every other handshake in a trace it is an open question, and
+ *     asking it of each of them doubled the search each time: with the lemmas allowing a key
+ *     to be given away afterwards (as they did not at first: "never given away"), nothing
+ *     about a drop finished inside 12 GB. So the tactic asks it only of #done, and leaves the
+ *     rest until last.
+ *   - A lemma seen from one end hides the helpers seen from the other (hide_lemma): they
+ *     are true, and useless to it.
+ * A tactic and a hidden helper order the search and take assumptions away; neither can make
+ * a false lemma come out true.
  *
  * Run:  tamarin-prover --prove formal/tamarin/NimbusHandshake.spthy +RTS -N4 -RTS
- *       (about a minute and 6 GB; the tactic prints the goals it ranks, which is long: the
- *       results are in the "summary of summaries" at the end)
+ *       (the tactic prints the goals it ranks, which is long: the results are in the
+ *       "summary of summaries" at the end)
+ *       tamarin-prover --prove=a_probe_is_answered_by_the_key_it_reports -D=NoMessage2Check \
+ *                      formal/tamarin/NimbusHandshake.spthy +RTS -N4 -RTS
+ *       and so on for each flag. For a mutant ask for its own lemma only: the lemmas before
+ *       it are assumed whether they were proved or not, and a mutant may have made one false.
+ *       (A trace found is a trace all the same; "verified" under a mutant means nothing
+ *       unless the helpers before the lemma still hold in it.)
  */
 theory NimbusHandshake
 begin
@@ -63,6 +110,166 @@ functions: aead/4, adec/3, hkdf1/2, hkdf2/2, hkdf3/2, kdf/2, mac/2
 equations: adec(k, n, aead(k, n, ad, p)) = p
 
 restriction Once:     "All x #i #j. Once(x) @ i & Once(x) @ j ==> #i = #j"
+
+/* ---- The guards ----------------------------------------------------------------------------
+   One macro for each thing the lemmas rest on, and beside it the line of the Swift it stands
+   for. -D=<flag> swaps in the same thing without the guard; the lemma named must then fail.
+   (Tamarin 1.12 takes #ifdef around a declaration, not inside a rule: hence macros.)        */
+
+/* Both openings go into the handshake hash before anything else.
+   Noise.init: mixHash(prologue), Crypto.swift:282; Noise.prologue, Version.swift:28.
+   NoPrologue falsifies the_handshake_hash_binds_the_openings.                               */
+#ifdef NoPrologue
+macros: prologueHash(oi, orr) = h(<'Noise_XX_25519_AESGCM_SHA256', 'nimbus-drop/3'>)
+#else
+macros: prologueHash(oi, orr) = h(<'Noise_XX_25519_AESGCM_SHA256', 'nimbus-drop/3', oi, orr>)
+#endif
+
+/* The three agreements, each mixed into the chaining key.
+   ee: Noise.write, Crypto.swift:324; Noise.read, :356. Without it nothing in the keys is
+       new once both static keys are known: NoEE falsifies master_is_secret_for_the_initiator.
+   es: :326 and :358. It is what proves the responder's key: NoES falsifies
+       a_probe_is_answered_by_the_key_it_reports.
+   se: :330 and :363. It is what proves the initiator's key: NoSE falsifies
+       master_is_secret_for_the_responder.                                                    */
+#ifdef NoEE
+macros: dhEE(pub, sec) = 'none'
+#else
+macros: dhEE(pub, sec) = pub^sec
+#endif
+
+#ifdef NoES
+macros: dhES(pub, sec) = 'none'
+#else
+macros: dhES(pub, sec) = pub^sec
+#endif
+
+#ifdef NoSE
+macros: dhSE(pub, sec) = 'none'
+#else
+macros: dhSE(pub, sec) = pub^sec
+#endif
+
+/* Every seal of the handshake has the hash so far as its associated data.
+   Noise.encryptAndHash, Crypto.swift:294; decryptAndHash, :301.
+   NoHashInSeals falsifies the_responder_agrees_with_the_initiator: the two ends finish with
+   the same keys and different hashes (an opening altered on the way goes unnoticed).        */
+#ifdef NoHashInSeals
+macros: sealAD(hash) = 'none'
+#else
+macros: sealAD(hash) = hash
+#endif
+
+/* The initiator opens the last seal of message 2, which is under the key that has `es` in
+   it. Noise.read, Crypto.swift:366 at step 1 (the tag is AES.GCM.open's to check, :207).
+   NoMessage2Check falsifies a_probe_is_answered_by_the_key_it_reports.                      */
+#ifdef NoMessage2Check
+macros: message2Payload(key, ad, whatever) = whatever
+#else
+macros: message2Payload(key, ad, whatever) = aead(key, '0', ad, 'empty')
+#endif
+
+/* The responder opens the last seal of message 3, which is under the key that has `se` in
+   it. Noise.read, Crypto.swift:366 at step 2.
+   NoMessage3Check falsifies the_responder_agrees_with_the_initiator.                        */
+#ifdef NoMessage3Check
+macros: message3Payload(key, ad, whatever) = whatever
+#else
+macros: message3Payload(key, ad, whatever) = aead(key, '0', ad, 'empty')
+#endif
+
+/* Split gives a key for each direction. Noise.split, Crypto.swift:377.
+   OneTransportKey falsifies the_initiator_hears_only_the_responder: its own hello comes back
+   to it as the responder's.                                                                  */
+#ifdef OneTransportKey
+macros: keyRI(ck) = hkdf1(ck, 'split')
+#else
+macros: keyRI(ck) = hkdf2(ck, 'split')
+#endif
+
+/* `master` is the third output of the same HKDF, keyed by the chaining key.
+   Noise.split, Crypto.swift:375. MasterFromHash takes it from the handshake hash instead,
+   which anyone watching can compute: it falsifies master_is_secret_for_the_initiator.       */
+#ifdef MasterFromHash
+macros: masterOf(ck, hash) = hkdf3(hash, 'split')
+#else
+macros: masterOf(ck, hash) = hkdf3(ck, 'split')
+#endif
+
+/* What a connection is for is said inside the channel. Channel.send, Channel.swift:225;
+   Channel.read, :233; DropListener.serve reads it there, Listener.swift:269.
+   PurposeInTheClear falsifies both_ends_agree_what_a_connection_is_for.                     */
+#ifdef PurposeInTheClear
+macros: purposeHello(key, body) = body
+#else
+macros: purposeHello(key, body) = aead(key, '0', 'none', body)
+#endif
+
+/* The attach key has a label of its own. DropKeys.init, DropKeys.swift:23 (the session id,
+   which crosses the network in the clear, is :22).
+   AttachKeyIsSessionID falsifies only_the_sender_attaches_a_data_connection.                */
+#ifdef AttachKeyIsSessionID
+macros: attachKey(master) = kdf(master, 'session id')
+#else
+macros: attachKey(master) = kdf(master, 'attach')
+#endif
+
+/* The tag is over the session id, the connection's number and the receiver's challenge.
+   DropKeys.attachTag, DropKeys.swift:33; the challenge is DropListener.serve's,
+   Listener.swift:199. NoChallengeInTag and NoConnInTag each falsify
+   only_the_sender_attaches_a_data_connection. (The session id in it is a second tie and
+   not the only one: the attach key is this drop's alone. Taken out, nothing fails.)         */
+#ifdef NoChallengeInTag
+macros: attachTag(akey, sid, conn, c) = mac(akey, <sid, conn>)
+#endif
+#ifdef NoConnInTag
+macros: attachTag(akey, sid, conn, c) = mac(akey, <sid, c>)
+#endif
+#ifdef not NoChallengeInTag & not NoConnInTag
+macros: attachTag(akey, sid, conn, c) = mac(akey, <sid, conn, c>)
+#endif
+
+/* Each data connection has a key of its own. DropKeys.stream, DropKeys.swift:29.
+   NoConnInStreamKey should falsify what_is_written_is_what_the_sender_sealed (a record moves
+   to another connection of the drop) and what_a_speed_test_counts_is_what_the_other_mac_sealed
+   (a record the tester sent comes back to it). NOT SETTLED: the search did not finish.      */
+#ifdef NoConnInStreamKey
+macros: streamKey(master, conn) = kdf(master, 'stream')
+#else
+macros: streamKey(master, conn) = kdf(master, <'stream', conn>)
+#endif
+
+/* A chunk is sealed with its header as associated data. RecordHeader.seal,
+   DropKeys.swift:59; ReceiveSession.receive, Receiver.swift:516.
+   By itself NoHeaderBinding should falsify nothing, here or in the code: a header and its
+   chunk are consecutive counts under a key nothing else is sealed with, and that ties them
+   already. The header as associated data is the tie that is left when a stream key is used
+   on two connections: with NoConnInStreamKey, a_chunk_is_written_only_under_its_own_header
+   should still hold, and with both flags be falsified. NOT SETTLED, any of the three: the
+   search did not finish (see MUTANTS above).                                                */
+#ifdef NoHeaderBinding
+macros: chunkAD(hdr) = 'none'
+#else
+macros: chunkAD(hdr) = hdr
+#endif
+
+/* The two proofs of a resume are over the new handshake's hash, each under its own label.
+   DropKeys.resumeProof, DropKeys.swift:36; SendSession.reconnect, Sender.swift:272 and :275;
+   ReceiveSession.resume, Receiver.swift:157 and :158.
+   NoHashInResume should falsify only_the_sender_resumes_a_drop: a proof made for one
+   handshake is good for another (it takes both keys given away after the drop began: one
+   to read the sender's proof, one to present it). SameResumeLabel should falsify
+   only_the_receiver_confirms_a_resume: the sender's own proof is handed back to it as the
+   receiver's. NOT SETTLED, either: the search did not finish (see MUTANTS above).           */
+#ifdef NoHashInResume
+macros: resumeProof(rkey, hash) = mac(rkey, 'resume'), resumedProof(rkey, hash) = mac(rkey, 'resumed')
+#endif
+#ifdef SameResumeLabel
+macros: resumeProof(rkey, hash) = mac(rkey, <'resume', hash>), resumedProof(rkey, hash) = mac(rkey, <'resume', hash>)
+#endif
+#ifdef not NoHashInResume & not SameResumeLabel
+macros: resumeProof(rkey, hash) = mac(rkey, <'resume', hash>), resumedProof(rkey, hash) = mac(rkey, <'resumed', hash>)
+#endif
 
 /* ---- Macs and their static keys ---------------------------------------------------------- */
 
@@ -89,35 +296,35 @@ rule Reveal_Static:
 
 rule I_1:
   let gEI = 'g'^~ei
-      h0  = h(<'Noise_XX_25519_AESGCM_SHA256', 'nimbus-drop/3', $oi, orr>)
+      h0  = prologueHash($oi, orr)
       h1  = h(<h0, gEI>)
       h1p = h(<h1, 'empty'>)
   in
     [ Fr(~ei), !Ltk($I, ~si), In(orr) ]
   --[ IStart($I, gEI), Eph(~ei) ]->
-    [ I_St1($I, ~si, ~ei, h1p), Out(<$oi, gEI>) ]
+    [ I_St1($I, ~si, ~ei, h1p, $oi, orr), Out(<$oi, gEI>) ]
 
 rule R_1:
   let gER = 'g'^~er
       gSR = 'g'^~sr
-      h0  = h(<'Noise_XX_25519_AESGCM_SHA256', 'nimbus-drop/3', oi, $or>)
+      h0  = prologueHash(oi, $or)
       h1  = h(<h0, gEI>)
       h1p = h(<h1, 'empty'>)
       h2  = h(<h1p, gER>)
-      ee  = gEI^~er
+      ee  = dhEE(gEI, ~er)
       ck1 = hkdf1('Noise_XX_25519_AESGCM_SHA256', ee)
       k1  = hkdf2('Noise_XX_25519_AESGCM_SHA256', ee)
-      cs  = aead(k1, '0', h2, gSR)
+      cs  = aead(k1, '0', sealAD(h2), gSR)
       h3  = h(<h2, cs>)
-      es  = gEI^~sr
+      es  = dhES(gEI, ~sr)
       ck2 = hkdf1(ck1, es)
       k2  = hkdf2(ck1, es)
-      cp  = aead(k2, '0', h3, 'empty')
+      cp  = aead(k2, '0', sealAD(h3), 'empty')
       h4  = h(<h3, cp>)
   in
     [ Fr(~er), !Ltk($R, ~sr), In(<oi, gEI>) ]
   --[ RAnswered($R, gSR, gEI), Eph(~er) ]->
-    [ R_St1($R, ~sr, ~er, gEI, ck2, k2, h4), Out(<gER, cs, cp>) ]
+    [ R_St1($R, ~sr, ~er, gEI, ck2, k2, h4, oi, $or), Out(<gER, cs, cp>) ]
 
 /* The initiator after message 2: the responder's key is read and proved; nothing of this Mac
    has been said. This is where a probe stops (Channel.probe) and where `expect` and `check`
@@ -125,149 +332,260 @@ rule R_1:
 rule I_2:
   let gEI = 'g'^~ei
       h2  = h(<h1p, gER>)
-      ee  = gER^~ei
+      ee  = dhEE(gER, ~ei)
       ck1 = hkdf1('Noise_XX_25519_AESGCM_SHA256', ee)
       k1  = hkdf2('Noise_XX_25519_AESGCM_SHA256', ee)
-      cs  = aead(k1, '0', h2, gSR)
+      cs  = aead(k1, '0', sealAD(h2), gSR)
       h3  = h(<h2, cs>)
-      es  = gSR^~ei
+      es  = dhES(gSR, ~ei)
       ck2 = hkdf1(ck1, es)
       k2  = hkdf2(ck1, es)
-      cp  = aead(k2, '0', h3, 'empty')
+      cp  = message2Payload(k2, sealAD(h3), whatever)
       h4  = h(<h3, cp>)
   in
-    [ I_St1($I, ~si, ~ei, h1p), In(<gER, cs, cp>) ]
+    [ I_St1($I, ~si, ~ei, h1p, oi, orr), In(<gER, cs, cp>) ]
   --[ Probed($I, gSR, gEI) ]->
-    [ I_St2($I, ~si, gER, gSR, ck2, k2, h4) ]
+    [ I_St2($I, ~si, gER, gSR, ck2, k2, h4, oi, orr) ]
 
 /* Message 3: only now is this Mac's key said, sealed for the responder that was proved.     */
 rule I_3:
   let gSI = 'g'^~si
-      cs2 = aead(k2, '1', h4, gSI)
+      cs2 = aead(k2, '1', sealAD(h4), gSI)
       h5  = h(<h4, cs2>)
-      se  = gER^~si
+      se  = dhSE(gER, ~si)
       ck3 = hkdf1(ck2, se)
       k3  = hkdf2(ck2, se)
-      cp2 = aead(k3, '0', h5, 'empty')
+      cp2 = aead(k3, '0', sealAD(h5), 'empty')
       h6  = h(<h5, cp2>)
       kIR = hkdf1(ck3, 'split')
-      kRI = hkdf2(ck3, 'split')
-      master = hkdf3(ck3, 'split')
+      kRI = keyRI(ck3)
+      master = masterOf(ck3, h6)
   in
-    [ I_St2($I, ~si, gER, gSR, ck2, k2, h4) ]
+    [ I_St2($I, ~si, gER, gSR, ck2, k2, h4, oi, orr) ]
   --[ IDone($I, gSI, gSR, h6, kIR, kRI, master),
-      Session(h6, master) ]->
+      Openings('I', h6, oi, orr) ]->
     [ Out(<cs2, cp2>),
-      !Sess('I', gSI, gSR, h6, kIR, kRI, master) ]
+      I_Open(gSI, gSR, h6, kIR, kRI, master) ]
 
 rule R_2:
   let gSR = 'g'^~sr
-      cs2 = aead(k2, '1', h4, gSI)
+      cs2 = aead(k2, '1', sealAD(h4), gSI)
       h5  = h(<h4, cs2>)
-      se  = gSI^~er
+      se  = dhSE(gSI, ~er)
       ck3 = hkdf1(ck2, se)
       k3  = hkdf2(ck2, se)
-      cp2 = aead(k3, '0', h5, 'empty')
+      cp2 = message3Payload(k3, sealAD(h5), whatever)
       h6  = h(<h5, cp2>)
       kIR = hkdf1(ck3, 'split')
-      kRI = hkdf2(ck3, 'split')
-      master = hkdf3(ck3, 'split')
+      kRI = keyRI(ck3)
+      master = masterOf(ck3, h6)
   in
-    [ R_St1($R, ~sr, ~er, gEI, ck2, k2, h4), In(<cs2, cp2>) ]
+    [ R_St1($R, ~sr, ~er, gEI, ck2, k2, h4, oi, orr), In(<cs2, cp2>) ]
   --[ RDone($R, gSR, gSI, h6, kIR, kRI, master),
-      Session(h6, master) ]->
-    [ !Sess('R', gSR, gSI, h6, kIR, kRI, master) ]
+      Openings('R', h6, oi, orr) ]->
+    [ R_Open(gSR, gSI, h6, kIR, kRI, master) ]
 
-/* ---- A drop: one master, from the handshake that carried the offer -------------------------
-   The initiator of that handshake is the sender. A secret chunk goes over a data connection:
-   the receiver sends a fresh challenge, the sender answers with the session id, a connection
-   number and a tag under the attach key, and then seals records under that connection's key.
-   Each connection number is used once in a drop, at both ends.                               */
+/* ---- The hello: the first sealed message each way ------------------------------------------
+   The initiator says what the connection is for ($p: drop, resume, speed, pair, verify,
+   retire, or nothing; with it, in the code, its name, its key's time left and whether it has
+   this Mac paired), and the responder answers with its own hello ($x). Only then is the
+   connection anything: a channel is used for one purpose, the one its hello gave
+   (SendSession.open, SpeedTest.run; DropListener.serve switches on it once and returns).
+   The channel's state before that is a fact that is used up, so each end says and hears one
+   hello for a handshake: what a CipherState's count does (count 0 is sealed once).          */
+
+rule I_Hello:
+  let hello = purposeHello(kIR, <'hello', $p>)
+  in
+    [ I_Open(gSI, gSR, hh, kIR, kRI, master) ]
+  --[ ISaid(gSI, gSR, hh, master, $p) ]->
+    [ Out(hello), I_Wait($p, gSI, gSR, hh, kIR, kRI, master) ]
+
+rule R_Hello:
+  let hello = purposeHello(kIR, <'hello', p>)
+  in
+    [ R_Open(gSR, gSI, hh, kIR, kRI, master), In(hello) ]
+  --[ RHeard(gSR, gSI, hh, master, p), RSaid(gSR, gSI, hh, master, $x) ]->
+    [ Out(aead(kRI, '0', 'none', <'hello', $x>)), !Sess('R', p, gSR, gSI, hh, kIR, kRI, master) ]
+
+rule I_Hears:
+    [ I_Wait(p, gSI, gSR, hh, kIR, kRI, master), In(aead(kRI, '0', 'none', <'hello', x>)) ]
+  --[ IHeard(gSI, gSR, hh, kIR, kRI, master, p, x) ]->
+    [ !Sess('I', p, gSI, gSR, hh, kIR, kRI, master) ]
+
+/* ---- Data connections: one master, from the handshake that carried the offer ---------------
+   The initiator of that handshake is the sender. The receiver sends a fresh challenge; the
+   sender answers with the session id, a connection number and a tag under the attach key
+   (ReceiveSession.claim), and then seals records under that connection's key
+   (ReceiveSession.receive). A secret chunk goes in the one record a connection carries here.
+
+   Each connection number is used once under a master, at both ends (Once): the sender takes
+   numbers from one counter for the whole drop (SendSession.attach, Sender.swift:488), and the
+   receiver takes each number once (ReceiveSession.claim, Receiver.swift:110;
+   SpeedResponder.claim, SpeedTest.swift:347).
+
+   The rules are the same whatever the hello said the connection was for (p), and p is in
+   every fact: a speed test's first half is exactly this, with the bytes thrown away instead
+   of written (SpeedWire.receive), so "Written" for p = 'speed' reads "opened and counted".
+   That a drop's rules can also run under some other purpose is more than the code does, and
+   the lemmas hold all the same.                                                              */
 
 rule Receiver_Challenge:
-    [ !Sess('R', gSR, gSI, hh, kIR, kRI, master), Fr(~c) ]
+    [ !Sess('R', p, gSR, gSI, hh, kIR, kRI, master), Fr(~c) ]
   --[ Challenge(master, ~c) ]->
-    [ Data_R(gSR, gSI, master, ~c), Out(~c) ]
+    [ Data_R(p, gSR, gSI, hh, master, ~c), Out(~c) ]
 
 rule Sender_Attach:
   let sid  = kdf(master, 'session id')
-      akey = kdf(master, 'attach')
-      skey = kdf(master, <'stream', $conn>)
-      tag  = mac(akey, <sid, $conn, c>)
+      akey = attachKey(master)
+      skey = streamKey(master, $conn)
+      tag  = attachTag(akey, sid, $conn, c)
       hdr  = <$file, $index>
-      rec  = <aead(skey, <'hdr', $n>, 'none', hdr), aead(skey, <'chunk', $n>, hdr, ~chunk)>
+      rec  = <aead(skey, <'hdr', $n>, 'none', hdr), aead(skey, <'chunk', $n>, chunkAD(hdr), ~chunk)>
   in
-    [ !Sess('I', gSI, gSR, hh, kIR, kRI, master), In(c), Fr(~chunk) ]
-  --[ Attached(gSI, gSR, master, $conn, c),
-      Sealed(gSI, gSR, master, $conn, $n, hdr, ~chunk),
-      SecretChunk(gSI, gSR, ~chunk),
+    [ !Sess('I', p, gSI, gSR, hh, kIR, kRI, master), In(c), Fr(~chunk) ]
+  --[ Attached(p, gSI, gSR, hh, master, $conn, c),
+      Sealed(p, gSI, gSR, hh, master, $conn, $n, hdr, ~chunk),
+      SecretChunk(gSI, gSR, hh, ~chunk),
       Once(<'send conn', master, $conn>) ]->
-    [ Out(<sid, $conn, tag, $n, rec>) ]
+    [ Out(<<sid, $conn, tag>, <$n, rec>>) ]
+
+/* Taking a connection and reading from it are two steps, as in the code: the tag is checked
+   before any record is looked at. (They were one rule at first, and then a tag that did not
+   cover the connection's number went unnoticed: the record's key covered for it.)           */
+rule Receiver_Claims:
+  let sid  = kdf(master, 'session id')
+      akey = attachKey(master)
+      tag  = attachTag(akey, sid, conn, ~c)
+  in
+    [ Data_R(p, gSR, gSI, hh, master, ~c), In(<sid, conn, tag>) ]
+  --[ Claimed(p, gSR, gSI, hh, master, conn, ~c),
+      Once(<'claim conn', master, conn>) ]->
+    [ Stream_R(p, gSR, gSI, hh, master, conn) ]
 
 rule Receiver_Takes_Record:
-  let sid  = kdf(master, 'session id')
-      akey = kdf(master, 'attach')
-      skey = kdf(master, <'stream', conn>)
-      tag  = mac(akey, <sid, conn, ~c>)
-      rec  = <aead(skey, <'hdr', n>, 'none', hdr), aead(skey, <'chunk', n>, hdr, body)>
+  let skey = streamKey(master, conn)
+      rec  = <aead(skey, <'hdr', n>, 'none', hdr), aead(skey, <'chunk', n>, chunkAD(hdr), body)>
   in
-    [ Data_R(gSR, gSI, master, ~c), In(<sid, conn, tag, n, rec>) ]
-  --[ Claimed(gSR, gSI, master, conn, ~c),
-      Written(gSR, gSI, master, conn, n, hdr, body),
-      Once(<'claim conn', master, conn>) ]->
+    [ Stream_R(p, gSR, gSI, hh, master, conn), In(<n, rec>) ]
+  --[ Written(p, gSR, gSI, hh, master, conn, n, hdr, body) ]->
     [ ]
 
-/* ---- Resume: a new handshake between the same two keys, and proof of the drop's keys ------- */
+/* ---- A speed test's second half: records coming back ---------------------------------------
+   The tester opens and proves every connection of both directions (SpeedTest.attach). On the
+   first n it sends, which is the rules above with p = 'speed'. On the rest the Mac that was
+   asked sends and the tester opens and counts (SpeedResponder.carry, SpeedTest.swift:360;
+   SpeedWire.receive). A connection goes one way only: at the tester because a number is
+   used once (Once, 'send conn'), at the other Mac because a connection it took is a fact
+   that is used up by reading from it or by writing to it.                                    */
+
+rule Tester_Attach_Down:
+  let sid  = kdf(master, 'session id')
+      akey = attachKey(master)
+      tag  = attachTag(akey, sid, $conn, c)
+  in
+    [ !Sess('I', 'speed', gSI, gSR, hh, kIR, kRI, master), In(c) ]
+  --[ Attached('speed', gSI, gSR, hh, master, $conn, c),
+      Once(<'send conn', master, $conn>) ]->
+    [ Out(<sid, $conn, tag>), Down_I(gSI, gSR, hh, master, $conn) ]
+
+rule Responder_Sends_Down:
+  let skey = streamKey(master, conn)
+      hdr  = <$file, $index>
+      rec  = <aead(skey, <'hdr', $n>, 'none', hdr), aead(skey, <'chunk', $n>, chunkAD(hdr), ~bytes)>
+  in
+    [ Stream_R('speed', gSR, gSI, hh, master, conn), Fr(~bytes) ]
+  --[ SealedDown(gSR, gSI, hh, master, conn, $n, hdr, ~bytes) ]->
+    [ Out(<$n, rec>) ]
+
+rule Tester_Counts_Down:
+  let skey = streamKey(master, conn)
+      rec  = <aead(skey, <'hdr', n>, 'none', hdr), aead(skey, <'chunk', n>, chunkAD(hdr), bytes)>
+  in
+    [ Down_I(gSI, gSR, hh, master, conn), In(<n, rec>) ]
+  --[ CountedDown(gSI, gSR, hh, master, conn, n, hdr, bytes) ]->
+    [ ]
+
+/* ---- Resume: a new handshake between the same two keys, and proof of the drop's keys -------
+   The new connection's hello says `resume`; the drop's own said `drop`. Both ends ask for
+   the same key at the other end as before (SendSession.reconnect: `expect: peer`;
+   DropListener.serve: `session.peerKey == key`), and the proofs go as the channel's second
+   message each way.                                                                          */
 
 rule Sender_Resume:
   let rkey  = kdf(master, 'resume')
       sid   = kdf(master, 'session id')
-      proof = mac(rkey, <'resume', h2>)
+      proof = resumeProof(rkey, h2)
   in
-    [ !Sess('I', gSI, gSR, hh, kIR, kRI, master),
-      !Sess('I', gSI, gSR, h2, kIR2, kRI2, master2) ]
-  --[ ResumeAsked(gSI, gSR, master, h2), Neq(hh, h2) ]->
-    [ Out(aead(kIR2, 'm0', 'none', <'resume', sid, proof>)),
-      Resuming(gSI, gSR, master, h2, kRI2) ]
+    [ !Sess('I', 'drop', gSI, gSR, hh, kIR, kRI, master),
+      !Sess('I', 'resume', gSI, gSR, h2, kIR2, kRI2, master2) ]
+  --[ ResumeAsked(gSI, gSR, hh, master, h2) ]->
+    [ Out(aead(kIR2, '1', 'none', <'resume', sid, proof>)),
+      Resuming(gSI, gSR, hh, master, h2, kRI2) ]
 
 rule Receiver_Resumes:
   let rkey  = kdf(master, 'resume')
       sid   = kdf(master, 'session id')
-      proof = mac(rkey, <'resume', h2>)
-      back  = mac(rkey, <'resumed', h2>)
+      proof = resumeProof(rkey, h2)
+      back  = resumedProof(rkey, h2)
   in
-    [ !Sess('R', gSR, gSI, hh, kIR, kRI, master),
-      !Sess('R', gSR, gSI, h2, kIR2, kRI2, master2),
-      In(aead(kIR2, 'm0', 'none', <'resume', sid, proof>)) ]
-  --[ Resumed(gSR, gSI, master, h2), Neq(hh, h2) ]->
-    [ Out(aead(kRI2, 'm0', 'none', <'resumed', back>)) ]
+    [ !Sess('R', 'drop', gSR, gSI, hh, kIR, kRI, master),
+      !Sess('R', 'resume', gSR, gSI, h2, kIR2, kRI2, master2),
+      In(aead(kIR2, '1', 'none', <'resume', sid, proof>)) ]
+  --[ Resumed(gSR, gSI, hh, master, h2) ]->
+    [ Out(aead(kRI2, '1', 'none', <'resumed', back>)) ]
 
 rule Sender_Resumed:
   let rkey  = kdf(master, 'resume')
-      back  = mac(rkey, <'resumed', h2>)
+      back  = resumedProof(rkey, h2)
   in
-    [ Resuming(gSI, gSR, master, h2, kRI2), In(aead(kRI2, 'm0', 'none', <'resumed', back>)) ]
-  --[ ResumeConfirmed(gSI, gSR, master, h2) ]->
+    [ Resuming(gSI, gSR, hh, master, h2, kRI2), In(aead(kRI2, '1', 'none', <'resumed', back>)) ]
+  --[ ResumeConfirmed(gSI, gSR, hh, master, h2) ]->
     [ ]
-
-restriction Unequal: "All a #i. Neq(a, a) @ i ==> F"
 
 /* ================================== Lemmas ================================================ */
 
-/* The model can run: a handshake, a record delivered, a resume confirmed. Without these a
+/* The model can run: every honest flow, to its end, with no key given away. Without these a
    lemma could hold because nothing ever happens.                                             */
 lemma can_finish_a_handshake: exists-trace
   "Ex I R gSI gSR hh kIR kRI m #i #j.
       IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ j
       & not (Ex X #r. RevealStatic(X) @ r)"
 
+/* A probe: the responder's key proved, and the prober hangs up without saying its own.       */
+lemma can_probe_and_hang_up: exists-trace
+  "Ex I R gSR gEI #i #j.
+      Probed(I, gSR, gEI) @ i & RAnswered(R, gSR, gEI) @ j
+      & not (Ex I2 gSI gSR2 hh kIR kRI m #k. IDone(I2, gSI, gSR2, hh, kIR, kRI, m) @ k)
+      & not (Ex X #r. RevealStatic(X) @ r)"
+
+lemma can_say_what_a_connection_is_for: exists-trace
+  "Ex gSI gSR hh kIR kRI m p x #i #j.
+      IHeard(gSI, gSR, hh, kIR, kRI, m, p, x) @ i & RHeard(gSR, gSI, hh, m, p) @ j
+      & not (Ex X #r. RevealStatic(X) @ r)"
+
 lemma can_deliver_a_record: exists-trace
-  "Ex gSR gSI m conn n hdr body #i #j.
-      Written(gSR, gSI, m, conn, n, hdr, body) @ i & Sealed(gSI, gSR, m, conn, n, hdr, body) @ j
+  "Ex gSR gSI hh m conn n hdr body #i #j.
+      Written('drop', gSR, gSI, hh, m, conn, n, hdr, body) @ i & Sealed('drop', gSI, gSR, hh, m, conn, n, hdr, body) @ j
       & not (Ex X #r. RevealStatic(X) @ r)"
 
 lemma can_resume: exists-trace
-  "Ex gSI gSR m h2 #i. ResumeConfirmed(gSI, gSR, m, h2) @ i & not (Ex X #r. RevealStatic(X) @ r)"
+  "Ex gSI gSR hh m h2 #i. ResumeConfirmed(gSI, gSR, hh, m, h2) @ i & not (Ex X #r. RevealStatic(X) @ r)"
+
+/* A speed test: a record each way, on two connections of the one test.                       */
+lemma can_run_a_speed_test: exists-trace
+  "Ex gSR gSI hh m c1 n1 hdr1 b1 c2 n2 hdr2 b2 #i #j #k.
+      Written('speed', gSR, gSI, hh, m, c1, n1, hdr1, b1) @ i
+      & SealedDown(gSR, gSI, hh, m, c2, n2, hdr2, b2) @ j & CountedDown(gSI, gSR, hh, m, c2, n2, hdr2, b2) @ k
+      & not (Ex X #r. RevealStatic(X) @ r)"
+
+/* And the case the lemmas below make a point of covering can happen: a handshake between two
+   Macs, finished by both, when the initiator's own key was given away before it began.       */
+lemma can_finish_when_the_initiators_own_key_was_given_away: exists-trace
+  "Ex I R gSI gSR hh kIR kRI m #i #j #r.
+      IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ j
+      & RevealStatic(gSI) @ r & #r < #i & #r < #j
+      & not (Ex #r2. RevealStatic(gSR) @ r2)"
 
 /* Helpers ([reuse]: proved here, then used by the lemmas below). A Mac's ephemeral secret is
    never said; its static secret is known only by being given away.                            */
@@ -316,8 +634,8 @@ lemma the_responder_agrees_with_the_initiator [reuse]:
         | (Ex #r. RevealStatic(gSI) @ r & #r < #i)"
 
 /* The initiator finishes first, so what it can know then is that the responder it names
-   answered this very handshake; that the responder goes on to the same keys is the lemma
-   above read from the other end.                                                             */
+   answered this very handshake. That the responder went on to the same keys it learns from
+   the responder's first sealed message: the_initiator_hears_only_the_responder, below.       */
 lemma the_initiator_agrees_with_the_responder [reuse]:
   "All I B gSI gSR hh kIR kRI m #i #b. IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & Static(B, gSR) @ b
       ==> (Ex R gEI #j. RAnswered(R, gSR, gEI) @ j & #j < #i)
@@ -331,76 +649,217 @@ lemma the_handshake_hash_binds_both_static_keys [reuse]:
       IDone(I, gSI, gSRseen, hh, k1, k2, m) @ i & RDone(R, gSR, gSIseen, hh, k3, k4, m2) @ j
       ==> gSRseen = gSR & gSIseen = gSI & m = m2"
 
+/* And one pair of openings: two Macs that hold the same `h` each saw the list of majors the
+   other sent. No condition. With the agreement above: nobody altered an opening on the way
+   to a handshake that finished. (Until this lemma was written, taking the prologue out of
+   the hash falsified nothing.)                                                               */
+lemma the_handshake_hash_binds_the_openings:
+  "All hh oi orr oi2 or2 #i #j. Openings('I', hh, oi, orr) @ i & Openings('R', hh, oi2, or2) @ j
+      ==> oi = oi2 & orr = or2"
+
+/* A hash names one handshake at each end: neither end finishes two with the same `h`. No
+   condition. With the two agreements, each end's handshake answers to exactly one of the
+   other's.                                                                                   */
+lemma a_handshake_hash_is_one_initiators:
+  "All I gSI gSR hh kIR kRI m I2 gSI2 gSR2 kIR2 kRI2 m2 #i #j.
+      IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & IDone(I2, gSI2, gSR2, hh, kIR2, kRI2, m2) @ j ==> #i = #j"
+
+lemma a_handshake_hash_is_one_responders:
+  "All R gSR gSI hh kIR kRI m R2 gSR2 gSI2 kIR2 kRI2 m2 #i #j.
+      RDone(R, gSR, gSI, hh, kIR, kRI, m) @ i & RDone(R2, gSR2, gSI2, hh, kIR2, kRI2, m2) @ j ==> #i = #j"
+
 /* Helpers for what follows: `master` names one handshake. When a responder finished with a
-   Mac whose key had not been given away, any initiator that holds the same `master` is the one
-   it finished with (same keys, same hash, same transport keys); and the same from the
-   initiator's end. (Stated for a key never given away, which is all the drop lemmas need.
-   With no condition at all, that no two handshakes ever share a `master`, the prover was
-   stopped after a minute and 5 GB; that stronger statement is not proved here.)              */
+   Mac whose key had not been given away by then, any initiator that holds the same `master`
+   is the one it finished with (same keys, same hash, same transport keys); and the same from
+   the initiator's end. This is what keeps one drop's keys, or a speed test's, from being
+   anything to another. (With no condition at all, that no two handshakes ever share a
+   `master`, the prover was stopped after a minute and 5 GB; that stronger statement is not
+   proved here.)                                                                              */
 lemma the_responders_master_is_one_handshake [reuse]:
   "All R A gSR gSI hh kIR kRI I2 gSI2 gSR2 hh2 kIR2 kRI2 m #i #j #a.
       RDone(R, gSR, gSI, hh, kIR, kRI, m) @ i & Static(A, gSI) @ a
       & IDone(I2, gSI2, gSR2, hh2, kIR2, kRI2, m) @ j
       ==> (gSI2 = gSI & gSR2 = gSR & hh2 = hh & kIR2 = kIR & kRI2 = kRI)
-        | (Ex #r. RevealStatic(gSI) @ r)"
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #i)"
 
-lemma the_initiators_master_is_one_handshake [reuse]:
+lemma the_initiators_master_is_one_handshake [reuse, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake]:
   "All I B gSI gSR hh kIR kRI R2 gSR2 gSI2 hh2 kIR2 kRI2 m #i #j #b.
       IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & Static(B, gSR) @ b
       & RDone(R2, gSR2, gSI2, hh2, kIR2, kRI2, m) @ j
       ==> (gSI2 = gSI & gSR2 = gSR & hh2 = hh & kIR2 = kIR & kRI2 = kRI)
-        | (Ex #r. RevealStatic(gSR) @ r)"
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #i)"
 
-/* How the lemmas about a drop are searched: first what the drop itself says (tags, keys and
-   records derived from `master`), and the handshake that made `master` last. The helpers
-   above already say what a finished handshake gives, so its messages need not be taken
-   apart again. A tactic orders the search; it cannot make a false lemma come out true.       */
+/* And at each end `master` is no other handshake's of that end: two responders never hold
+   the same one, nor two initiators (when the first finished with a key not given away by
+   then). Without these a guard whose removal lets two connections share a key sends the
+   search past 12 GB: it has to rule out, from the handshake's own messages, that an end
+   finished twice with one `master`. With them, OneTransportKey is found in 24 s.            */
+lemma the_responders_master_is_no_other_responders [reuse, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake]:
+  "All R A gSR gSI hh kIR kRI R2 gSR2 gSI2 hh2 kIR2 kRI2 m #i #j #a.
+      RDone(R, gSR, gSI, hh, kIR, kRI, m) @ i & Static(A, gSI) @ a
+      & RDone(R2, gSR2, gSI2, hh2, kIR2, kRI2, m) @ j
+      ==> #i = #j
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #i)"
+
+lemma the_initiators_master_is_no_other_initiators [reuse, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders]:
+  "All I B gSI gSR hh kIR kRI I2 gSI2 gSR2 hh2 kIR2 kRI2 m #i #j #b.
+      IDone(I, gSI, gSR, hh, kIR, kRI, m) @ i & Static(B, gSR) @ b
+      & IDone(I2, gSI2, gSR2, hh2, kIR2, kRI2, m) @ j
+      ==> #i = #j
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #i)"
+
+/* How the lemmas from here on are searched (see HOW IT IS PROVED): the facts of the drop
+   first; then what the helpers say of the lemma's own handshake, whose time every lemma
+   below calls #done; then tags, keys and records derived from `master`; the handshake's own
+   messages last, and last of all what the helpers say of any other handshake.                */
 tactic: drop
 presort: C
 prio:
-    regex ".*Data_R\(.*" | regex ".*!Sess\(.*" | regex ".*Resuming\(.*"
+    regex ".*Data_R\(.*" | regex ".*Stream_R\(.*" | regex ".*Down_I\(.*" | regex ".*!Sess\(.*" | regex ".*Resuming\(.*" | regex ".*I_Wait\(.*" | regex ".*I_Open\(.*" | regex ".*R_Open\(.*"
 prio:
-    regex "^ +\(.*"
+    regex "^ +\(.*< #done\)"
 prio:
-    regex ".*!KU\( mac\(.*" | regex ".*!KU\( kdf\(.*" | regex ".*!KU\( aead\(kdf\(.*" | regex ".*!KU\( aead\(hkdf[12]\(hkdf1\(hkdf1\(hkdf1\(.*" | regex ".*!KU\( hkdf[123]\(hkdf1\(hkdf1\(hkdf1\(.*" | regex ".*!KU\( ~.*"
+    regex ".*!KU\( mac\(.*" | regex ".*!KU\( kdf\(.*" | regex ".*!KU\( aead\(kdf\(.*" | regex ".*!KU\( ~.*"
+prio:
+    regex ".*!KU\( aead\(hkdf[12]\(hkdf1\(hkdf1\(hkdf1\(.*" | regex ".*!KU\( hkdf[123]\(hkdf1\(hkdf1\(hkdf1\(.*"
 deprio:
-    regex ".*!KU\( h\(.*" | regex ".*!KU\( aead\(hkdf2\(.*" | regex ".*!KU\( hkdf.*" | regex ".*!KU\( 'g'.*" | regex ".*St1\(.*" | regex ".*splitEqs.*"
+    regex ".*!KU\( h\(.*" | regex ".*!KU\( aead\(hkdf2\(.*" | regex ".*!KU\( hkdf.*" | regex ".*!KU\( 'g'.*" | regex ".*St1\(.*" | regex ".*splitEqs.*" | regex ".*∥.*"
+
+/* ---- The hello ------------------------------------------------------------------------------ */
+
+/* What the responder takes a connection to be for is what the initiator said it was for, on
+   this handshake. So a Mac that opened a connection for a speed test has not offered a drop,
+   and one that came to resume has not asked for anything else.                               */
+lemma both_ends_agree_what_a_connection_is_for [reuse, heuristic={drop}]:
+  "All R A gSR gSI hh kIR kRI m p #i #done #a.
+      RHeard(gSR, gSI, hh, m, p) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      ==> (Ex #k. ISaid(gSI, gSR, hh, m, p) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
+
+/* The hello the initiator reads was said by the responder it proved, which by then had
+   finished this same handshake: same keys, same hash, same `master`. It is not the
+   initiator's own hello come back (the two directions have different keys), and with it the
+   initiator knows what the responder knew at the end of message 3.                           */
+lemma the_initiator_hears_only_the_responder [reuse, heuristic={drop}]:
+  "All I B gSI gSR hh kIR kRI m p x #i #done #b.
+      IHeard(gSI, gSR, hh, kIR, kRI, m, p, x) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
+      ==> (Ex R #k #l. RDone(R, gSR, gSI, hh, kIR, kRI, m) @ k & #k < #l
+             & RSaid(gSR, gSI, hh, m, x) @ l & #l < #i)
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
+
+/* ---- Data connections ----------------------------------------------------------------------- */
 
 /* A data connection is taken only from the Mac that holds the drop's keys, for that
-   connection number and for the challenge this receiver made for it.                         */
-lemma only_the_sender_attaches_a_data_connection [heuristic={drop}]:
-  "All A B gSR gSI m conn c #i #a #b. Claimed(gSR, gSI, m, conn, c) @ i & Static(A, gSI) @ a & Static(B, gSR) @ b
-      ==> (Ex #j. Attached(gSI, gSR, m, conn, c) @ j & #j < #i)
-        | (Ex #r. RevealStatic(gSI) @ r)
-        | (Ex #r. RevealStatic(gSR) @ r)"
+   connection number, for the challenge this receiver made for it, and for a connection of
+   the same purpose. Also when the sender's key is given away while the drop runs: it is the
+   drop's keys that attach, not the Mac's.                                                    */
+lemma only_the_sender_attaches_a_data_connection [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All p R A gSR gSI hh kIR kRI m conn c #i #done #a.
+      Claimed(p, gSR, gSI, hh, m, conn, c) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      ==> (Ex #k. Attached(p, gSI, gSR, hh, m, conn, c) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
+
+/* What the header as associated data is for: a chunk is written only under the header
+   (which file, which chunk) the sender sealed it with. Here it follows from the lemma below
+   and is proved before it, so that a mutant of that one cannot be assumed; that it holds by
+   the header alone, with one stream key for a whole drop, is NOT SETTLED (see MUTANTS).     */
+lemma a_chunk_is_written_only_under_its_own_header [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All p R A gSR gSI hh kIR kRI m conn n hdr body #i #done #a.
+      Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      ==> (Ex conn2 n2 #k. Sealed(p, gSI, gSR, hh, m, conn2, n2, hdr, body) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
 
 /* The one outcome that must never happen, as far as the cryptography goes: what is written
-   is what the sender sealed, under that header, on that connection, at that count.           */
-lemma what_is_written_is_what_the_sender_sealed [heuristic={drop}]:
-  "All A B gSR gSI m conn n hdr body #i #a #b.
-      Written(gSR, gSI, m, conn, n, hdr, body) @ i & Static(A, gSI) @ a & Static(B, gSR) @ b
-      ==> (Ex #j. Sealed(gSI, gSR, m, conn, n, hdr, body) @ j & #j < #i)
-        | (Ex #r. RevealStatic(gSI) @ r)
-        | (Ex #r. RevealStatic(gSR) @ r)"
+   is what the sender sealed, under that header, on that connection, at that count, for a
+   connection of that purpose.                                                                */
+lemma what_is_written_is_what_the_sender_sealed [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All p R A gSR gSI hh kIR kRI m conn n hdr body #i #done #a.
+      Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      ==> (Ex #k. Sealed(p, gSI, gSR, hh, m, conn, n, hdr, body) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
 
-lemma a_chunk_is_secret [heuristic={drop}]:
-  "All A B gSI gSR chunk #i #a #b. SecretChunk(gSI, gSR, chunk) @ i & Static(A, gSI) @ a & Static(B, gSR) @ b
+/* The other direction of a speed test: what the tester opens and counts was sealed by the
+   Mac it asked, for this test, on that connection. In particular it is not what the tester
+   itself sent on another connection.                                                         */
+lemma what_a_speed_test_counts_is_what_the_other_mac_sealed [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+  "All I B gSI gSR hh kIR kRI m conn n hdr bytes #i #done #b.
+      CountedDown(gSI, gSR, hh, m, conn, n, hdr, bytes) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
+      ==> (Ex #k. SealedDown(gSR, gSI, hh, m, conn, n, hdr, bytes) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
+
+/* A speed test and a drop: nothing of one is taken by the other. Whatever was sealed with
+   the bytes that got written was sealed for a connection of the same purpose, on the same
+   handshake, under the same `master`; and nothing a speed test sends back is ever written.
+   (An attach is covered by only_the_sender_attaches_a_data_connection, which has the purpose
+   in it; a resume is of a connection whose hello said `drop`, by the rules.)                 */
+lemma what_is_sealed_for_one_purpose_is_never_written_for_another [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All p q R A gSR gSI hh kIR kRI m conn n hdr body gSI2 gSR2 hh2 m2 conn2 n2 hdr2 #i #done #a #k.
+      Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      & Sealed(q, gSI2, gSR2, hh2, m2, conn2, n2, hdr2, body) @ k
+      ==> (q = p & hh2 = hh & m2 = m)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
+
+lemma what_a_speed_test_sends_back_is_never_written [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All p R A gSR gSI hh kIR kRI m conn n hdr body gSI2 gSR2 hh2 m2 conn2 n2 hdr2 #i #done #a #k.
+      Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      & SealedDown(gSR2, gSI2, hh2, m2, conn2, n2, hdr2, body) @ k
+      ==> (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
+
+/* Replay. A chunk the sender sealed is written only where it was sealed for (that Mac, that
+   handshake, that connection, that count, that header), whoever else the receiver, or any
+   other Mac, is talking to; and so it is written at most once. As the sender sees it: its
+   own key may be known.                                                                      */
+lemma a_sealed_chunk_is_written_only_where_it_was_sealed_for [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+  "All p I B gSI gSR hh kIR kRI m conn n hdr body p2 gSR2 gSI2 hh2 m2 conn2 n2 hdr2 #s #done #b #k.
+      Sealed(p, gSI, gSR, hh, m, conn, n, hdr, body) @ s & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
+      & Written(p2, gSR2, gSI2, hh2, m2, conn2, n2, hdr2, body) @ k
+      ==> (gSR2 = gSR & gSI2 = gSI & hh2 = hh & m2 = m & conn2 = conn & n2 = n & hdr2 = hdr)
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
+
+lemma a_sealed_chunk_is_written_once [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+  "All p I B gSI gSR hh kIR kRI m conn n hdr body p2 gSR2 gSI2 hh2 m2 conn2 n2 hdr2 p3 gSR3 gSI3 hh3 m3 conn3 n3 hdr3 #s #done #b #i #k.
+      Sealed(p, gSI, gSR, hh, m, conn, n, hdr, body) @ s & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
+      & Written(p2, gSR2, gSI2, hh2, m2, conn2, n2, hdr2, body) @ i
+      & Written(p3, gSR3, gSI3, hh3, m3, conn3, n3, hdr3, body) @ k
+      ==> #i = #k
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
+
+/* A chunk is secret, as the sender sees it: unless the receiver's key was given away before
+   the drop's handshake finished. Not if it is given away later, and not if the sender's is.  */
+lemma a_chunk_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed]:
+  "All I B gSI gSR hh kIR kRI m chunk #i #done #b.
+      SecretChunk(gSI, gSR, hh, chunk) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
       ==> not (Ex #k. K(chunk) @ k)
-        | (Ex #r. RevealStatic(gSI) @ r)
-        | (Ex #r. RevealStatic(gSR) @ r)"
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
+
+/* And as the receiver sees it: what it wrote is secret, unless the sender's key was given
+   away before the drop's handshake finished.                                                 */
+lemma what_is_written_is_secret [heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All p R A gSR gSI hh kIR kRI m conn n hdr body #i #done #a.
+      Written(p, gSR, gSI, hh, m, conn, n, hdr, body) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      ==> not (Ex #k. K(body) @ k)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
+
+/* ---- Resume --------------------------------------------------------------------------------- */
 
 /* A drop is picked up again only by the Mac that holds its keys, on the handshake the proof
-   was made for; and the sender takes "resumed" only from the receiver of that drop.          */
-lemma only_the_sender_resumes_a_drop [heuristic={drop}]:
-  "All A B gSR gSI m h2 #i #a #b. Resumed(gSR, gSI, m, h2) @ i & Static(A, gSI) @ a & Static(B, gSR) @ b
-      ==> (Ex #j. ResumeAsked(gSI, gSR, m, h2) @ j & #j < #i)
-        | (Ex #r. RevealStatic(gSI) @ r)
-        | (Ex #r. RevealStatic(gSR) @ r)"
+   was made for; and the sender takes "resumed" only from the receiver of that drop, for that
+   handshake. In both, the key that must not have been given away is the other Mac's, and
+   only until the DROP's handshake finished: a key given away after that (either Mac's, or
+   both) lets someone finish a new handshake under it, and that is not enough to pick the
+   drop up or to answer for it. (As first written these two allowed no key to be given away
+   at any time, and then, by reading, they said nothing of the hash in the proofs: the
+   channel alone carried them. Whether they do now is NOT SETTLED: see MUTANTS above.)        */
+lemma only_the_sender_resumes_a_drop [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
+  "All R A gSR gSI hh kIR kRI m h2 #i #done #a.
+      Resumed(gSR, gSI, hh, m, h2) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a
+      ==> (Ex #k. ResumeAsked(gSI, gSR, hh, m, h2) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSI) @ r & #r < #done)"
 
-lemma only_the_receiver_confirms_a_resume [heuristic={drop}]:
-  "All A B gSI gSR m h2 #i #a #b. ResumeConfirmed(gSI, gSR, m, h2) @ i & Static(A, gSI) @ a & Static(B, gSR) @ b
-      ==> (Ex #j. Resumed(gSR, gSI, m, h2) @ j & #j < #i)
-        | (Ex #r. RevealStatic(gSI) @ r)
-        | (Ex #r. RevealStatic(gSR) @ r)"
+lemma only_the_receiver_confirms_a_resume [heuristic={drop}, hide_lemma=master_is_secret_for_the_responder, hide_lemma=transport_keys_are_secret_for_the_responder, hide_lemma=the_responder_agrees_with_the_initiator, hide_lemma=the_responders_master_is_one_handshake, hide_lemma=the_responders_master_is_no_other_responders, hide_lemma=both_ends_agree_what_a_connection_is_for, hide_lemma=only_the_sender_attaches_a_data_connection, hide_lemma=what_is_written_is_what_the_sender_sealed, hide_lemma=only_the_sender_resumes_a_drop]:
+  "All I B gSI gSR hh kIR kRI m h2 #i #done #b.
+      ResumeConfirmed(gSI, gSR, hh, m, h2) @ i & IDone(I, gSI, gSR, hh, kIR, kRI, m) @ done & Static(B, gSR) @ b
+      ==> (Ex #k. Resumed(gSR, gSI, hh, m, h2) @ k & #k < #i)
+        | (Ex #r. RevealStatic(gSR) @ r & #r < #done)"
 
 end

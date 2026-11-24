@@ -22,7 +22,7 @@
     "kind": "exists-trace",
     "expect": "verified",
     "claim": "Reachability: a record the sender sealed is written by the receiver.",
-    "assumes": "none",
+    "assumes": "none (for the purpose `drop`, carrying the handshake hash)",
     "code": [
      "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
      "Sources/NimbusTransferCore/Receiver.swift: receive"
@@ -36,7 +36,7 @@
     "kind": "exists-trace",
     "expect": "verified",
     "claim": "Reachability: a resume is asked for, accepted and confirmed.",
-    "assumes": "none",
+    "assumes": "none (carrying the handshake hash)",
     "code": [
      "Sources/NimbusTransferCore/Sender.swift: reconnect",
      "Sources/NimbusTransferCore/Receiver.swift: resume"
@@ -198,7 +198,7 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "Isolation between sessions: any initiator holding the responder's master is the one it finished with.",
-    "assumes": "the initiator's key made by a Mac and never given away",
+    "assumes": "the initiator's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
     "code": [
      "Sources/NimbusCrypto/Crypto.swift: Noise",
      "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
@@ -213,7 +213,7 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "The same from the initiator's end.",
-    "assumes": "the responder's key made by a Mac and never given away",
+    "assumes": "the responder's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
     "code": [
      "Sources/NimbusCrypto/Crypto.swift: Noise",
      "Sources/NimbusSecurityCore/Channel.swift: initiate, respond",
@@ -228,7 +228,7 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "Proof of possession at attach: a data connection is taken only from the Mac that holds the drop's keys, for that connection number and the challenge this receiver made.",
-    "assumes": "both static keys made by Macs and neither ever given away",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; the drop's own handshake finished at the receiver; a key given away after that is no excuse",
     "code": [
      "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
      "Sources/NimbusTransferCore/Sender.swift: attach",
@@ -244,7 +244,7 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "Integrity of what reaches the disk, as far as the cryptography goes: what is written is what the sender sealed, under that header, on that connection, at that count.",
-    "assumes": "both static keys made by Macs and neither ever given away",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; the drop's own handshake finished at the receiver",
     "code": [
      "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
      "Sources/NimbusCrypto/DropKeys.swift: RecordHeader",
@@ -260,7 +260,7 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "Confidentiality of file contents: a chunk is never known to the attacker.",
-    "assumes": "both static keys made by Macs and neither ever given away",
+    "assumes": "the receiver's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; the drop's own handshake finished at the sender",
     "code": [
      "Sources/NimbusCrypto/DropKeys.swift: DropKeys"
     ],
@@ -273,7 +273,7 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "Authorisation of a reconnect: a drop is picked up again only by the Mac that holds its keys, on the handshake the proof was made for.",
-    "assumes": "both static keys made by Macs and neither ever given away",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; a key given away after the drop began is no excuse",
     "code": [
      "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
      "Sources/NimbusTransferCore/Receiver.swift: resume",
@@ -289,13 +289,265 @@
     "kind": "all-traces",
     "expect": "verified",
     "claim": "The sender takes `resumed` only from the receiver of that drop.",
-    "assumes": "both static keys made by Macs and neither ever given away",
+    "assumes": "the receiver's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; a key given away after the drop began is no excuse",
     "code": [
      "Sources/NimbusCrypto/DropKeys.swift: DropKeys",
      "Sources/NimbusTransferCore/Sender.swift: reconnect"
     ],
     "tests": [
      "ProtocolTests"
+    ]
+   },
+   {
+    "name": "can_probe_and_hang_up",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: a probe proves the responder's key and no initiator finishes.",
+    "assumes": "no key given away",
+    "code": [
+     "Sources/NimbusSecurityCore/Channel.swift: probe, begin"
+    ],
+    "tests": [
+     "DropTests.testAProbeLearnsWhoIsThereAndSaysNothingOfItself"
+    ]
+   },
+   {
+    "name": "can_say_what_a_connection_is_for",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: both hellos cross and agree on the purpose.",
+    "assumes": "no key given away",
+    "code": [
+     "Sources/NimbusTransferCore/Sender.swift: open",
+     "Sources/NimbusTransferCore/Listener.swift: serve"
+    ],
+    "tests": [
+     "DropTests.testTheHelloCarriesTheVersions"
+    ]
+   },
+   {
+    "name": "can_run_a_speed_test",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: one record each way on two connections of one speed test.",
+    "assumes": "no key given away",
+    "code": [
+     "Sources/NimbusTransferCore/SpeedTest.swift: SpeedTest, SpeedResponder, SpeedWire"
+    ],
+    "tests": [
+     "SpeedTests.testItMeasuresBothDirectionsAndWritesNothing"
+    ]
+   },
+   {
+    "name": "can_finish_when_the_initiators_own_key_was_given_away",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability of the key-compromise-impersonation case: two Macs finish a handshake though the initiator's own key leaked first.",
+    "assumes": "the responder's key never given away",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise",
+     "Sources/NimbusSecurityCore/Channel.swift: initiate, respond"
+    ],
+    "tests": [
+     "CryptoTests.testTheHandshakeMatchesThePublishedNoiseVector"
+    ]
+   },
+   {
+    "name": "the_handshake_hash_binds_the_openings",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Two ends with the same handshake hash saw the same openings: nobody chose the protocol major for them.",
+    "assumes": "none beyond ideal AEAD, DH, hash and HKDF (symbolic model)",
+    "code": [
+     "Sources/NimbusCrypto/Version.swift: Noise.prologue",
+     "Sources/NimbusSecurityCore/Channel.swift: begin, respond"
+    ],
+    "tests": [
+     "ProtocolTests.testAnOpeningAlteredOnTheWayBreaksTheHandshake"
+    ]
+   },
+   {
+    "name": "a_handshake_hash_is_one_initiators",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Replay: no two initiator handshakes finish with the same handshake hash.",
+    "assumes": "none beyond ideal AEAD, DH, hash and HKDF (symbolic model)",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise.write (a fresh ephemeral)"
+    ],
+    "tests": [
+     "VectorTests.testEveryByteOfAConnectionIsWhatTheSecondImplementationSays"
+    ]
+   },
+   {
+    "name": "a_handshake_hash_is_one_responders",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The same for responders.",
+    "assumes": "none beyond ideal AEAD, DH, hash and HKDF (symbolic model)",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise.write (a fresh ephemeral)"
+    ],
+    "tests": [
+     "VectorTests.testEveryByteOfAConnectionIsWhatTheSecondImplementationSays"
+    ]
+   },
+   {
+    "name": "the_responders_master_is_no_other_responders",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Isolation between sessions: no other responder handshake holds this master.",
+    "assumes": "the initiator's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise.split"
+    ],
+    "tests": [
+     "VectorTests.testTheDropsKeys"
+    ]
+   },
+   {
+    "name": "the_initiators_master_is_no_other_initiators",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Isolation between sessions: no other initiator handshake holds this master.",
+    "assumes": "the responder's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise.split"
+    ],
+    "tests": [
+     "VectorTests.testTheDropsKeys"
+    ]
+   },
+   {
+    "name": "both_ends_agree_what_a_connection_is_for",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Separation by purpose: the purpose the responder acts on (drop, pair, verify, resume, retire, speed) is the one the initiator said on this handshake.",
+    "assumes": "the initiator's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusSecurityCore/Messages.swift: SecureHello, Purpose",
+     "Sources/NimbusTransferCore/Listener.swift: serve",
+     "Sources/NimbusTransferCore/Sender.swift: hello"
+    ],
+    "tests": [
+     "SecurityTests.testAConnectionThatNeverSaysWhatItIsIsClosed",
+     "SpeedTests.testOnlyAPairedMacMayAsk"
+    ]
+   },
+   {
+    "name": "the_initiator_hears_only_the_responder",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Separation by direction: the hello the initiator reads was said by the responder after finishing this same handshake.",
+    "assumes": "the responder's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusCrypto/Crypto.swift: Noise.split",
+     "Sources/NimbusSecurityCore/Channel.swift: send, read"
+    ],
+    "tests": [
+     "ProtocolTests.testAMacThatWasForgottenStopsCallingItPaired",
+     "DropTests.testTheHelloCarriesTheVersions"
+    ]
+   },
+   {
+    "name": "a_chunk_is_written_only_under_its_own_header",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "A chunk is written only under the header the sender sealed it with.",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: RecordHeader.seal",
+     "Sources/NimbusTransferCore/Receiver.swift: receive"
+    ],
+    "tests": [
+     "ChaosTests.testAChunkRedirectedByOneFlippedBitIsNotWritten"
+    ]
+   },
+   {
+    "name": "what_a_speed_test_counts_is_what_the_other_mac_sealed",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "What the tester counts was sealed by the Mac it asked, for this test, on that connection.",
+    "assumes": "the responder's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusTransferCore/SpeedTest.swift: SpeedWire.receive, SpeedResponder.carry"
+    ],
+    "tests": [
+     "SpeedTests.testItMeasuresBothDirectionsAndWritesNothing",
+     "SpeedTests.testConnectionsAndRecordsAreHeldToWhatASpeedTestIs"
+    ]
+   },
+   {
+    "name": "what_is_sealed_for_one_purpose_is_never_written_for_another",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Isolation between a speed test and a file transfer: anything sealed with the bytes that were written was sealed for the same purpose, handshake and master.",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; one handshake has one purpose (the sealed hello)",
+    "code": [
+     "Sources/NimbusTransferCore/Listener.swift: serve",
+     "Sources/NimbusTransferCore/Receiver.swift: init",
+     "Sources/NimbusTransferCore/SpeedTest.swift: SpeedResponder.init"
+    ],
+    "tests": [
+     "SpeedTests.testConnectionsAndRecordsAreHeldToWhatASpeedTestIs",
+     "DropTests.testARecordCannotTakeAnotherMacsPlace"
+    ]
+   },
+   {
+    "name": "what_a_speed_test_sends_back_is_never_written",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "No record a speed test's responder sealed is written to disk by any receiver.",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusTransferCore/SpeedTest.swift: SpeedResponder.carry",
+     "Sources/NimbusTransferCore/Receiver.swift: receive"
+    ],
+    "tests": [
+     "SpeedTests.testItMeasuresBothDirectionsAndWritesNothing"
+    ]
+   },
+   {
+    "name": "a_sealed_chunk_is_written_only_where_it_was_sealed_for",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Isolation between transfers: a sealed chunk is written only by that Mac, on that handshake, connection, count and header.",
+    "assumes": "the receiver's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; one record per connection in the model",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: stream",
+     "Sources/NimbusTransferCore/Receiver.swift: claim, receive"
+    ],
+    "tests": [
+     "DropTests.testARecordCannotTakeAnotherMacsPlace",
+     "ProtocolTests.testNobodyButTheSenderCanAttachADataConnection"
+    ]
+   },
+   {
+    "name": "a_sealed_chunk_is_written_once",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "Replay: a sealed chunk is written at most once anywhere (stated from the sender's view).",
+    "assumes": "the receiver's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac; a connection number is claimed once (the model's Once restriction: ReceiveSession.claim)",
+    "code": [
+     "Sources/NimbusTransferCore/Receiver.swift: claim",
+     "Sources/NimbusCrypto/Crypto.swift: CipherState.open"
+    ],
+    "tests": [
+     "ProtocolTests.testNobodyButTheSenderCanAttachADataConnection"
+    ]
+   },
+   {
+    "name": "what_is_written_is_secret",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "What the receiver wrote is not known to the attacker.",
+    "assumes": "the sender's key was made by a Mac and not given away before the handshake the lemma is about finished at this Mac",
+    "code": [
+     "Sources/NimbusCrypto/DropKeys.swift: RecordHeader.seal",
+     "Sources/NimbusCrypto/Crypto.swift: CipherState"
+    ],
+    "tests": [
+     "VectorTests.testEveryByteOfAConnectionIsWhatTheSecondImplementationSays"
     ]
    }
   ]
@@ -332,7 +584,55 @@
      "PairingTests",
      "PairingMachineTests"
     ]
+   },
+   {
+    "name": "two_people_can_pair_by_number",
+    "kind": "exists-trace",
+    "expect": "verified",
+    "claim": "Reachability: two people who enter each other's identity numbers both store.",
+    "assumes": "none",
+    "code": [
+     "Sources/NimbusSecurityCore/Pairing.swift: PairingSession (verify)",
+     "Sources/NimbusCrypto/Crypto.swift: PublicKey.identityNumber"
+    ],
+    "tests": [
+     "PairingTests.testPairingByIdentityNumber"
+    ]
+   },
+   {
+    "name": "the_mac_that_asked_stores_one_exchange",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The Mac that asked stores only for an exchange the other Mac showed its code for: the same handshake hash, Ns and Nr.",
+    "assumes": "the people type only what the Mac they mean shows; the attacker steers a short code only while it holds the code's last input",
+    "code": [
+     "Sources/NimbusCrypto/PairCodes.swift",
+     "Sources/NimbusCrypto/PairingMachine.swift",
+     "Sources/NimbusSecurityCore/Pairing.swift: PairingSession"
+    ],
+    "tests": [
+     "PairingTests.testTheCodesComeFromWhatBothEndsSaw",
+     "PairingTests.testSomeoneInTheMiddleWhoHearsBothCodesStillFails",
+     "PairingMachineTests"
+    ]
+   },
+   {
+    "name": "the_mac_that_was_asked_stores_one_exchange",
+    "kind": "all-traces",
+    "expect": "verified",
+    "claim": "The same from the Mac that was asked.",
+    "assumes": "the people type only what the Mac they mean shows; the attacker steers a short code only while it holds the code's last input",
+    "code": [
+     "Sources/NimbusCrypto/PairCodes.swift",
+     "Sources/NimbusCrypto/PairingMachine.swift",
+     "Sources/NimbusSecurityCore/Pairing.swift: PairingSession"
+    ],
+    "tests": [
+     "PairingTests.testTheCodesComeFromWhatBothEndsSaw",
+     "PairingMachineTests"
+    ]
    }
   ]
- }
+ },
+ "_not_settled": "Four mutant flags in NimbusHandshake.spthy are NOT in formal/check.py because the search did not finish within 12 GB, for or against: NoConnInStreamKey (and with it NoHeaderBinding), NoHashInResume, SameResumeLabel. Nothing is claimed of what the lemmas say about those four guards; the Swift tests and scripts/mutate.py are what holds them."
 }

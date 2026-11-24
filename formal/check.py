@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import re
+import resource
 import shutil
 import subprocess
 import sys
@@ -797,11 +798,41 @@ def run_tlc(java, jar, name, module, constants, invariants, properties, expected
 
 TAMARIN_RUNS = [
     ("NimbusHandshake", "NimbusHandshake.spthy", [], {}),
+    # Each guard of the handshake theory taken out (a macro in the file, with the line of the Swift
+    # it stands for), and the lemma that must then fail. Not here: -D=NoConnInStreamKey,
+    # -D=NoHeaderBinding, -D=NoHashInResume and -D=SameResumeLabel, whose search for a trace was
+    # stopped at 12 to 13 GB; nothing is claimed of those four guards (the file says so).
+    ("NimbusHandshake / mutant: the initiator does not open the last seal of message 2", "NimbusHandshake.spthy", ["-D=NoMessage2Check"],
+     {"a_probe_is_answered_by_the_key_it_reports": "falsified"}),
+    ("NimbusHandshake / mutant: the responder does not open the last seal of message 3", "NimbusHandshake.spthy", ["-D=NoMessage3Check"],
+     {"the_responder_agrees_with_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: ee is not mixed into the keys", "NimbusHandshake.spthy", ["-D=NoEE"],
+     {"master_is_secret_for_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: es is not mixed into the keys", "NimbusHandshake.spthy", ["-D=NoES"],
+     {"a_probe_is_answered_by_the_key_it_reports": "falsified"}),
+    ("NimbusHandshake / mutant: se is not mixed into the keys", "NimbusHandshake.spthy", ["-D=NoSE"],
+     {"master_is_secret_for_the_responder": "falsified"}),
+    ("NimbusHandshake / mutant: the handshake's seals do not have the hash as associated data", "NimbusHandshake.spthy", ["-D=NoHashInSeals"],
+     {"the_responder_agrees_with_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: the openings are not in the handshake hash", "NimbusHandshake.spthy", ["-D=NoPrologue"],
+     {"the_handshake_hash_binds_the_openings": "falsified"}),
+    ("NimbusHandshake / mutant: one transport key for both directions", "NimbusHandshake.spthy", ["-D=OneTransportKey"],
+     {"the_initiator_hears_only_the_responder": "falsified"}),
+    ("NimbusHandshake / mutant: master is taken from the handshake hash", "NimbusHandshake.spthy", ["-D=MasterFromHash"],
+     {"master_is_secret_for_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: what a connection is for is said in the clear", "NimbusHandshake.spthy", ["-D=PurposeInTheClear"],
+     {"both_ends_agree_what_a_connection_is_for": "falsified"}),
+    ("NimbusHandshake / mutant: the attach key is the session id", "NimbusHandshake.spthy", ["-D=AttachKeyIsSessionID"],
+     {"only_the_sender_attaches_a_data_connection": "falsified"}),
+    ("NimbusHandshake / mutant: the attach tag is computed without the challenge", "NimbusHandshake.spthy", ["-D=NoChallengeInTag"],
+     {"only_the_sender_attaches_a_data_connection": "falsified"}),
+    ("NimbusHandshake / mutant: the attach tag is computed without the connection number", "NimbusHandshake.spthy", ["-D=NoConnInTag"],
+     {"only_the_sender_attaches_a_data_connection": "falsified"}),
     ("NimbusPairing", "NimbusPairing.spthy", [], {}),
     ("NimbusPairing / mutant: the reveal is not checked against the commitment", "NimbusPairing.spthy", ["-D=NoCommitCheck"],
-     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified"}),
+     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified", "the_mac_that_asked_stores_one_exchange": "falsified"}),
     ("NimbusPairing / mutant: neither the commitment nor the codes include the handshake hash", "NimbusPairing.spthy", ["-D=NoHashBinding"],
-     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified"}),
+     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified", "the_mac_that_asked_stores_one_exchange": "falsified"}),
 ]
 
 
@@ -925,22 +956,55 @@ def judge_tamarin(text, code, timed_out, required, expectations):
     return True, f"{len(wanted)} lemmas" + (f"; fails as it must, on {', '.join(falsified)}" if falsified else " verified"), results
 
 
+# A normal run asks for a theory's lemmas a few at a time. Asked for all at once, the handshake
+# theory's 38 keep everything they proved and the run passes 20 GB; no one of them needs more
+# than a few. A [reuse] lemma is assumed by the lemmas after it whether or not this invocation
+# proved it, so the split is sound exactly when every lemma is proved in some invocation, which
+# is what the register is for: each lemma in it is asked for once, and must come out verified.
+TAMARIN_BATCH = int(os.environ.get("NIMBUS_TAMARIN_BATCH", "6"))
+# Tamarin's own check of the theory's derivations gives up after five seconds by default, and
+# on a busy Mac that was once enough to call a sound theory not well-formed.
+TAMARIN_ALWAYS = ["--derivcheck-timeout=60"]
+
+
 def run_tamarin(prover, register, name, file, flags, expectations, keep=None):
-    prove = [f"--prove={lemma}" for lemma in expectations] or ["--prove"]
-    command = [prover] + prove + flags + [os.path.join(TAMARIN, file), "+RTS", "-N4", "-RTS"]
-    text, code, timed_out = "", None, False
-    try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=7200)
-        text, code = done.stdout + done.stderr, done.returncode
-    except subprocess.TimeoutExpired:
-        timed_out = True
     if file not in register:
-        ok, note, results = False, f"{file} has no entry in the register", {}
+        if keep:
+            keep(name, "tamarin", [prover, file], "", None, False, f"{file} has no entry in the register", {"theory": file})
+        return False, f"{file} has no entry in the register"
+    required = register[file]
+    if expectations:
+        batches = [dict(expectations)]                    # a mutant: the lemmas named for it, in one go
     else:
-        ok, note, results = judge_tamarin(text, code, timed_out, register[file], expectations)
-    if keep:
-        keep(name, "tamarin", command, text, code, ok, note, {"theory": file, "flags": flags, "expectations": expectations, "lemmas": results})
-    return ok, note
+        order = [n for n, _ in declared_lemmas(os.path.join(TAMARIN, file))]
+        wanted = {l["name"]: l["expect"] for l in required}
+        names = [n for n in order if n in wanted] + [n for n in wanted if n not in order]
+        batches = [{n: wanted[n] for n in names[i:i + TAMARIN_BATCH]} for i in range(0, len(names), TAMARIN_BATCH)]
+    results, problems, falsified = {}, [], []
+    for asked in batches:
+        command = [prover] + [f"--prove={lemma}" for lemma in asked] + TAMARIN_ALWAYS + flags + [os.path.join(TAMARIN, file), "+RTS", "-N4", "-RTS"]
+        text, code, timed_out = "", None, False
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=7200)
+            text, code = done.stdout + done.stderr, done.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        ok, note, got = judge_tamarin(text, code, timed_out, required, asked)
+        results.update({n: got.get(n, "not run") for n in asked})
+        falsified += [n for n in asked if got.get(n) == "falsified"]
+        if keep:
+            keep(name, "tamarin", command, text, code, ok, note, {"theory": file, "flags": flags, "expectations": asked, "lemmas": {n: got.get(n) for n in asked}})
+        if not ok:
+            problems.append(note)
+            break                                         # what is left is reported as not run
+    if problems:
+        left = [n for b in batches for n in b if n not in results]
+        return False, "; ".join(problems) + (f"; not run: {', '.join(left)}" if left else "")
+    count = sum(len(b) for b in batches)
+    # The most memory any one invocation has taken so far (of this whole run of check.py).
+    peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / (2 ** 30 if sys.platform == "darwin" else 2 ** 20)
+    return True, f"{count} lemmas" + (f"; fails as it must, on {', '.join(falsified)}" if falsified
+                                      else f" verified, in {len(batches)} run{'s' if len(batches) > 1 else ''}; {peak:.1f} GB at most so far")
 
 
 # ---- What was run, kept -------------------------------------------------------------------------

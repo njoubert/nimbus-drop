@@ -39,7 +39,7 @@ enum PeerStanding: Equatable {
         case .checking: return nil
         case .unproved: return ("Not answering", Palette.warning)
         case .paired: return ("✓ Paired", Palette.receive)
-        case .new: return ("New · pair to send", Palette.send)
+        case .new: return ("New", Palette.send)
         case .nameInUse: return ("New · name in use", Palette.failure)
         case .renew: return ("Renew pairing", Palette.send)
         case .refused: return ("Identity not accepted", Palette.failure)

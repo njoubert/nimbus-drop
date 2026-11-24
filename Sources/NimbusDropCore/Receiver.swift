@@ -281,7 +281,10 @@ public final class DropListener: @unchecked Sendable {
         // again. This Mac's half is worth nothing from here on, and goes now rather than at
         // the next drop. Only that key can say this, sealed under its own handshake, and only
         // about itself; it is what answering a drop with `paired: false` has always done.
-        if standing.isPaired, !hello.paired {
+        // Not on a reconnect: a drop that is running may finish after its sender's own key
+        // was replaced on schedule, and that sender truthfully says it no longer has this
+        // Mac paired. What a resume may do is decided by its proof of the drop's keys.
+        if standing.isPaired, !hello.paired, hello.purpose != .resume {
             trust.notePairingGone(key)
             standing = trust.standing(of: key)
         }

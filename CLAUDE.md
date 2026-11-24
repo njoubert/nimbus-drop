@@ -323,8 +323,10 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   Forget does not. It tells the other Mac when it can (`Trust.forget(_:telling:identity:)`: a
   connection that proves this Mac's key, hello `paired: false`, no purpose; three seconds at
   most, best effort), and a responder that has the proved key paired and reads
-  `paired: false` in its hello drops its half there and then, whatever the purpose
-  (`DropListener.serve`). Otherwise the forgotten Mac learns at its next drop, when the key
+  `paired: false` in its hello drops its half there and then, whatever the purpose but
+  `resume` (`DropListener.serve`; a reconnect after the sender's own key was replaced on
+  schedule says `paired: false` truthfully, and `testADropFinishesOnTheKeyItStartedWith`
+  failed on the first version of this). Otherwise the forgotten Mac learns at its next drop, when the key
   it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
   withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
   2026-11-23 it stayed "Paired" and every drop failed). The same is read from the hello of a

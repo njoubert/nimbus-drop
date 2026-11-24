@@ -42,7 +42,8 @@ final class TrustCoreTests: XCTestCase {
         init() {
             clock = ClockReading(boot: "boot-0", continuous: 1000, wall: Date(timeIntervalSince1970: 1_800_000_000))
             // This Mac's own key does not run out in these tests: that is not in the specification.
-            core = TrustCore(fresh: clock, lifetime: 1e15)
+            // And it keeps three tombstones, not two thousand, so that one can be pushed out.
+            core = TrustCore(fresh: clock, lifetime: 1e15, tombstonesKept: 3)
             k = KeyPair().publicKey
         }
 
@@ -67,15 +68,21 @@ final class TrustCoreTests: XCTestCase {
 
         /// K's elapsed end passes at a tick that reaches it (the specification's RunsOutNow).
         var runsOutNow: Bool { mac.map { core.file.elapsed < $0.endsElapsed } ?? false || renewal != nil }
+        var tombstone: Tombstone? { core.file.tombstones.first { $0.key == k } }
+        /// K ran out, is still on the Known list, and its tombstone was pushed out (Untombed).
+        var untombed: Bool { mac.map { core.file.elapsed >= $0.endsElapsed } ?? false && tombstone == nil }
 
         func enabled(_ e: Event) -> Bool {
             switch e.name {
             case "track": return e.who.isDisjoint(with: tracked)
             case "prune": return e.who.isSubset(of: tracked)
-            case "quiet": return e.who.isSubset(of: tracked)
+            case "quiet": return e.who.isSubset(of: tracked) && (!e.due || !untombed)
+            // Not while a session of an earlier pairing is running out its grace under a key
+            // that is on neither list: see TrustCore.tla, "One case of it is left out".
+            case "evict": return tombstone != nil && !(mac == nil && !tracked.isEmpty)
             case "k": return e.who.isSubset(of: tracked) && !e.due && endAhead != nil
             case "wallK": return e.who.isSubset(of: tracked) && !e.due && mac != nil && endAhead != nil
-            case "late": return e.who.isSubset(of: tracked) && !tracked.isEmpty && (!e.due || !runsOutNow)
+            case "late": return e.who.isSubset(of: tracked) && !tracked.isEmpty && (!e.due || !(runsOutNow || untombed))
             default: return true
             }
         }
@@ -94,10 +101,10 @@ final class TrustCoreTests: XCTestCase {
             let endPasses = (mac.map { f.elapsed < $0.endsElapsed && then >= $0.endsElapsed } ?? false) || (renewal.map { then >= $0.endsElapsed } ?? false)
             let datePasses = mac.map { then < $0.endsElapsed && next.wall >= $0.endsWall } ?? false
             let timer = TrustCore.saveDue(changed: false, unsaved: core.unsaved, sinceSave: then - core.lastSave, sinceTry: then - core.lastTry)
-            if late { return ("late", !endPasses && timer) }
+            if late { return ("late", !endPasses && !untombed && timer) }
             if endPasses { return ("k", false) }
             if datePasses { return ("wallK", false) }
-            return ("quiet", timer)
+            return ("quiet", !untombed && timer)
         }
 
         /// Clock readings at which a tick finds what `e` names; nil if there are none from here.
@@ -110,7 +117,7 @@ final class TrustCoreTests: XCTestCase {
             case "wallK": return mac.map { after(0.001, calendar: $0.endsWall.timeIntervalSince(clock.wall) + 1) }
             case "late":
                 guard let deadline = core.sessions.first?.deadline else { return nil }
-                if !runsOutNow, !e.due, deadline - f.elapsed > 2 {
+                if !runsOutNow, !untombed, !e.due, deadline - f.elapsed > 2 {
                     // Up to just short of the deadline first, so that the tick across it comes
                     // too soon after the last write for another to be due.
                     let before = state
@@ -188,6 +195,10 @@ final class TrustCoreTests: XCTestCase {
             case "removeAgain": return settle(core.removeFromAgain(k), diskOK: e.diskOK)
             case "reset": return settle(core.reset(told: [], wall: wall), diskOK: e.diskOK)
             case "commit": return settle([.save], diskOK: e.diskOK)
+            case "evict":
+                // Other keys are retired until K's tombstone is the oldest of too many.
+                for _ in 0...core.tombstonesKept where tombstone != nil { _ = core.retire(KeyPair().publicKey, wall: wall) }
+                return tombstone == nil ? [] : nil
             case "store":
                 guard let (_, effects) = try? core.store(pairing: k, announced: "k", method: "codes", remaining: TrustCoreTests.life, major: 3,
                                                          replacing: nil, name: nil, wall: wall) else { return [TrustCoreTests.eff("refused")] }
@@ -211,7 +222,7 @@ final class TrustCoreTests: XCTestCase {
     static var events: [Event] {
         var all: [Event] = []
         for ok in [true, false] {
-            for name in ["standing", "retire", "forget", "replaced", "gone", "store", "removeAgain", "reset", "commit"] {
+            for name in ["standing", "retire", "forget", "replaced", "gone", "store", "removeAgain", "reset", "commit", "evict"] {
                 all.append(Event(name: name, diskOK: ok))
             }
             for name in ["track", "prune"] { for id in [1, 2] { all.append(Event(name: name, who: [id], diskOK: ok)) } }
@@ -315,7 +326,7 @@ final class TrustCoreTests: XCTestCase {
     func testRandomWalksStayInsideTheRelation() {
         let (_, transitions, _) = Self.relation()
         var rng = SystemRandomNumberGenerator()
-        let simple = ["standing", "retire", "forget", "replaced", "gone", "store", "store", "store", "removeAgain", "reset", "commit",
+        let simple = ["standing", "retire", "forget", "replaced", "gone", "store", "store", "store", "removeAgain", "reset", "commit", "evict",
                       "track", "track", "track", "prune", "tick", "tick", "tick", "tick", "tick", "tick"]
         var steps = 0
         for _ in 0..<1500 {
@@ -403,6 +414,31 @@ final class TrustCoreTests: XCTestCase {
         let effects = d.take(Event(name: "reset")) ?? []
         XCTAssertTrue(effects.contains(Self.eff("end", [1])), "\(effects)")
         XCTAssertEqual(d.tracked, [])
+    }
+
+    /// "Refused for good" lasts as long as the tombstone does: the store keeps a bounded number,
+    /// and when a retired key's is pushed out by later ones the key is an unknown key again.
+    /// Not trusted, not on any list; but two people may pair it afresh, and nothing else can.
+    func testARetiredKeyWhoseTombstoneWasPushedOutIsUnknownAndNotTrusted() {
+        var d = paired()
+        _ = d.take(Event(name: "retire"))
+        XCTAssertEqual(d.take(Event(name: "store")), [Self.eff("refused")])
+        XCTAssertEqual(d.take(Event(name: "evict")), [])
+        XCTAssertEqual(d.take(Event(name: "standing")), [Self.eff("unknown")], "nothing trusts it")
+        XCTAssertEqual(d.take(Event(name: "track", who: [1])), [Self.eff("endNew", [1])], "and nothing it authenticates may begin")
+        XCTAssertEqual(d.take(Event(name: "store")), [Self.eff("save"), Self.eff("changed")], "until two people pair it again")
+    }
+
+    /// A key that ran out and is still listed gets its tombstone back at the next tick, if it
+    /// was pushed out: it stays refused, and cannot be paired again.
+    func testAKeyThatRanOutIsTombstonedAgainIfItsTombstoneWasPushedOut() {
+        var d = paired()
+        XCTAssertNotNil(d.take(Event(name: "k")))
+        XCTAssertEqual(d.take(Event(name: "evict")), [])
+        XCTAssertEqual(d.take(Event(name: "standing")), [Self.eff("expired")])
+        XCTAssertEqual(d.take(Event(name: "store")), [Self.eff("refused")])
+        XCTAssertEqual(d.take(Event(name: "quiet")), [Self.eff("save"), Self.eff("changed")])
+        XCTAssertNotNil(d.tombstone)
     }
 
     /// A write that failed is tried again twice a minute, not at every tick: on a full disk the

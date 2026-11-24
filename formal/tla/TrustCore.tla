@@ -47,9 +47,22 @@
 (* TrustCore.count and TrustCore.saveDue, checked as tables by             *)
 (* TrustRefinement) and the comparisons Expiry.tla makes with them.        *)
 (*                                                                         *)
+(* The store keeps a bounded number of tombstones (2000), and the oldest   *)
+(* goes when another is made. That is the event "evict": K's tombstone is  *)
+(* pushed out by other keys' withdrawals. After it K is an unknown key:    *)
+(* nothing trusts it, and nothing but two people pairing it afresh can     *)
+(* change that. So "refused for good" means: for as long as the tombstone  *)
+(* is among the newest 2000 (TrustWithdraw.tla has the run that shows it). *)
+(* One case of it is left out, and TrustCoreTests found why: a key that is *)
+(* on neither list while a session of its old pairing is still running out *)
+(* its day of grace. If its tombstone went THEN and two people paired it   *)
+(* again, that session would keep a deadline that has nothing to do with   *)
+(* the new pairing's end, which this abstraction cannot say. It would take *)
+(* two thousand withdrawals inside that one day; the code then lets the    *)
+(* old session run to its old deadline and ends it, which is harmless.     *)
+(*                                                                         *)
 (* NOT in this machine: this Mac's own key running out on schedule (it     *)
-(* shares `rotate` with "reset", which is), setLifetime, names, the limit  *)
-(* of 2000 tombstones.                                                     *)
+(* shares `rotate` with "reset", which is), setLifetime, names.            *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
@@ -59,7 +72,7 @@ Disk == {"ok", "full"}
 Eff(op, who) == [op |-> op, who |-> who]
 Ev(e, who, due, disk) == [e |-> e, who |-> who, due |-> due, disk |-> disk]
 
-Simple == {"standing", "retire", "forget", "replaced", "gone", "store", "removeAgain", "reset", "commit"}
+Simple == {"standing", "retire", "forget", "replaced", "gone", "store", "removeAgain", "reset", "commit", "evict"}
 TickKinds == {"quiet", "k", "wallK", "late"}
 
 Events == {Ev(e, {}, FALSE, d): e \in Simple, d \in Disk}
@@ -82,6 +95,10 @@ MayPair(s) == Standing(s) \in {"paired", "renew", "unknown"}
 (* K's elapsed end passes at a "k" or a "late" tick, or passed before.     *)
 RunsOutNow(s) == s.known = "current" \/ s.again # "no"
 
+(* K ran out, is still on the Known list, and its tombstone was pushed     *)
+(* out: the next tick, of whatever kind, makes it another.                 *)
+Untombed(s) == s.known = "ranOut" /\ s.tomb = "none"
+
 (* An event that cannot happen in a state: a session tracked twice, a tick *)
 (* that finds K's end passing when K has none ahead. And `due` is recorded *)
 (* only on a tick that changes nothing.                                    *)
@@ -90,10 +107,11 @@ Enabled(s, ev) ==
       [] ev.e = "prune" -> ev.who \subseteq s.tracked
       [] ev.e \in TickKinds ->
             /\ ev.who \subseteq s.tracked
-            /\ CASE ev.e = "quiet" -> TRUE
+            /\ CASE ev.e = "quiet" -> ev.due => ~Untombed(s)
                  [] ev.e = "k"     -> ~ev.due /\ (s.known = "current" \/ (s.known = "no" /\ s.again # "no"))
                  [] ev.e = "wallK" -> ~ev.due /\ s.known = "current"
-                 [] ev.e = "late"  -> s.tracked # {} /\ (ev.due => ~RunsOutNow(s))
+                 [] ev.e = "late"  -> s.tracked # {} /\ (ev.due => ~(RunsOutNow(s) \/ Untombed(s)))
+      [] ev.e = "evict" -> s.tomb # "none" /\ ~(s.known = "no" /\ s.tracked # {})
       [] OTHER -> TRUE
 
 (* Every withdrawal of trust: the key is refused from here, what it had    *)
@@ -150,15 +168,22 @@ Decide(s, ev) ==
     \* K had authenticated ends, whichever list K is on or none.
     ELSE IF e = "reset" THEN
         IF s.known # "no" \/ s.again # "no" \/ s.tracked # {}
-            THEN << [s EXCEPT !.known = "no", !.again = IF s.known = "current" THEN "waiting" ELSE @, !.tracked = {}],
+            THEN << [s EXCEPT !.known = "no", !.again = IF s.known = "current" THEN "waiting" ELSE @, !.tracked = {},
+                              \* A key that had run out leaves its tombstone behind, made again if it was pushed out.
+                              !.tomb = IF Untombed(s) THEN "expired" ELSE @],
                     << Eff("save", {}), Eff("end", s.tracked), Eff("tell", {}), Eff("changed", {}) >> >>
             ELSE << s, << Eff("save", {}), Eff("changed", {}) >> >>
 
     \* Trust.commit: written now, for what is about to be acknowledged to another Mac.
     ELSE IF e = "commit" THEN << s, << Eff("save", {}) >> >>
 
+    \* K's tombstone is the oldest of too many, and goes. Nothing is said or written for K.
+    ELSE IF e = "evict" THEN << [s EXCEPT !.tomb = "none"], << >> >>
+
     \* Time passing.
-    ELSE IF e = "quiet" THEN << s, (IF ev.due THEN << Eff("save", {}) >> ELSE << >>) \o Unbegun(s, ev.who) >>
+    ELSE IF e = "quiet" THEN
+        IF Untombed(s) THEN << [s EXCEPT !.tomb = "expired"], << Eff("save", {}) >> \o Unbegun(s, ev.who) \o << Eff("changed", {}) >> >>
+        ELSE << s, (IF ev.due THEN << Eff("save", {}) >> ELSE << >>) \o Unbegun(s, ev.who) >>
     ELSE IF e = "k" THEN
         LET t == RunOut(s) IN << t, << Eff("save", {}) >> \o Unbegun(t, ev.who) \o << Eff("changed", {}) >> >>
     \* The calendar alone ends the pairing and no more: K is to be paired again (F3).
@@ -166,9 +191,10 @@ Decide(s, ev) ==
         LET t == [s EXCEPT !.known = "no", !.again = "waiting"]
         IN << t, << Eff("save", {}) >> \o Unbegun(t, ev.who) \o << Eff("changed", {}) >> >>
     ELSE IF e = "late" THEN
-        LET t == [RunOut(s) EXCEPT !.tracked = {}]
-        IN << t, (IF RunsOutNow(s) \/ ev.due THEN << Eff("save", {}) >> ELSE << >>) \o << Eff("endLate", s.tracked) >>
-                  \o (IF RunsOutNow(s) THEN << Eff("changed", {}) >> ELSE << >>) >>
+        LET changed == RunsOutNow(s) \/ Untombed(s)
+            t == [RunOut(s) EXCEPT !.tracked = {}, !.tomb = IF Untombed(s) THEN "expired" ELSE @]
+        IN << t, (IF changed \/ ev.due THEN << Eff("save", {}) >> ELSE << >>) \o << Eff("endLate", s.tracked) >>
+                  \o (IF changed THEN << Eff("changed", {}) >> ELSE << >>) >>
     ELSE << s, << >> >>
 
 (* And then the disk: a write that was asked for either holds or does not, *)

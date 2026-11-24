@@ -18,9 +18,8 @@ import NimbusBase
 package struct TrustCore {
     package static let lifetimes: [Double] = [3600, 86400, 7 * 86400, 30 * 86400, 90 * 86400]
     package static let longestLifetime: Double = 90 * 86400
-    /// Tombstones kept. A key refused for good is refused for as long as it is among the last
-    /// this many.
-    static let tombstonesKept = 2000
+    /// Tombstones kept, by default. See `tombstonesKept`.
+    package static let tombstonesKeptByDefault = 2000
 
     /// The trust file. The names of its fields are the file's format.
     struct File: Codable {
@@ -86,6 +85,12 @@ package struct TrustCore {
     }
 
     var file: File
+    /// How many tombstones are kept; the oldest goes when another is made. So "refused for
+    /// good" is exactly: refused for as long as the key's tombstone is among the newest this
+    /// many. After that the key is an unknown key again: nothing is trusted, and nothing
+    /// stops two people from pairing it afresh. A tombstone is only ever made for a key that
+    /// two people once paired, so it takes that many later pairings ended to push one out.
+    package let tombstonesKept: Int
     /// This Mac's key as it is now.
     package private(set) var pair: KeyPair
     package private(set) var sessions: [Session] = []
@@ -99,7 +104,8 @@ package struct TrustCore {
     // MARK: Beginning
 
     /// A first run: a new key, good for `lifetime` from now.
-    package init(fresh now: ClockReading, lifetime: Double, newKey: () -> KeyPair = { KeyPair() }) {
+    package init(fresh now: ClockReading, lifetime: Double, tombstonesKept: Int = TrustCore.tombstonesKeptByDefault, newKey: () -> KeyPair = { KeyPair() }) {
+        self.tombstonesKept = tombstonesKept
         let k = newKey()
         file = File(secret: k.raw, made: now.wall, endsElapsed: lifetime, endsWall: now.wall.addingTimeInterval(lifetime), lifetime: lifetime,
                     elapsed: 0, lastBoot: now.boot, lastContinuous: now.continuous, lastWall: now.wall)
@@ -107,7 +113,8 @@ package struct TrustCore {
     }
 
     /// From the trust file's plaintext. Nil when that is not what it is.
-    package init?(decoding data: Data) {
+    package init?(decoding data: Data, tombstonesKept: Int = TrustCore.tombstonesKeptByDefault) {
+        self.tombstonesKept = tombstonesKept
         guard let f = try? JSONDecoder().decode(File.self, from: data), let k = KeyPair(raw: f.secret), f.schema == 1 else { return nil }
         file = f
         pair = k
@@ -212,7 +219,7 @@ package struct TrustCore {
     }
 
     private mutating func trimTombstones() {
-        if file.tombstones.count > TrustCore.tombstonesKept { file.tombstones.removeFirst(file.tombstones.count - TrustCore.tombstonesKept) }
+        if file.tombstones.count > tombstonesKept { file.tombstones.removeFirst(file.tombstones.count - tombstonesKept) }
     }
 
     /// Replaces this Mac's key. Every Known Mac that is still current moves to the renew list.

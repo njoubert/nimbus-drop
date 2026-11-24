@@ -79,6 +79,12 @@ def drop(**changes):
     return c
 
 
+def trust(**changes):
+    c = {"ForGood": "TRUE", "Eviction": "FALSE"}
+    c.update(changes)
+    return c
+
+
 def expiry(**changes):
     # Life, Grace and Hour are 90 days, a day and an hour, shrunk; the rest are the bounds of the search.
     c = {"Life": "2", "Grace": "1", "Hour": "2", "MaxUp": "5", "MaxWall": "4", "MaxBoots": "2", "HonestCalendar": "FALSE"}
@@ -136,24 +142,32 @@ TLA_RUNS = [
      ("TrustCore.tla", "changed \\/ (sinceTry >= 30 /\\ (unsaved \\/ sinceSave > 3600))", "changed \\/ sinceSave > 3600 \\/ (unsaved /\\ sinceTry >= 30)")),
 
     # Withdrawing trust: the lock, the disk and the order, around the core's Step.
-    ("TrustWithdraw (a retire notice)", "TrustWithdraw", {"ForGood": "TRUE"}, TRUST_INV, ["ForGoodOnDiskIsForGood"], HOLDS, None),
-    ("TrustWithdraw (Forget)", "TrustWithdraw", {"ForGood": "FALSE"}, TRUST_INV, ["ForGoodOnDiskIsForGood"], HOLDS, None),
-    ("TrustWithdraw / reachable: a session goes live", "TrustWithdraw", {"ForGood": "TRUE"}, ["NeverLive"], [], "NeverLive", None),
-    ("TrustWithdraw / reachable: a retire notice is acknowledged", "TrustWithdraw", {"ForGood": "TRUE"}, ["NeverAcked"], [], "NeverAcked", None),
-    ("TrustWithdraw / mutant: track does not ask again (the code before 2026-11-24)", "TrustWithdraw", {"ForGood": "TRUE"},
+    ("TrustWithdraw (a retire notice)", "TrustWithdraw", trust(), TRUST_INV, ["ForGoodOnDiskIsForGood", "NoSilentResurrection"], HOLDS, None),
+    ("TrustWithdraw (Forget)", "TrustWithdraw", trust(ForGood="FALSE"), TRUST_INV, ["ForGoodOnDiskIsForGood", "NoSilentResurrection"], HOLDS, None),
+    ("TrustWithdraw (tombstones pushed out): trust comes back only by two people pairing", "TrustWithdraw", trust(Eviction="TRUE"),
+     ["TypeOK", "NothingOutlivesTheWithdrawal", "LiveMeansTrustedOrBeingEnded", "LiveIsOnTheList", "NoSocketWorkUnderTheLock"],
+     ["NoSilentResurrection"], HOLDS, None),
+    ("TrustWithdraw / known limit: 'for good' lasts while the tombstone is among the newest 2000", "TrustWithdraw", trust(Eviction="TRUE"),
+     TRUST_INV, [], "AcknowledgedMeansRefusedForGood", None),
+    ("TrustWithdraw / mutant: a key whose tombstone was pushed out is trusted again", "TrustWithdraw", trust(Eviction="TRUE"), [], ["NoSilentResurrection"],
+     "NoSilentResurrection",
+     ("TrustCore.tla", "    ELSE IF e = \"evict\" THEN << [s EXCEPT !.tomb = \"none\"], << >> >>", "    ELSE IF e = \"evict\" THEN << [s EXCEPT !.tomb = \"none\", !.known = \"current\"], << >> >>")),
+    ("TrustWithdraw / reachable: a session goes live", "TrustWithdraw", trust(), ["NeverLive"], [], "NeverLive", None),
+    ("TrustWithdraw / reachable: a retire notice is acknowledged", "TrustWithdraw", trust(), ["NeverAcked"], [], "NeverAcked", None),
+    ("TrustWithdraw / mutant: track does not ask again (the code before 2026-11-24)", "TrustWithdraw", trust(),
      TRUST_INV, [], "LiveMeansTrustedOrBeingEnded",
      ("TrustCore.tla", "        IF s.known # \"no\" THEN << [s EXCEPT !.tracked = @ \\cup ev.who], << >> >>", "        IF TRUE THEN << [s EXCEPT !.tracked = @ \\cup ev.who], << >> >>")),
-    ("TrustWithdraw / mutant: acknowledged without the write", "TrustWithdraw", {"ForGood": "TRUE"}, TRUST_INV, [], "AcknowledgedMeansRefusedForGood",
+    ("TrustWithdraw / mutant: acknowledged without the write", "TrustWithdraw", trust(), TRUST_INV, [], "AcknowledgedMeansRefusedForGood",
      ("TrustWithdraw.tla", "/\\ w' = IF d = \"ok\" THEN \"committed\" ELSE \"silent\"", "/\\ w' = \"committed\"")),
-    ("TrustWithdraw / mutant: sessions ended with the store locked (F7)", "TrustWithdraw", {"ForGood": "TRUE"}, TRUST_INV, [], "NoSocketWorkUnderTheLock",
+    ("TrustWithdraw / mutant: sessions ended with the store locked (F7)", "TrustWithdraw", trust(), TRUST_INV, [], "NoSocketWorkUnderTheLock",
      ("TrustWithdraw.tla", "          /\\ lock' = \"none\" /\\ w' = \"ending\"", "          /\\ lock' = \"W\" /\\ w' = \"ending\"")),
-    ("TrustWithdraw / mutant: the sessions are not ended", "TrustWithdraw", {"ForGood": "TRUE"}, TRUST_INV, [], "NothingOutlivesTheWithdrawal",
+    ("TrustWithdraw / mutant: the sessions are not ended", "TrustWithdraw", trust(), TRUST_INV, [], "NothingOutlivesTheWithdrawal",
      ("TrustWithdraw.tla", "IF x \\in toEnd /\\ sess[x] = \"live\" THEN \"ended\" ELSE sess[x]", "sess[x]")),
-    ("TrustWithdraw / mutant: a withdrawal does not say which sessions to end", "TrustWithdraw", {"ForGood": "FALSE"}, TRUST_INV, [], "LiveMeansTrustedOrBeingEnded",
+    ("TrustWithdraw / mutant: a withdrawal does not say which sessions to end", "TrustWithdraw", trust(ForGood="FALSE"), TRUST_INV, [], "LiveMeansTrustedOrBeingEnded",
      ("TrustCore.tla", "WithdrawEffects(s) == << Eff(\"save\", {}), Eff(\"end\", s.tracked),", "WithdrawEffects(s) == << Eff(\"save\", {}), Eff(\"end\", {}),")),
-    ("TrustWithdraw / mutant: a retired key may be paired again", "TrustWithdraw", {"ForGood": "TRUE"}, TRUST_INV, [], "AcknowledgedMeansRefusedForGood",
+    ("TrustWithdraw / mutant: a retired key may be paired again", "TrustWithdraw", trust(), TRUST_INV, [], "AcknowledgedMeansRefusedForGood",
      ("TrustCore.tla", "    IF s.tomb = \"forGood\" THEN \"retired\"\n", "    IF FALSE THEN \"retired\"\n")),
-    ("TrustWithdraw / mutant: a withdrawal that was not written is acknowledged after a restart", "TrustWithdraw", {"ForGood": "TRUE"}, TRUST_INV, [],
+    ("TrustWithdraw / mutant: a withdrawal that was not written is acknowledged after a restart", "TrustWithdraw", trust(), TRUST_INV, [],
      "AcknowledgedMeansRefusedForGood",
      ("TrustWithdraw.tla", "         /\\ up' = FALSE /\\ lock' = \"none\" /\\ w' = \"dead\"", "         /\\ up' = FALSE /\\ lock' = \"none\" /\\ w' = \"committed\"")),
 

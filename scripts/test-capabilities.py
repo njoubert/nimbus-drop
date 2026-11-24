@@ -76,10 +76,17 @@ CASES = [
 
 
 def main():
-    made = subprocess.run(["swift", "build", "--show-bin-path"], capture_output=True, text=True)
-    products = made.stdout.strip()
-    if made.returncode != 0 or not os.path.exists(os.path.join(products, "NimbusCrypto.swiftmodule")):
-        sys.exit("no built modules to check against: run `swift build` first")
+    # Where the build put its modules: beside the products, or (SwiftPM's own build system, which
+    # is what CI has) in a Modules folder there. A path given as the argument is used as it is.
+    if len(sys.argv) > 1:
+        built = sys.argv[1]
+    else:
+        made = subprocess.run(["swift", "build", "--show-bin-path"], capture_output=True, text=True)
+        built = made.stdout.strip() if made.returncode == 0 else ""
+    places = [d for d in (built, os.path.join(built, "Modules")) if built and os.path.exists(os.path.join(d, "NimbusCrypto.swiftmodule"))]
+    if not places:
+        sys.exit(f"no built modules to check against in {built or 'the build folder'}: run `swift build` first")
+    products = places[0]
     bad = 0
     with tempfile.TemporaryDirectory(prefix="nimbus-capabilities-") as work:
         for n, (position, module, code, must_say) in enumerate(CASES, 1):

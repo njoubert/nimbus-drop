@@ -620,11 +620,13 @@ Same as the siblings: `VERSION=` in `build.sh`, `CFBundleVersion` = commit count
 `v<VERSION>`, runs the preflight and publishes. Signing reads `SIGN_IDENTITY` / `NOTARY_PROFILE`
 from the git-ignored `.signing` (copied from a sibling on this machine).
 
-`VERSION` in build.sh is 0.3.0 and has not been released: 0.3 does not talk to 0.2, so every
-Mac is updated together, and the auto-updater will carry a 0.2 Mac to it without asking whether
-the others are ready.
+0.3 does not talk to 0.2, so every Mac is updated together; the auto-updater carries a 0.2
+Mac to 0.3 without asking whether the others are ready, and from then on it and a 0.2 Mac
+show each other as "Needs an update".
 
-Releases: **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
+Releases: **0.3.0 on 2026-11-23** (protocol 3: encrypted and authenticated, pairing, key
+expiry; reviewed against its plan the same day and the findings fixed before release; the
+first release the auto-updater carries anyone to), **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
 **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows
 or counts itself as waiting; chunks retransmitted, counted; Internals; log levels), **0.2.0 on 2026-11-22** (protocol 2.1: reconnecting, Retry, kinds of file, the Finder
 service, Settings) and **0.1.0 on 2026-11-22** (DMG + zip, Developer ID, notarized, protocol 2.0). 0.1.0 was

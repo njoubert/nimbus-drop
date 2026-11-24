@@ -125,6 +125,10 @@ public class Transfer: @unchecked Sendable, Identifiable {
     func setPeerKey(_ key: PublicKey) { lock.withLock { _peerKey = key } }
     func setPeerName(_ name: String) { lock.withLock { _peerName = name } }
 
+    /// Not a drop: a measurement of the link (`SpeedTest`, or the other Mac's, served here).
+    /// Nothing was read from a file or written to one, and there is nothing to keep.
+    public internal(set) var isSpeedTest = false
+
     /// Called on an engine thread whenever the state changes.
     public var onChange: (@Sendable () -> Void)?
 

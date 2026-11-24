@@ -122,6 +122,7 @@ public final class SpeedTest: Transfer, @unchecked Sendable {
         self.streams = max(1, min(SpeedWire.mostStreams, streams))
         super.init(direction: .send, state: .connecting, peerName: peerName, peerAddress: host)
         setItems(["Speed test"])
+        isSpeedTest = true
     }
 
     public func start() {
@@ -274,6 +275,7 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
         super.init(direction: .receive, state: .transferring, peerName: mac.name, peerAddress: channel.socket.peerAddress)
         setPeerKey(channel.remote)
         setItems(["Speed test"])
+        isSpeedTest = true
         track(channel.socket)
         listener.trust.track(self, key: channel.remote)
     }

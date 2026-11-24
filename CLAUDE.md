@@ -124,6 +124,10 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
   FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
                             extension to mean); ScannedDrop.keeping(kinds:) (send only some)
   Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
+  SpeedTest.swift           the speed test (the plan's Addendum B): SpeedWire (a drop's records
+                            with no file at either end), SpeedTest (the Mac that asks),
+                            SpeedResponder (the Mac that is asked), DataSession (what data
+                            connections attach to: a drop being received, or a speed test)
   Leftovers.swift           everything a copy keeps on a Mac, for the uninstaller: one list
 Sources/NimbusDropChaos/    testing only, never in the app
   ChaosProxy.swift          a TCP proxy that throttles, stalls, cuts connections, refuses new
@@ -160,7 +164,7 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  148 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  153 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -226,7 +230,7 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 3.0)
+## The protocol (version 3.1)
 
 The specification is `docs/plans/secure-drops-plan.html` (draft 6); this is the map. Encrypted
 and authenticated end to end; not one byte in common with protocol 2.
@@ -253,6 +257,9 @@ pair                  pair-request -> (a person says yes) pair-go -> commit -> n
                       each types the other's; paired {} each way; stored when both are true
 verify                the same without the exchange: each enters the other's 30-digit identity number
 retire                retire {} -> the key is tombstoned, its sessions ended -> retired {}
+speed (3.1)           speed {seconds, streams} -> speed-go (as granted) | busy; 2n data connections
+                      up: records {file 0} on 1…n for `seconds` -> speed-up-done -> speed-count
+                      down: speed-down -> records on n+1…2n -> speed-done. Nothing read or written.
 ```
 
 - **Who a Mac is.** `Trust.standing(of:)`: mine, paired, expired, retired, renew, unknown.
@@ -382,6 +389,13 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   kept); one session per partial folder. The drop's key is SHA-256 over the sender's static
   key, the chunk size and every entry, so a resume needs the same sender key: after a key is
   replaced, an interrupted drop starts over.
+- **The speed test** (`--speed TARGET`, a paired tile's right-click › Test Speed): a paired
+  key only, nobody asked (nothing is written, and it is bounded: one at a time on a Mac, 30 s
+  each way and 32 connections at most, an absolute deadline). Each rate is counted by the end
+  that receives. It is the drop's data path with the files taken out, so the difference
+  between it and a real drop is the two disks. A 3.0 copy does not know the purpose and hangs
+  up; the tester says it may need a newer Nimbus Drop. Its first version deadlocked on itself
+  (it read `peerName`, which takes `Transfer.lock`, inside that lock).
 - **Not proved:** bytes left in a partial folder between attempts (the ledger's word, as
   before). Not hidden: volume and timing. Not claimed: anything against software running as
   the user.
@@ -615,7 +629,19 @@ Pro: the Air was told, forgot the pairing, and refused a copy of the old key by 
 re-send while the killed sender's drop was still held for its reconnect; `--unattended-from`
 now lets an offer through when the drop in its way is only `.reconnecting`.
 
-**Not measured yet:** encryption on a link faster than gigabit, Wi-Fi, 10 GbE, a drop larger than the receiver's
+**Thunderbolt 4, MacBook Pro ↔ MacBook Air M4 (2026-11-23, release build, link-local over the
+Thunderbolt Bridge, MTU 1500; iperf3 says the link carries 37.6 Gbit/s):**
+the speed test (encrypted, no disk): 31 Gbit/s each way on one connection, 36 to 38 Gbit/s on
+2 to 32. **The engine and the encryption fill the link.** Real drops of one 10.5 GB file of
+random data, from the sender's page cache: to a RAM disk on the Air 20 to 23 Gbit/s whatever
+the number of connections; Air to the Pro's SSD 17 Gbit/s overall (24 while moving, with a
+one-second stall near 80 %); to the Air's own SSD (86 % full) 8.5 Gbit/s on one connection and
+7.4 on eight. So above gigabit the disks are the limit, on the Air well under a 10 GbE wire,
+and more connections do not help a disk-bound receiver (they hurt slightly). What holds a
+real drop to about 20 Gbit/s with a RAM disk under it (reading the page cache, or every
+connection writing one file) is not found yet.
+
+**Not measured yet:** Wi-Fi, 10 GbE itself, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 

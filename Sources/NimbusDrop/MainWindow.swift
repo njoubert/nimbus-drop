@@ -286,6 +286,8 @@ private struct PeerMenu: View {
             Button("Pair by Identity Number…") { model.pair(with: peer, byNumber: true) }
         }
         if case .paired(let mac) = standing {
+            Button("Test Speed") { model.testSpeed(to: peer) }.disabled(peer.address == nil)
+            Divider()
             Button("Rename…") { model.rename(mac) }
             Button("Forget \(mac.name)…") { model.forget(mac) }
         }

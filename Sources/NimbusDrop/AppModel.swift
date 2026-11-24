@@ -332,6 +332,9 @@ final class AppModel: ObservableObject {
                 l.onPairRequest = { [weak self] pairing in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.pairRequested(pairing) } }
                 }
+                l.onSpeedTest = { [weak self] test in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.add(test) } }
+                }
                 l.onRefusedIdentity = { [weak self] name, address in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.refusedIdentity(name: name, address: address) } }
                 }
@@ -940,6 +943,8 @@ final class AppModel: ObservableObject {
     private func refresh() {
         let now = Date()
         for t in transfers where t.state.isFinal && announced.insert(t.id).inserted {
+            // A speed test is not a drop: nothing to announce, nothing for the history.
+            if t.isSpeedTest { continue }
             announce(t)
             record(t)
             if t.needsPairing, sends[t.id] != nil {
@@ -1068,6 +1073,7 @@ final class AppModel: ObservableObject {
     }
 
     private func row(for t: Transfer, now: Date) -> TransferRow {
+        if t.isSpeedTest { return speedRow(for: t, now: now) }
         let state = t.state, p = t.progress
         var status = "", indeterminate = false, failed = false
         switch state {
@@ -1103,6 +1109,50 @@ final class AppModel: ObservableObject {
                            isIndeterminate: indeterminate, failed: failed,
                            canReveal: state == .completed && !t.savedURLs.isEmpty,
                            canRetry: failed && sends[t.id] != nil)
+    }
+
+    /// A speed test's row: what is being measured now, then the two rates. On the Mac that
+    /// was asked there is only the fact of it.
+    private func speedRow(for t: Transfer, now: Date) -> TransferRow {
+        let state = t.state
+        let test = t as? SpeedTest
+        var status = "", indeterminate = false, failed = false, fraction = 0.0
+        switch state {
+        case .completed:
+            if let test {
+                let r = test.result
+                status = "↑ \(Format.bitRate(r.upRate)) to \(t.peerName) · ↓ \(Format.bitRate(r.downRate)) from it"
+                    + "\n\(Format.connections(r.streams)), \(Int(test.secondsEachWay)) s each way, encrypted, no disk at either end"
+            } else {
+                status = "\(t.peerName) measured the link to this Mac. Nothing was saved."
+            }
+            fraction = 1
+        case .declined(let why), .failed(let why): status = why; failed = true
+        case .cancelled: status = "Cancelled"; failed = true
+        case .transferring:
+            if let test {
+                let rate = max(0, meters[t.id]?.rate(bytes: t.progress.doneBytes, now: now) ?? 0)
+                status = "Measuring \(test.phase)…" + (rate > 0 ? " \(Format.bitRate(rate))" : "")
+                fraction = min(1, now.timeIntervalSince(t.transferStartedAt ?? now) / (2 * test.secondsEachWay))
+            } else {
+                status = "\(t.peerName) is measuring the link to this Mac…"
+                indeterminate = true
+            }
+        default: status = "Connecting to \(t.peerAddress)…"; indeterminate = true
+        }
+        return TransferRow(id: t.id, direction: t.direction, peerName: t.peerName, peerAddress: t.peerAddress, title: "Speed test",
+                           status: status, fraction: fraction, isActive: !state.isFinal, isIndeterminate: indeterminate, failed: failed, canReveal: false)
+    }
+
+    /// Measures the link to a paired Mac, both ways, with no disk at either end: the drop's own
+    /// data path, for as long as it takes to read a steady rate. From a tile's right-click menu.
+    func testSpeed(to peer: Peer) {
+        guard case .paired = standing(peer), let address = peer.address, let key = peer.key else { return }
+        let test = SpeedTest(host: address, port: peer.port ?? defaultPort, peerName: displayName(peer), identity: identity, trust: trust,
+                             expect: key, seconds: 5, streams: Settings.streams)
+        DropLog.write("speed test with \(peer.name) at \(address)")
+        add(test)
+        test.start()
     }
 
     /// What the drop got past, as what it cost: the chunks that went a second time. How many

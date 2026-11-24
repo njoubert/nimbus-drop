@@ -197,7 +197,7 @@ faster than gigabit yet; on gigabit the wire stays the limit.
 - **Works with no internet:** no server, no account, no time server. Key lifetimes are counted
   on the Mac's own clock that runs through sleep and cannot be set, so they hold on a network
   with no route out.
-- **Versioned:** the protocol is 3.0. The first number changes when two copies could no longer
+- **Versioned:** the protocol is 3.1 (3.1 added the speed test; drops between 3.0 and 3.1 work as before). The first number changes when two copies could no longer
   exchange a drop, the second when something is added that an older copy can ignore.
 
 The design, the two independent reviews it went through and the answer to each finding are in
@@ -227,6 +227,7 @@ The same engine without the app, for scripts and for a Mac you reach over ssh:
 NimbusDrop --pair macstudio               # pair with it: prints this side's code, asks for the other's
 NimbusDrop --receive ~/Incoming          # take drops from paired Macs, asking on the terminal for each
 NimbusDrop --send macstudio ~/Pictures/Christmas   # a Mac you have paired, by the name --known shows; or HOST, or HOST:PORT
+NimbusDrop --speed macstudio              # how fast the two Macs can go, both ways, with no disk involved
 NimbusDrop --peers                        # the Macs found in three seconds, and what each is to this one
 NimbusDrop --identity                     # this identity's key tag, identity number and end date
 NimbusDrop --known                        # who it is paired with (--forget TAG, --reset-identity)
@@ -313,6 +314,16 @@ it works perfectly well without (an air-gapped network is a supported place to u
 unless *Check for Updates Automatically* is off, it asks `api.github.com` once a day for the
 newest release and downloads it from `release-assets.githubusercontent.com`. Your files never
 leave your network.
+
+## How fast can two Macs go?
+
+Right-click a paired Mac and choose **Test Speed**. For five seconds each way the two Macs send
+each other what a drop would send, encrypted as a drop is, with nothing read from a disk and
+nothing written to one; the row then shows both rates. It answers "is it the network or the
+disks?": a real drop can be no faster than this, and is slower when a disk is. Nobody is asked
+at the other Mac, because nothing is saved there; it shows that a test is running. Over
+Thunderbolt 4 between two Apple silicon laptops it measures 36 to 38 Gbit/s, which is all the
+cable carries.
 
 ## Uninstalling
 

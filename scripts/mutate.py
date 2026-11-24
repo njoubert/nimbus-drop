@@ -62,6 +62,12 @@ M=[
  ('a drop in its grace is told it is not paired when it reconnects','Sources/NimbusDropCore/Receiver.swift','        if hello.purpose == .resume, case .expired = standing { says = true }\n','','ForgetReviewTests/testADropInItsGraceSurvivesAReconnectWhenBothSidesHaveSeenTheKeyRunOut'),
  ('telling a forgotten Mac may take for ever','Sources/NimbusDropCore/Retirement.swift','        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { socket.shutdown() }\n','','ForgetReviewTests/testTellingAForgottenMacTakesNoLongerThanItSays'),
  ('a hello from before a pairing can end it','Sources/NimbusDropCore/Receiver.swift',', !trust.pairedWithin(Tuning.strangerSeconds, key) {',' {','ForgetReviewTests/testAHelloFromBeforeAPairingDoesNotEndIt'),
+ ('a speed test is served to a Mac that says it is not paired','Sources/NimbusDropCore/Receiver.swift','guard hello.paired, case .paired(let mac) = standing else { socket.shutdown(); return }','guard case .paired(let mac) = standing else { socket.shutdown(); return }','SpeedTests/testOnlyAPairedMacMayAsk'),
+ ('any number of speed tests at once','Sources/NimbusDropCore/Receiver.swift','                guard !speedTesting else { return false }\n','','SpeedTests/testOneAtATimeAndNoMoreThanAMacGives'),
+ ('a speed test runs for as long as it is asked to','Sources/NimbusDropCore/SpeedTest.swift','seconds = max(1, min(SpeedWire.longest, ask.seconds.isFinite ? ask.seconds : 1))','seconds = ask.seconds','SpeedTests/testOneAtATimeAndNoMoreThanAMacGives'),
+ ('a speed test takes any number of connections','Sources/NimbusDropCore/SpeedTest.swift','conn >= 1, conn <= UInt64(2 * streams),\n','\n','SpeedTests/testConnectionsAndRecordsAreHeldToWhatASpeedTestIs'),
+ ('a speed test takes a record for a file','Sources/NimbusDropCore/SpeedTest.swift','guard header.file == 0, length > 0, length <= chunk else','guard length > 0, length <= chunk else','SpeedTests/testConnectionsAndRecordsAreHeldToWhatASpeedTestIs'),
+ ('a speed test outlives the trust it was asked under','Sources/NimbusDropCore/SpeedTest.swift','        listener.trust.track(self, key: channel.remote)\n','','SpeedTests/testWithdrawingTrustEndsASpeedTest'),
  # Not here: removing the all-zero check in KeyPair.agree. CryptoKit refuses that agreement
  # before the check is reached, so no test can tell (the review of 2026-11-23).
 ]

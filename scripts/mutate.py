@@ -95,11 +95,20 @@ M=[
  ('a withdrawal is not written before its sessions are ended', 'Sources/NimbusCrypto/TrustCore.swift', 'return [.log("identity: \\(name)\'s key \\(key.tag) is \\(reason); it will be refused from now on", .warn), .save]\n            + withdraw(key, name: name, reason: reason, refuseForGood: true, wall: wall) + [.changed]', 'return [.log("identity: \\(name)\'s key \\(key.tag) is \\(reason); it will be refused from now on", .warn)]\n            + withdraw(key, name: name, reason: reason, refuseForGood: true, wall: wall) + [.save, .changed]', 'TrustCoreTests/testAWithdrawalIsWrittenBeforeAnythingIsEnded'),
  ("what the core says to end is ended with the trust store locked (F7)", 'Sources/NimbusSecurityCore/Trust.swift', '                afterwards.append {\n                    for t in found where', '                do {\n                    for t in found where', 'ReviewTests/testEndingASessionDoesNotHoldTheTrustStore'),
  ("a question about a key is answered from before the clocks were read", 'Sources/NimbusSecurityCore/Trust.swift', '            let now = ticked()\n            return core.standing(of: key, wall: now.wall)', '            let was = core\n            let now = ticked()\n            return was.standing(of: key, wall: now.wall)', 'TrustTests/testAKeyEndsOnItsDate'),
+ # The independent review of 2026-11-24.
+ ('a retry follows the name a Mac had in the list, not the key the drop was sent to', 'Sources/NimbusDiscovery/Discovery.swift', 'var same = destinations.first { $0.key == key } ?? self', 'var same = destinations.first { $0.id == id } ?? self', 'IndependentReviewTests/testARetryGoesToTheKeyTheDropWasSentToNotToTheNameItHad'),
+ ("a speed test's yes is not checked against the pairing", 'Sources/NimbusTransferCore/SpeedTest.swift', '        guard listener.trust.standing(of: control.remote).isPaired else {\n            try? control.send(.decline, Reason(message: "The pairing with \\(listener.identity.name) has run out; pair again"))', '        guard true else {\n            try? control.send(.decline, Reason(message: "The pairing with \\(listener.identity.name) has run out; pair again"))', 'IndependentReviewTests/testAYesToASpeedTestWhosePairingHasRunOutStartsNothing'),
+ ('a pairing in progress goes on after this Mac\'s identity is reset', 'Sources/NimbusSecurityCore/Trust.swift', '            afterwards.append { pairing?.cancel("This Mac\'s identity was reset. Nothing was paired.") }\n', '', 'IndependentReviewTests/testResetIdentityEndsAPairingThatIsInProgress'),
+ ('a pairing made under a key this Mac no longer has is stored', 'Sources/NimbusSecurityCore/Trust.swift', '            if let under, under != core.pair.publicKey { throw DropError("This Mac\'s identity changed while pairing. Nothing was paired.") }\n', '', 'IndependentReviewTests/testAPairingMadeUnderAKeyThisMacNoLongerHasIsNotStored'),
+ ('characters that cannot be seen are shown (a right-to-left override in a name)', 'Sources/NimbusBase/Sanitize.swift', '            if invisible(scalar) { return nil }\n', '', 'IndependentReviewTests/testCharactersThatCannotBeSeenAreLeftOutOfWhatIsShownAndCompared'),
+ ('characters that cannot be seen tell two names apart', 'Sources/NimbusCrypto/TrustCore.swift', 'var s = Sanitize.comparable(name).precomposedStringWithCompatibilityMapping', 'var s = name.precomposedStringWithCompatibilityMapping', 'IndependentReviewTests/testCharactersThatCannotBeSeenAreLeftOutOfWhatIsShownAndCompared'),
+ ("a manifest's sizes are not bounded in all (the sum overflows)", 'Sources/NimbusSafeStorageCore/Manifest.swift', 'guard e.size <= Self.maxTotalBytes - total else { throw DropError("The drop is larger than can be accepted") }', 'guard e.size <= Self.maxFileSize else { throw DropError("The drop is larger than can be accepted") }', 'SecurityTests/testHostileNumbersAreRefusedNotCrashedOn'),
 ]
 only=sys.argv[1:] 
 bad=0
 for name,path,old,new,test in M:
-    if only and not any(o in name for o in only): continue
+    # A word picks the lines whose name has it; a word ending ".swift" those that change that file.
+    if only and not any(o in name or (o.endswith(".swift") and path.endswith("/"+o)) for o in only): continue
     src=open(path).read()
     if src.count(old)!=1: print("SKIP (pattern count %d): %s"%(src.count(old),name)); bad+=1; continue
     open(path,'w').write(src.replace(old,new))
@@ -108,6 +117,9 @@ for name,path,old,new,test in M:
         out=r.stdout+r.stderr
         if "error:" in out and ("Executed 1 test, with" in out) and "with 0 failures" not in out.split("Executed 1 test,")[1][:40]:
             print("caught   :",name)
+        elif "unexpected signal" in out or "Fatal error" in out:
+            # The mutant made the code trap: the test process died, which is noticing.
+            print("caught   :",name,"(the test process died)")
         elif "error:" in out and "Executed" not in out:
             print("NO BUILD :",name, [l for l in out.splitlines() if 'error' in l][:2]); bad+=1
         else:

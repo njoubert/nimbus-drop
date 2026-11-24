@@ -93,6 +93,8 @@ package final class Channel: @unchecked Sendable {
     package let socket: Socket
     /// The other end's static key, proved by the handshake.
     package let remote: PublicKey
+    /// This end's static key: the one of this Mac's keys that the handshake was made with.
+    package let local: PublicKey
     /// The handshake hash: what both ends saw. Pairing codes and resume proofs are bound to it.
     package let h: Data
     /// The third output of the handshake's Split: the root of a drop's data keys.
@@ -107,10 +109,11 @@ package final class Channel: @unchecked Sendable {
     private static let firstBody = fragment - 6
     private static let nextBody = fragment - 2
 
-    private init(socket: Socket, noise: Noise) throws {
+    private init(socket: Socket, noise: Noise, local: PublicKey) throws {
         guard let remote = noise.remoteStatic else { throw DropError.notAuthentic }
         self.socket = socket
         self.remote = remote
+        self.local = local
         h = noise.h
         (sending, receiving, master) = try noise.split()
     }
@@ -176,7 +179,7 @@ package final class Channel: @unchecked Sendable {
         if let expect, expect != theirs { throw DropError.wrongKey(expectName) }
         try check(theirs)
         try write(socket, try noise.write())
-        return try Channel(socket: socket, noise: noise)
+        return try Channel(socket: socket, noise: noise, local: keys.publicKey)
     }
 
     /// The responder's side, after the first five bytes ("NDROP") have been read.
@@ -190,7 +193,7 @@ package final class Channel: @unchecked Sendable {
         guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
         try write(socket, try noise.write())
         guard try noise.read(try read(socket, limit: 1024)).isEmpty else { throw DropError.damagedMessage }
-        return try Channel(socket: socket, noise: noise)
+        return try Channel(socket: socket, noise: noise, local: keys.publicKey)
     }
 
     /// Connects, proves both ends and exchanges hellos, as `trust`'s Mac. For tools and tests

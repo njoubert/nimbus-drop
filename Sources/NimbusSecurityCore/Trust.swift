@@ -303,12 +303,16 @@ public final class Trust: @unchecked Sendable {
     /// Stores a pairing that two people have just made. `remaining`: how long the other Mac
     /// says its key has left; held to the longest lifetime there is, and an existing entry's end
     /// is never moved later. `replacing`: a Known Mac this one takes the place of, whose key is
-    /// retired by this.
+    /// retired by this. `under`: the key of this Mac's that the pairing's handshake was made
+    /// with. If this Mac's key has been replaced since (Reset Identity while the codes were on
+    /// screen), what the two people confirmed is a key this Mac no longer has, and nothing is
+    /// stored: asked and answered under the lock, as one decision.
     @discardableResult
     public func store(pairing key: PublicKey, announced: String, method: String, remaining: Double, major: Int = protocolVersion,
-                      replacing: PublicKey? = nil, name: String? = nil) throws -> KnownMac {
+                      replacing: PublicKey? = nil, name: String? = nil, under: PublicKey? = nil) throws -> KnownMac {
         try locked {
             let now = ticked()
+            if let under, under != core.pair.publicKey { throw DropError("This Mac's identity changed while pairing. Nothing was paired.") }
             let (mac, effects) = try core.store(pairing: key, announced: announced, method: method, remaining: remaining, major: major,
                                                 replacing: replacing, name: name, wall: now.wall)
             perform(effects)
@@ -372,7 +376,18 @@ public final class Trust: @unchecked Sendable {
 
     /// Reset Identity, second half: a new key, every Known Mac moved to the pair-again list
     /// marked with whether it was told, every session ended. The old key is gone when this returns.
-    public func completeReset(told: Set<PublicKey>) { locked { perform(core.reset(told: told, wall: clock.wall)) } }
+    ///
+    /// A pairing that is in progress ends too: it was being made with the old key. (It used to
+    /// go on: both people typed their codes, the other Mac stored the identity that had just
+    /// been given up, good for as long as that key had left, and this Mac stored the other
+    /// under its new one. Found by an independent review, 2026-11-24.)
+    public func completeReset(told: Set<PublicKey>) {
+        locked {
+            perform(core.reset(told: told, wall: clock.wall))
+            let pairing = gate.active
+            afterwards.append { pairing?.cancel("This Mac's identity was reset. Nothing was paired.") }
+        }
+    }
 
     // MARK: Storage
 

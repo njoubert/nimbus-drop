@@ -274,7 +274,8 @@ package struct TrustCore {
     /// macOS adds on a clash are folded away, so that "MacStudio", "macstudio-2" and
     /// "ｍａｃｓｔｕｄｉｏ" are one name.
     package static func fold(_ name: String) -> String {
-        var s = name.precomposedStringWithCompatibilityMapping
+        // Nothing that cannot be seen: "mac\u{200B}studio" is "macstudio" to whoever reads it.
+        var s = Sanitize.comparable(name).precomposedStringWithCompatibilityMapping
         s = s.applyingTransform(.toLatin, reverse: false) ?? s
         s = s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
         if s.hasSuffix(".local") { s.removeLast(6) }

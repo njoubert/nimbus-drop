@@ -523,7 +523,7 @@ final class AppModel: ObservableObject {
     /// out cannot, and its row says why.
     private func offerToPairAgain(_ id: UUID) {
         guard live, let again = sends[id] else { return }
-        let peer = destinations.first { $0.id == again.peer.id } ?? again.peer
+        let peer = again.peer.asItIsNow(among: destinations, proved: transfers.first { $0.id == id }?.peerKey)
         guard standing(peer).canPair else { return }
         let alert = NSAlert()
         alert.messageText = "\(displayName(peer)) no longer has this Mac paired"
@@ -709,8 +709,9 @@ final class AppModel: ObservableObject {
         transfers.removeAll { $0.id == id }
         meters[id] = nil
         sends[id] = nil
-        // The Mac as it is known now (its address may have changed), or as it was.
-        let peer = destinations.first { $0.id == again.peer.id } ?? again.peer
+        // The Mac as it is known now (its address may have changed), or as it was: found by the
+        // key the drop was sent to, never by the name it had in the list.
+        let peer = again.peer.asItIsNow(among: destinations, proved: old.peerKey)
         // The same kinds of file as before; the files are read again, in case they changed.
         send(again.urls, to: peer, kinds: again.kinds, asking: false)
         refresh()
@@ -830,6 +831,11 @@ final class AppModel: ObservableObject {
     /// (one click), Save to… (then a folder chooser; cancelling that declines), or Decline. A second drop that arrives while the first is still being
     /// decided gets its own panel beside it, and they can be answered in any order.
     private func offered(_ session: ReceiveSession) {
+        // It may be over already. A sender that offers and hangs up at once ends the session on
+        // its engine thread before this runs on the main one, `onWithdrawn` (not yet set) was
+        // called into nothing, and the panel shown for it was never taken away: one for every
+        // such offer, each needing a click (an independent review, 2026-11-24).
+        guard session.state == .waitingForAccept else { return }
         add(session)
         let id = session.id
         session.onWithdrawn = { [weak self] in
@@ -854,6 +860,8 @@ final class AppModel: ObservableObject {
         }
         let place = asking.count
         asking[id] = Asking(question: q, chooser: nil)
+        // Or it ended between that look and `onWithdrawn` being set.
+        guard session.state == .waitingForAccept else { asking[id] = nil; return }
         NSApp.activate(ignoringOtherApps: true)
         NSSound(named: "Glass")?.play()
         q.show(cascade: place)
@@ -861,6 +869,8 @@ final class AppModel: ObservableObject {
 
     /// A paired Mac asks to measure the link to this one: the person here says whether it may.
     private func speedAsked(_ test: SpeedResponder) {
+        // As for an offer: it may be over before it is shown.
+        guard test.state == .waitingForAccept else { return }
         add(test)
         let id = test.id
         test.onWithdrawn = { [weak self] in
@@ -874,6 +884,7 @@ final class AppModel: ObservableObject {
         }
         let place = asking.count
         asking[id] = Asking(question: q, chooser: nil)
+        guard test.state == .waitingForAccept else { asking[id] = nil; return }
         NSApp.activate(ignoringOtherApps: true)
         NSSound(named: "Glass")?.play()
         q.show(cascade: place)

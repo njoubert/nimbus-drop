@@ -58,14 +58,16 @@
  *
  * MUTANTS. Every guard the lemmas rest on is a macro (below, "The guards"), and each has a
  * flag that takes it out. With the flag, the lemma named beside it must come out falsified;
- * formal/check.py runs them and fails if one does not. A guard whose removal falsified
- * nothing was a lemma that said nothing about it: three were like that when the flags were
- * written (the prologue, the handshake hash in the resume proofs, a record's header as its
- * chunk's associated data), and each has a lemma now.
- * NOT SETTLED: NoConnInStreamKey, and with it NoHeaderBinding. With one stream key for a
- * whole drop the search was stopped at 12 GB in each of seven runs (two to three minutes
- * each), over the three lemmas that should notice. Nothing is claimed of those two flags:
- * they are not in check.py, and the lemmas are not shown to depend on those guards.
+ * formal/check.py runs thirteen of them and fails if one does not. A guard whose removal
+ * falsified nothing was a lemma that said nothing about it: the prologue was like that (with
+ * the openings out of the hash every lemma still held), and has a lemma now.
+ * NOT SETTLED, four flags: NoConnInStreamKey and with it NoHeaderBinding, NoHashInResume,
+ * SameResumeLabel. Under each the search for a trace was stopped at 12 to 13 GB after two
+ * to three minutes (seven runs for the first two, one each for the others); the traces
+ * they need are long (two connections of one drop; a key given away and a second and third
+ * handshake). Nothing is claimed of those four: they are not in check.py, and the lemmas
+ * beside them are NOT shown to depend on those guards. What is written beside each is what
+ * a reading of the rules says should happen, and no more than that.
  *
  * HOW IT IS PROVED. The lemmas are in order and the later ones use the earlier ([reuse]):
  * first the handshake by itself, then two helpers saying that `master` names one handshake,
@@ -254,9 +256,11 @@ macros: chunkAD(hdr) = hdr
 /* The two proofs of a resume are over the new handshake's hash, each under its own label.
    DropKeys.resumeProof, DropKeys.swift:36; SendSession.reconnect, Sender.swift:272 and :275;
    ReceiveSession.resume, Receiver.swift:157 and :158.
-   NoHashInResume falsifies only_the_sender_resumes_a_drop: a proof made for one handshake
-   is good for another. SameResumeLabel falsifies only_the_receiver_confirms_a_resume: the
-   sender's own proof is handed back to it as the receiver's.                                */
+   NoHashInResume should falsify only_the_sender_resumes_a_drop: a proof made for one
+   handshake is good for another (it takes both keys given away after the drop began: one
+   to read the sender's proof, one to present it). SameResumeLabel should falsify
+   only_the_receiver_confirms_a_resume: the sender's own proof is handed back to it as the
+   receiver's. NOT SETTLED, either: the search did not finish (see MUTANTS above).           */
 #ifdef NoHashInResume
 macros: resumeProof(rkey, hash) = mac(rkey, 'resume'), resumedProof(rkey, hash) = mac(rkey, 'resumed')
 #endif
@@ -844,8 +848,8 @@ lemma what_is_written_is_secret [heuristic={drop}, hide_lemma=master_is_secret_f
    only until the DROP's handshake finished: a key given away after that (either Mac's, or
    both) lets someone finish a new handshake under it, and that is not enough to pick the
    drop up or to answer for it. (As first written these two allowed no key to be given away
-   at any time, and then they said nothing of the hash in the proofs: the channel alone
-   carried them.)                                                                             */
+   at any time, and then, by reading, they said nothing of the hash in the proofs: the
+   channel alone carried them. Whether they do now is NOT SETTLED: see MUTANTS above.)        */
 lemma only_the_sender_resumes_a_drop [reuse, heuristic={drop}, hide_lemma=master_is_secret_for_the_initiator, hide_lemma=transport_keys_are_secret_for_the_initiator, hide_lemma=the_initiator_agrees_with_the_responder, hide_lemma=the_initiators_master_is_one_handshake, hide_lemma=the_initiators_master_is_no_other_initiators, hide_lemma=the_initiator_hears_only_the_responder]:
   "All R A gSR gSI hh kIR kRI m h2 #i #done #a.
       Resumed(gSR, gSI, hh, m, h2) @ i & RDone(R, gSR, gSI, hh, kIR, kRI, m) @ done & Static(A, gSI) @ a

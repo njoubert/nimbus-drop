@@ -211,11 +211,41 @@ def run_tlc(java, jar, name, module, constants, invariants, properties, expected
 
 TAMARIN_RUNS = [
     ("NimbusHandshake", "NimbusHandshake.spthy", [], {}),
+    # Each guard of the handshake theory taken out (a macro in the file, with the line of the Swift
+    # it stands for), and the lemma that must then fail. Not here: -D=NoConnInStreamKey,
+    # -D=NoHeaderBinding, -D=NoHashInResume and -D=SameResumeLabel, whose search for a trace was
+    # stopped at 12 to 13 GB; nothing is claimed of those four guards (the file says so).
+    ("NimbusHandshake / mutant: the initiator does not open the last seal of message 2", "NimbusHandshake.spthy", ["-D=NoMessage2Check"],
+     {"a_probe_is_answered_by_the_key_it_reports": "falsified"}),
+    ("NimbusHandshake / mutant: the responder does not open the last seal of message 3", "NimbusHandshake.spthy", ["-D=NoMessage3Check"],
+     {"the_responder_agrees_with_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: ee is not mixed into the keys", "NimbusHandshake.spthy", ["-D=NoEE"],
+     {"master_is_secret_for_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: es is not mixed into the keys", "NimbusHandshake.spthy", ["-D=NoES"],
+     {"a_probe_is_answered_by_the_key_it_reports": "falsified"}),
+    ("NimbusHandshake / mutant: se is not mixed into the keys", "NimbusHandshake.spthy", ["-D=NoSE"],
+     {"master_is_secret_for_the_responder": "falsified"}),
+    ("NimbusHandshake / mutant: the handshake's seals do not have the hash as associated data", "NimbusHandshake.spthy", ["-D=NoHashInSeals"],
+     {"the_responder_agrees_with_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: the openings are not in the handshake hash", "NimbusHandshake.spthy", ["-D=NoPrologue"],
+     {"the_handshake_hash_binds_the_openings": "falsified"}),
+    ("NimbusHandshake / mutant: one transport key for both directions", "NimbusHandshake.spthy", ["-D=OneTransportKey"],
+     {"the_initiator_hears_only_the_responder": "falsified"}),
+    ("NimbusHandshake / mutant: master is taken from the handshake hash", "NimbusHandshake.spthy", ["-D=MasterFromHash"],
+     {"master_is_secret_for_the_initiator": "falsified"}),
+    ("NimbusHandshake / mutant: what a connection is for is said in the clear", "NimbusHandshake.spthy", ["-D=PurposeInTheClear"],
+     {"both_ends_agree_what_a_connection_is_for": "falsified"}),
+    ("NimbusHandshake / mutant: the attach key is the session id", "NimbusHandshake.spthy", ["-D=AttachKeyIsSessionID"],
+     {"only_the_sender_attaches_a_data_connection": "falsified"}),
+    ("NimbusHandshake / mutant: the attach tag is computed without the challenge", "NimbusHandshake.spthy", ["-D=NoChallengeInTag"],
+     {"only_the_sender_attaches_a_data_connection": "falsified"}),
+    ("NimbusHandshake / mutant: the attach tag is computed without the connection number", "NimbusHandshake.spthy", ["-D=NoConnInTag"],
+     {"only_the_sender_attaches_a_data_connection": "falsified"}),
     ("NimbusPairing", "NimbusPairing.spthy", [], {}),
     ("NimbusPairing / mutant: the reveal is not checked against the commitment", "NimbusPairing.spthy", ["-D=NoCommitCheck"],
-     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified"}),
+     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified", "the_mac_that_asked_stores_one_exchange": "falsified"}),
     ("NimbusPairing / mutant: neither the commitment nor the codes include the handshake hash", "NimbusPairing.spthy", ["-D=NoHashBinding"],
-     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified"}),
+     {"a_stored_pairing_is_with_the_mac_the_person_meant": "falsified", "the_mac_that_asked_stores_one_exchange": "falsified"}),
 ]
 
 

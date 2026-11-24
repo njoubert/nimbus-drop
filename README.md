@@ -301,7 +301,7 @@ are each checked to be the same machine as its specification, transition for tra
 classes around them are tied to the models by tests, not by proof. The code that holds keys
 cannot write to anything, and the code that writes cannot read a key: the compiler holds
 that. `docs/security/claims.md` lists every claim with the kind of evidence it has, and
-`formal/README.md` says what none of it claims. It is not an audit, and the app has not had
+`formal/README.md` lists every way the app is checked, the gaps that are left, and what none of it claims. It is not an audit, and the app has not had
 one. The models, the tests written to hold them and an outside review between them found
 about thirty things, a crash on one accepted drop among them; all are fixed or written down.
 `SECURITY.md` says how to report another.

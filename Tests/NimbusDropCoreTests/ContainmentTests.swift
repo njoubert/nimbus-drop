@@ -1417,3 +1417,115 @@ extension ContainmentTests {
         XCTAssertFalse(ledger.isComplete)
     }
 }
+
+// MARK: - The tree by itself, against things that are not what they are asked to be
+
+extension ContainmentTests {
+    /// Each operation of `SafeTree`, asked for a name that something of another kind has: a
+    /// link (to a folder, to a file, to nowhere), a file with a second name elsewhere, a pipe,
+    /// a folder, a file. It refuses, and nothing changes at the name or at what it leads to.
+    func testTheTreeTakesNothingForWhatItIsNot() throws {
+        let fm = FileManager.default
+        let root = dst.appendingPathComponent("T.partial/items")
+        let tree = try SafeTree(root: root)
+        try tree.makeDirectory("folder")
+        close(try tree.openFile("file"))
+        try tree.makeSymlink("link", to: "file")
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("to-folder").path, withDestinationPath: documents.path)
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("to-file").path, withDestinationPath: documents.appendingPathComponent("secret.txt").path)
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("to-nowhere").path, withDestinationPath: agents.appendingPathComponent("made.plist").path)
+        try fm.linkItem(at: documents.appendingPathComponent("large.bin"), to: root.appendingPathComponent("second-name"))
+        XCTAssertEqual(mkfifo(root.appendingPathComponent("pipe").path, 0o600), 0)
+        let held = open(root.appendingPathComponent("pipe").path, O_RDWR)   // both ends, so that nothing waits on it
+        defer { close(held) }
+        let before = snapshot()
+
+        for name in ["to-folder", "to-file", "to-nowhere", "second-name", "pipe", "file", "link"] {
+            XCTAssertThrowsError(try tree.makeDirectory(name), "\(name) taken for a folder")
+        }
+        for name in ["to-folder", "to-file", "to-nowhere", "second-name", "pipe", "folder", "link"] {
+            XCTAssertThrowsError(try { close(try tree.openFile(name)) }(), "\(name) opened as a file")
+        }
+        for name in ["to-folder", "to-file", "to-nowhere", "second-name", "pipe", "folder", "file"] {
+            XCTAssertThrowsError(try tree.makeSymlink(name, to: "file"), "\(name) taken for the link to file")
+        }
+        XCTAssertThrowsError(try tree.makeSymlink("link", to: "folder"), "a link that is there must be the same link")
+        for name in ["to-folder/new", "to-folder/secret.txt", "to-file/x", "file/x", "pipe/x", "second-name/x", "link/x", "to-nowhere/x"] {
+            XCTAssertThrowsError(try { close(try tree.openFile(name)) }(), "\(name): written through something that is not a folder of the tree")
+            XCTAssertThrowsError(try tree.makeDirectory(name), name)
+            XCTAssertNil(tree.fileSize(name), name)
+        }
+        for name in ["to-file", "to-folder", "to-nowhere", "pipe", "folder", "link"] { XCTAssertNil(tree.fileSize(name), "\(name) measured as a file") }
+        XCTAssertEqual(before, snapshot(), "something was made or changed by a refusal")
+        // The same again is a resume, and is taken.
+        XCTAssertNoThrow(try tree.makeDirectory("folder"))
+        XCTAssertNoThrow(close(try tree.openFile("file")))
+        XCTAssertNoThrow(try tree.makeSymlink("link", to: "file"))
+        XCTAssertEqual(before, snapshot())
+    }
+
+    /// A pipe where a file belongs, with nobody reading it. The drop does not write to it and
+    /// is not put in place. What is NOT held: opening a pipe to write waits for a reader, so
+    /// the receiver waits (holding the tree, so every other connection of the drop waits too)
+    /// until somebody opens the other end, here the test after a moment. Somebody local can
+    /// stall a drop this way; they can also just delete its partial folder.
+    func testAPipeWhereAFileBelongsIsNotWrittenTo() throws {
+        let a = bytes(chunk, seed: 1)
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "P", kind: .directory), .init(path: "P/a.bin", kind: .file, size: Int64(a.count))])
+        let allow = allowed(manifest, from: mallory)
+        let pipe = dst.appendingPathComponent(allow.partial).appendingPathComponent("items/P/a.bin")
+        try FileManager.default.createDirectory(at: pipe.deletingLastPathComponent(), withIntermediateDirectories: true)
+        XCTAssertEqual(mkfifo(pipe.path, 0o600), 0)
+        let before = snapshot()
+        let hand = try Hand(manifest, from: mallory, to: victim)
+        XCTAssertTrue(hand.planned, hand.refusal ?? "")
+        let session = try XCTUnwrap(victim.offers.withLock { $0.last })
+        var (s, cipher) = try hand.attach()
+        let record = try Hand.record(&cipher, file: 1, chunk: 0, bytes: a)
+        try record.withUnsafeBytes { try s.writeAll($0.baseAddress!, record.count) }
+        let waited = !until(1) { session.state.isFinal }
+        let reader = open(pipe.path, O_RDONLY | O_NONBLOCK)
+        defer { close(reader) }
+        guard case .failed(let why) = try ended().state else { return XCTFail("the drop went on") }
+        XCTAssertTrue(why.contains("refused"), why)
+        var byte: UInt8 = 0
+        XCTAssertLessThanOrEqual(read(reader, &byte, 1), 0, "something was written into the pipe")
+        assertContained(before, snapshot(), allowing: [allow])
+        if waited { print("ContainmentTests: the receiver waited on a pipe put where a file belongs until its other end was opened (not held: see docs/security/filesystem-containment.md)") }
+        s.shutdown()
+        hand.hangUp()
+    }
+
+    /// Putting a drop in place on a volume that cannot refuse-and-move in one step (exFAT and
+    /// MS-DOS volumes answer ENOTSUP), which no test can make for itself. Skipped unless
+    /// NIMBUS_CONTAINMENT_VOLUME names a folder on one, for example a disk image:
+    ///
+    ///     hdiutil create -size 40m -fs ExFAT -volname NDTEST /tmp/nd.dmg
+    ///     hdiutil attach -nobrowse -mountpoint /tmp/nd-volume /tmp/nd.dmg
+    ///     NIMBUS_CONTAINMENT_VOLUME=/tmp/nd-volume swift test --filter testPlacingOnAVolumeThatCannotMoveWithoutReplacing
+    func testPlacingOnAVolumeThatCannotMoveWithoutReplacing() throws {
+        guard let volume = ProcessInfo.processInfo.environment["NIMBUS_CONTAINMENT_VOLUME"] else {
+            throw XCTSkip("needs a folder on a volume without RENAME_EXCL (exFAT, MS-DOS); set NIMBUS_CONTAINMENT_VOLUME to one")
+        }
+        let fm = FileManager.default
+        let folder = URL(fileURLWithPath: volume).appendingPathComponent("containment-\(UUID().uuidString)")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: folder) }
+        let tree = try SafeTree(root: folder.appendingPathComponent("T.partial/items"))
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let fd = try tree.openFile(name)
+            _ = name.withCString { write(fd, $0, strlen($0)) }
+            close(fd)
+        }
+        try Data("was here".utf8).write(to: folder.appendingPathComponent("a.txt"))
+        let into = open(folder.path, O_EXEC | O_DIRECTORY)
+        defer { close(into) }
+        XCTAssertFalse(try tree.place("a.txt", in: into, as: "a.txt"), "a name that is taken")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("a.txt"), encoding: .utf8), "was here", "and what has it is as it was")
+        XCTAssertTrue(try tree.place("a.txt", in: into, as: "a 2.txt"))
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("a 2.txt"), encoding: .utf8), "a.txt")
+        XCTAssertTrue(try tree.place("b.txt", in: into, as: "b.txt"), "a name that is free")
+        XCTAssertFalse(try tree.place("c.txt", in: into, as: "B.TXT") && !fm.fileExists(atPath: folder.appendingPathComponent("b.txt").path), "nothing is replaced under another spelling of its name")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("b.txt"), encoding: .utf8), "b.txt")
+    }
+}

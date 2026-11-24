@@ -141,10 +141,6 @@ package enum RoundMachine {
 
         package init(patience: Int) { self.patience = patience }
 
-        /// The receiver has said what it holds: the drop is under way, and a lost conversation
-        /// is worth getting back.
-        package var planned: Bool { phase == .sending || phase == .awaitVerdict || phase == .reconnecting }
-
         /// Ends the drop, saying why when there is a conversation to say it on.
         private mutating func fail(_ why: Failure) -> [Effect] {
             let connected = phase != .idle

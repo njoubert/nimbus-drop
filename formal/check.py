@@ -67,16 +67,6 @@ SYSTEM_INV = ["TypeOK", "HonestMacsNeverTripTheGuards", "StoredMeansBothPeopleCo
 GATE_INV = ["TypeOK", "NotBothTurnedAway", "OnePairingAtATime", "OneOfTheTwo"]
 TRUST_INV = ["TypeOK", "AcknowledgedMeansRefusedForGood", "NothingOutlivesTheWithdrawal", "LiveMeansTrustedOrBeingEnded",
              "NoSocketWorkUnderTheLock"]
-DROP_INV = ["TypeOK", "NoWrongBytes", "PlacedIsWhole", "SentMeansSaved", "NoStreamKeyTwice"]
-DROP_PROPS = ["NothingWrittenAfterPlacing", "ItEnds", "ItArrives"]
-
-
-def drop(**changes):
-    c = {"Chunks": "{c1, c2}", "MaxFaults": "3", "MaxConns": "11", "ChecksTag": "TRUE", "KeepsCounter": "TRUE", "MayGiveUp": "FALSE"}
-    c.update(changes)
-    return c
-
-
 def trust(**changes):
     c = {"Sessions": "{s1, s2}", "TrackChecks": "TRUE"}
     c.update(changes)
@@ -134,19 +124,6 @@ TLA_RUNS = [
      ("TrustWithdraw.tla", "          /\\ lock' = \"none\" /\\ w' = \"ending\"", "          /\\ lock' = \"W\" /\\ w' = \"ending\"")),
     ("TrustWithdraw / mutant: the sessions are not ended", "TrustWithdraw", trust(), TRUST_INV, [], "NothingOutlivesTheWithdrawal",
      ("TrustWithdraw.tla", "IF s \\in toEnd /\\ sess[s] = \"live\" THEN \"ended\" ELSE sess[s]", "sess[s]")),
-
-    # A drop's rounds under a network that misbehaves.
-    ("Drop", "Drop", drop(), DROP_INV, DROP_PROPS, HOLDS, None),
-    ("Drop (three chunks, two faults)", "Drop", drop(Chunks="{c1, c2, c3}", MaxFaults="2", MaxConns="8"), DROP_INV, DROP_PROPS, HOLDS, None),
-    ("Drop (either end may give up)", "Drop", drop(MayGiveUp="TRUE", MaxFaults="2", MaxConns="8"), DROP_INV,
-     ["NothingWrittenAfterPlacing", "ItEnds"], HOLDS, None),
-    ("Drop / mutant: a record is written without being opened", "Drop", drop(ChecksTag="FALSE"), DROP_INV, [], "NoWrongBytes", None),
-    ("Drop / mutant: the connection counter starts again on a reconnect", "Drop", drop(KeepsCounter="FALSE"), DROP_INV, [], "NoStreamKeyTwice", None),
-    ("Drop / mutant: 'complete' is said of a drop that is not whole", "Drop", drop(), DROP_INV, [], "PlacedIsWhole",
-     ("Drop.tla", "         /\\ IF have = Chunks\n               THEN placed' = TRUE", "         /\\ IF have # {}\n               THEN placed' = TRUE")),
-    ("Drop / mutant: the sender does not come back after losing the conversation", "Drop", drop(), [], ["ItArrives"], "deadlock",
-     ("Drop.tla", "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Reconnect \\/ Refused",
-      "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Refused")),
 ]
 
 
@@ -167,6 +144,20 @@ ROUNDS_RECEIVER = ["TypeOK", "EndsOnce", "AWithdrawalSaysNothing", "NothingBefor
                    "BackOnlyToAHeldDrop", "NobodyGivesUpWhoWasNotWaiting", "DeclinedOnlyOnceSaid", "DeclinedMeansNo",
                    "TheQuestionGoesWhenTheDropDoes", "TheSendersGivingUpIsNotAnswered", "RUnderWaySilenceIsNotTheEnd",
                    "RTheirWordEndsIt", "AFinishedDropSaysOnlyCompleteAgain"]
+
+DROP_INV = ["TypeOK", "NoWrongBytes", "PlacedIsWhole", "SentMeansSaved", "NoStreamKeyTwice", "NothingBeforeTheYes", "OnlyWhatWasOffered",
+            "DeclinedWroteNothing", "NothingWrittenOnceJudged"]
+DROP_PROPS = ["NothingWrittenAfterPlacing", "ItEnds", "ItArrives"]
+
+
+def drop(**changes):
+    """Drop.tla's constants: as the code is, the person says yes, the sender is honest, nobody gives up, and the
+    conversation is cut only once the drop is under way and fewer times than the sender has patience."""
+    c = {"Chunks": "{c1, c2}", "MaxFaults": "3", "MaxCuts": "2", "MaxConns": "11", "Patience": "3", "IdleRounds": "5", "Says": '{"yes"}',
+         "Lies": "FALSE", "ChecksTag": "TRUE", "KeepsCounter": "TRUE", "KeepsOutLate": "TRUE", "CutsEarly": "FALSE", "MayGiveUp": "FALSE"}
+    c.update(changes)
+    return c
+
 
 def rounds(end, mutant=None, fails=HOLDS, old=None, new=None):
     """One end of the conversation against anything; with `mutant`, RoundMachine.tla with `old` made `new`."""
@@ -332,6 +323,50 @@ ROUND_RUNS = [
     rounds("receiver", "a finished drop answers anything at all", "AFinishedDropSaysOnlyCompleteAgain",
            "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << \"send complete\" >> >>",
            "IF s.phase = \"completed\" /\\ e \\in {\"senderBack\", \"lost\"} THEN << s, << \"send complete\" >> >>"),
+
+    # A drop: the two machines, the person, and a network that misbehaves.
+    ("Drop", "Drop", drop(), DROP_INV, DROP_PROPS, HOLDS, None),
+    ("Drop (three chunks, two faults)", "Drop", drop(Chunks="{c1, c2, c3}", MaxFaults="2", MaxConns="8"), DROP_INV, DROP_PROPS, HOLDS, None),
+    ("Drop (cut at any time; either end may give up; the person may say no; the sender may lie)", "Drop",
+     drop(CutsEarly="TRUE", MayGiveUp="TRUE", Says='{"yes", "no"}', Lies="TRUE", MaxFaults="2", MaxConns="8"), DROP_INV,
+     ["NothingWrittenAfterPlacing", "ItEnds"], HOLDS, None),
+    ("Drop / reachable: it arrives", "Drop", drop(MaxFaults="1", MaxCuts="1", MaxConns="4"), ["NeverArrives"], [], "NeverArrives", None),
+    ("Drop / reachable: a no is a no", "Drop", drop(Says='{"no"}', MaxFaults="1", MaxCuts="1", MaxConns="4"), ["NeverDeclined"], [], "NeverDeclined", None),
+    ("Drop / known limit: cut before the sender has heard what the receiver holds, the drop ends", "Drop",
+     drop(CutsEarly="TRUE", MaxFaults="1", MaxCuts="1", MaxConns="4"), [], ["ItArrives"], "ItArrives", None),
+    ("Drop / known limit: as many fruitless reconnects as the sender has patience", "Drop",
+     drop(Patience="1", MaxFaults="1", MaxCuts="1", MaxConns="4"), [], ["ItArrives"], "ItArrives", None),
+    ("Drop / known limit: as many idle rounds as the receiver has patience", "Drop",
+     drop(IdleRounds="1", MaxFaults="1", MaxCuts="0", MaxConns="4"), [], ["ItArrives"], "ItArrives", None),
+    ("Drop / mutant: a record is written without being opened", "Drop", drop(ChecksTag="FALSE"), DROP_INV, [], "NoWrongBytes", None),
+    ("Drop / mutant: the connection counter starts again on a reconnect", "Drop", drop(KeepsCounter="FALSE"), DROP_INV, [], "NoStreamKeyTwice", None),
+    ("Drop / mutant: a data connection is let into a drop that has been judged (the code before 2026-11-24)", "Drop", drop(KeepsOutLate="FALSE"),
+     DROP_INV, [], "NothingWrittenOnceJudged", None),
+    ("Drop / mutant: the ledger is said to be whole when it is not", "Drop", drop(), DROP_INV, [], "PlacedIsWhole",
+     ("Drop.tla", "RDo(IF have = Chunks THEN \"whole\"", "RDo(IF have # {} THEN \"whole\"")),
+    ("Drop / mutant: the machine puts in place a drop that was not judged whole", "Drop", drop(), DROP_INV, [], "PlacedIsWhole",
+     ("RoundMachine.tla", "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>",
+      "ELSE IF e \\in {\"whole\", \"more\"} THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>")),
+    ("Drop / mutant: 'complete' is said before the drop is in place", "Drop", drop(), DROP_INV, [], "SentMeansSaved",
+     ("RoundMachine.tla", "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"place\" >> >>",
+      "ELSE IF e = \"whole\" THEN << [s EXCEPT !.phase = \"placing\"], << \"send complete\", \"place\" >> >>")),
+    ("Drop / mutant: the receiver accepts without waiting for the person", "Drop", drop(), DROP_INV, [], "NothingBeforeTheYes",
+     ("RoundMachine.tla", "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"deciding\"], << \"ask\" >> >> ELSE Nothing(s)",
+      "IF s.phase = \"idle\" THEN << [s EXCEPT !.phase = \"awaitManifest\"], << \"ask\", \"send accept\" >> >> ELSE Nothing(s)")),
+    ("Drop / mutant: a manifest that is not what was offered is taken", "Drop", drop(Lies="TRUE"), DROP_INV, [], "OnlyWhatWasOffered",
+     ("RoundMachine.tla", "ELSE IF s.phase = \"awaitManifest\" /\\ e = \"manifest\" THEN",
+      "ELSE IF s.phase = \"awaitManifest\" /\\ e \\in {\"manifest\", \"manifestOther\"} THEN")),
+    ("Drop / mutant: the sender does not come back after losing the conversation", "Drop", drop(), [], ["ItArrives"], "deadlock",
+     ("Drop.tla", "            \\/ Reconnect \\/ Refused \\/ Abandoned", "            \\/ Refused \\/ Abandoned")),
+    ("Drop / mutant: the sending machine gives up a drop whose conversation is lost in the middle of a round", "Drop", drop(), [], ["ItArrives"], "ItArrives",
+     ("RoundMachine.tla", "IF s.phase \\in {\"sending\", \"awaitVerdict\"} THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>",
+      "IF s.phase = \"awaitVerdict\" THEN << [s EXCEPT !.phase = \"reconnecting\"], << \"reconnect\" >> >>")),
+    ("Drop / mutant: the receiving machine does not hold a drop whose conversation is lost", "Drop", drop(), [], ["ItArrives"], "ItArrives",
+     ("RoundMachine.tla", "ELSE IF s.phase = \"reading\" THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>",
+      "ELSE IF FALSE THEN << [s EXCEPT !.phase = \"awaitSender\"], << \"hold\" >> >>")),
+    ("Drop / mutant: a finished drop does not say 'complete' again to a sender that comes back", "Drop", drop(), [], ["ItArrives"], "deadlock",
+     ("RoundMachine.tla", "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << \"send complete\" >> >>",
+      "IF s.phase = \"completed\" /\\ e = \"senderBack\" THEN << s, << >> >>")),
 ]
 
 TLA_RUNS += ROUND_RUNS

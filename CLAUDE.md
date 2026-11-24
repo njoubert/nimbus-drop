@@ -619,8 +619,10 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
 
 ## Verification (2026-11-24)
 
-`./build.sh verify` runs all of it; `formal/README.md` is the map of the models, and
-`docs/security/claims.md` says for every claim what kind of evidence it has (proved in a
+`./build.sh verify` runs all of it; `formal/README.md` lists every way the system is checked
+(twenty of them, from proofs to fuzzing), the gaps that are left and the work that would
+close them, and is the map of the models. Keep it true: a new kind of check, or a gap closed,
+is a line there. `docs/security/claims.md` says for every claim what kind of evidence it has (proved in a
 symbolic model, checked at bounds, the same machine as its model, argued, tested, the
 compiler's, by reading, or not established). The plans for the work are
 `docs/plans/modular-core-and-verification-plan.md` and `docs/plans/security-assurance-plan.md`.

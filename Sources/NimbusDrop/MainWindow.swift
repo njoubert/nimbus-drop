@@ -238,7 +238,9 @@ private struct PeerTile: View {
                 Text(model.displayName(peer)).font(.headline).lineLimit(1).truncationMode(.middle)
                 Text((peer.address ?? "finding address…") + (peer.isManual && peer.port != defaultPort ? ":\(peer.port ?? 0)" : ""))
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                if let badge = standing.badge {
+                if model.wasJustPaired(peer) {
+                    PairedPulse()
+                } else if let badge = standing.badge {
                     Text(badge.text).font(.caption2.weight(.semibold)).foregroundStyle(badge.colour)
                         .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(badge.colour.opacity(0.16)))
                 }
@@ -303,6 +305,20 @@ private struct PeerMenu: View {
         case .paused(let until):
             return "\(peer.name) is not showing requests to pair for another \(max(1, Int(until.timeIntervalSinceNow.rounded(.up)))) s: a request to it was refused or abandoned a moment ago, perhaps not yours. Start the pairing from \(peer.name) instead (click this Mac's tile there); its request will be shown here."
         }
+    }
+}
+
+/// "Pairing successful", pulsing, where a tile's badge is: what a pairing that worked shows
+/// in place of a window. It gives way to "✓ Paired" after a few seconds.
+struct PairedPulse: View {
+    @State private var bright = false
+    var body: some View {
+        Text("✓ Pairing successful").font(.caption2.weight(.bold)).foregroundStyle(.white).lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(Palette.receive.opacity(bright ? 1 : 0.55)))
+            .scaleEffect(bright ? 1.08 : 1)
+            .shadow(color: Palette.receive.opacity(bright ? 0.7 : 0), radius: 6)
+            .onAppear { withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { bright = true } }
     }
 }
 
@@ -401,6 +417,8 @@ private struct PeerRow: View {
                 Spacer(minLength: 8)
                 if lit {
                     Text(standing.canSend ? "Release to send" : "Release to pair").font(.caption).foregroundStyle(.tint)
+                } else if model.wasJustPaired(peer) {
+                    PairedPulse()
                 } else if let badge = standing.badge {
                     Text(badge.text).font(.caption2.weight(.semibold)).foregroundStyle(badge.colour).lineLimit(1)
                         .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(badge.colour.opacity(0.16)))

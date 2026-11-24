@@ -279,6 +279,11 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   other end still stores nothing by itself). Both codes were on screen at once at first, and
   whoever pressed Return first lost sight of the code the other still had to type (the owner,
   2026-11-23). The command line still prints its code and asks in one go; a terminal keeps it.
+- **A pairing that works shows no success window**: the window closes, the Mac's tile pulses
+  "✓ Pairing successful" for five seconds (`AppModel.celebrate`, `PairedPulse`), the main
+  window is brought up to show it, and whatever was dropped to start the pairing is sent
+  without a second question (the other Mac's person is still asked to accept). Only a failure
+  stays on screen (the owner, 2026-11-23).
 - **The first plan read the code aloud into a PAKE** (CPace, libsodium). A PAKE's code is a
   secret; the plan's own assumption was that the room may hold the attacker. The first review
   found a man in the middle within earshot pairing with both Macs, silently. Now the codes are

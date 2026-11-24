@@ -63,6 +63,7 @@ final class PairingModel: ObservableObject {
     /// What is sent once the pairing is made: "Send the Drop".
     let pending: String?
     var onDone: ((Bool) -> Void)?
+    private var finished = false
     let myNumber: String
     let peerName: String
 
@@ -82,6 +83,14 @@ final class PairingModel: ObservableObject {
         let new = session.state
         if case .codes(_, let left) = new, case .codes(_, let before) = state, left != before { entry = "" }
         state = new
+        // A pairing that worked needs no window to say so: the window goes, the Mac's tile
+        // says "Pairing successful" for a moment, and what was dropped to start it is sent
+        // (the owner, 2026-11-23). Only a failure is left on screen to be read.
+        if case .paired = new, !finished {
+            finished = true
+            onDone?(pending != nil)
+            return
+        }
         if session.otherTyped != otherTyped { otherTyped = session.otherTyped; entry = "" }
     }
 

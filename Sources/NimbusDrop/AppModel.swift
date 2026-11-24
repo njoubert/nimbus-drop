@@ -107,6 +107,26 @@ final class AppModel: ObservableObject {
             return clash.expected ? .renew(clash.name) : .nameInUse(clash)
         }
     }
+    /// Keys paired in the last few seconds: their tiles say so, in place of a window.
+    @Published private(set) var justPaired: [PublicKey: Date] = [:]
+    static let celebrationSeconds = 5.0
+
+    func wasJustPaired(_ peer: Peer) -> Bool {
+        guard let key = peer.key, let at = justPaired[key] else { return false }
+        return Date().timeIntervalSince(at) < AppModel.celebrationSeconds
+    }
+
+    /// A pairing was just made. Its window has gone; the Mac's tile pulses "Pairing
+    /// successful", with the main window brought up so that there is somewhere to see it.
+    private func celebrate(_ key: PublicKey) {
+        justPaired[key] = Date()
+        NSSound(named: "Glass")?.play()
+        if live { AppDelegate.shared?.showWindow() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + AppModel.celebrationSeconds + 0.1) { [weak self] in
+            MainActor.assumeIsolated { self?.justPaired = self?.justPaired.filter { Date().timeIntervalSince($0.value) < AppModel.celebrationSeconds } ?? [:] }
+        }
+    }
+
     /// Macs that turned a request to pair from this one away because they are not showing
     /// requests for a while, and until when (as each said, held to ten minutes by the engine).
     private var pauses: [PublicKey: Date] = [:]
@@ -524,8 +544,9 @@ final class AppModel: ObservableObject {
 
     private func present(_ session: PairingSession, pending: String?, done: @escaping (Bool) -> Void) {
         let id = session.id
-        let panel = PairingPanel(session: session, pending: pending, myNumber: trust.publicKey.identityNumber) { [weak self] _, send in
+        let panel = PairingPanel(session: session, pending: pending, myNumber: trust.publicKey.identityNumber) { [weak self] session, send in
             self?.pairings[id] = nil
+            if case .paired(let mac) = session.state { self?.celebrate(mac.key) }
             done(send)
         }
         pairings[id] = panel

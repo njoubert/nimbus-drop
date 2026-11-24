@@ -1,20 +1,11 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
-
-/// Who this Mac says it is: the name others see and an id that stays the same across launches
-/// (it is what lets a re-sent drop be recognised, and how a Mac leaves itself out of its own list).
-public struct Identity: Equatable, Sendable {
-    public var name: String
-    public var id: String
-    /// The app's version, for the other side to show; "dev" for a bare binary.
-    public var appVersion: String
-    public init(name: String, id: String, appVersion: String = "dev") {
-        self.name = name
-        self.id = id
-        self.appVersion = appVersion
-    }
-}
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSafeStorageCore
+import NimbusSecurityCore
 
 public enum TransferState: Equatable, Sendable {
     case scanning
@@ -95,7 +86,7 @@ public struct StreamInfo: Sendable, Identifiable {
 }
 
 /// One drop, in either direction. Thread-safe: the engine's threads write it, the UI polls it.
-public class Transfer: @unchecked Sendable, Identifiable {
+public class Transfer: @unchecked Sendable, Identifiable, TrustedSession {
     public enum Direction: Sendable { case send, receive }
 
     public let id = UUID()
@@ -197,7 +188,11 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// "[3F9A2C send]": which drop a log line is about.
     var tag: String { "[\(id.uuidString.prefix(6)) \(direction == .send ? "send" : "recv")]" }
 
-    func log(_ message: @autoclosure () -> String, _ level: LogLevel = .info) {
+    /// What the trust store asks of a session (`TrustedSession`).
+    package var isFinal: Bool { state.isFinal }
+    package var isWaitingForAccept: Bool { state == .waitingForAccept }
+
+    package func log(_ message: @autoclosure () -> String, _ level: LogLevel = .info) {
         DropLog.write("\(tag) \(message())", level)
     }
 
@@ -314,7 +309,7 @@ public class Transfer: @unchecked Sendable, Identifiable {
     /// The key that authenticated this drop is no longer trusted (retired, replaced, forgotten,
     /// this Mac reset, or run out past its grace). Ends the drop now; the sessions also wipe
     /// their keys, so that nothing authenticated earlier can attach, resume or deliver.
-    func withdrawn(_ error: DropError) { fail(error) }
+    package func withdrawn(_ error: DropError) { fail(error) }
 
     /// Stops the transfer. What has arrived stays in the receiver's partial folder, so sending
     /// the same drop again continues it.

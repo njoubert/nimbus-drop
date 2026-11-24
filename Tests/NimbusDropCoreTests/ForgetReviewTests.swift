@@ -3,7 +3,14 @@
 import Darwin
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// What the review of "Forget tells the other Mac" (at e1bc42a, 2026-11-23) found, as tests.
 /// Each asserts what should hold and fails on the code as reviewed.

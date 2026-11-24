@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Darwin
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSafeStorageCore
+import NimbusSecurityCore
 
 /// Sends files and folders to one receiver.
 ///
@@ -336,7 +341,7 @@ public final class SendSession: Transfer, @unchecked Sendable {
     /// and a Mac that has stopped reading it (frozen, asleep, or hostile) would hold whoever
     /// withdrew the trust for as long as it liked: the person who clicked Forget, or the listener
     /// thread acting on its retire notice. The connections close, and that is how it learns.
-    override func withdrawn(_ error: DropError) {
+    package override func withdrawn(_ error: DropError) {
         lock.withLock { keys = nil; planned = false; mine = nil }
         var quiet = error
         quiet.connection = true

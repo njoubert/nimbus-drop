@@ -3,7 +3,14 @@
 import CryptoKit
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// A clock the tests set: the boot it claims, its continuous time and its calendar.
 final class FakeClock: TrustClock, @unchecked Sendable {

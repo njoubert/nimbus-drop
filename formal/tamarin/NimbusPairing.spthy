@@ -1,0 +1,209 @@
+/*
+ * Nimbus Drop, protocol 3: pairing two Macs with two spoken six-digit codes.
+ *
+ *   S -> R   commit = SHA-256("nimbus-drop pair commit v1" ‖ h ‖ Ns)
+ *   R -> S   Nr                              made only after the commitment has arrived
+ *   S -> R   Ns                              checked against the commitment
+ *   codes  = KDF(Ns ‖ Nr, "nimbus-drop pair codes v1" ‖ h, 16): one shown on each Mac,
+ *            each person types the other's.                    (PairCodes, PairingMachine)
+ *
+ * THE QUESTION. A Mac stores the key of whatever finished the handshake with it. Is that the
+ * Mac its person is standing next to, when anyone on the network may sit in the middle with
+ * keys of their own, hear both codes read out, and say anything on either connection?
+ *
+ * SHORT CODES. A symbolic prover treats a hash as perfect, and a six-digit code is not: any
+ * two have one chance in a million of being equal, and whoever chooses the LAST input to the
+ * code can search for an input that makes it come out as they like. That power is given to the
+ * attacker here outright, with certainty instead of at the cost of a search (after Delaune,
+ * Kremer and Robin, "Formal verification of protocols based on short authenticated strings",
+ * CSF 2017):
+ *
+ *     sas(role, Ns, findNr(t, role, Ns, h), h) = t      knowing Ns, a Nr that gives code t
+ *     sas(role, findNs(t, role, Nr, h), Nr, h) = t      knowing Nr, a Ns that gives code t
+ *
+ * What is left outside the model is the one blind guess in a million per pairing that two
+ * people agree to; formal/sas-bound.py counts that by simulation.
+ *
+ * THE CHANNEL is not modelled as secret or authentic at all: every message of the exchange
+ * goes over the open network, where the attacker may read, replace or invent it. All that is
+ * kept of the handshake is its hash `h`, and of `h` only what NimbusHandshake.spthy proves
+ * (the_handshake_hash_binds_both_static_keys): it is a function of both static keys as each
+ * side saw them and of a fresh value from each side. So the result does not rest on the
+ * channel's encryption; `paired {}` and `pair-go`, which anyone at the other end can say,
+ * are simply the attacker's to give.
+ *
+ * THE PEOPLE. Two people each stand at a Mac and mean to pair those two ($A with $B). What a
+ * Mac shows, its person reads out, and the attacker cannot change it (!Shows). A person types
+ * into their Mac only what the other person's Mac showed, but cannot tell which of that Mac's
+ * pairings a code came from, nor in which role that Mac was (a Mac may be in any number of
+ * pairings at once here; the code allows one, PairingGate).
+ *
+ * THE ATTACKER HEARS THE CODES, and that is not written as a message to it, because it has
+ * them already: a code is sas() of a role, Ns, Nr and `h`, and by the time a Mac shows one
+ * all of those are public (Ns and Nr have crossed the open network, `h` is a hash of public
+ * values, sas is anyone's to compute). The first version also sent each code out. That added
+ * nothing the attacker could not work out, and through the first equation it made the Mac
+ * send back a value `t` taken from inside a message the attacker chose. With that output the
+ * prover passed 30 GB without an answer; without it, half a second.
+ *
+ * Mutants (the lemma must come out falsified for each; `./build.sh verify` checks that):
+ *   -D=NoCommitCheck    the responder does not check the reveal against the commitment
+ *   -D=NoHashBinding    neither the commitment nor the codes include `h`
+ *
+ * Run:  tamarin-prover --prove formal/tamarin/NimbusPairing.spthy                (15 s, 2.5 GB)
+ *       tamarin-prover --prove=a_stored_pairing_is_with_the_mac_the_person_meant \
+ *                      -D=NoCommitCheck formal/tamarin/NimbusPairing.spthy       (a second)
+ *       and the same with -D=NoHashBinding. For a mutant ask for that lemma only: the
+ *       search for an honest pairing (two_people_can_pair) under NoCommitCheck was stopped
+ *       at 10 GB.
+ */
+theory NimbusPairing
+begin
+
+builtins: hashing
+
+functions: pk/1, sas/4, findNr/4, findNs/4, idnum/1
+
+equations: sas(ro, ns, findNr(t, ro, ns, hh), hh) = t,
+           sas(ro, findNs(t, ro, nr, hh), nr, hh) = t
+
+restriction Equal:   "All a b #i. Eq(a, b) @ i ==> a = b"
+restriction Unequal: "All a #i. Neq(a, a) @ i ==> F"
+restriction Once:    "All x #i #j. Once(x) @ i & Once(x) @ j ==> #i = #j"
+
+rule Make_Static:
+    [ Fr(~sk) ]
+  --[ Key($A, pk(~sk)), Once($A) ]->
+    [ !Ltk($A, ~sk), Out(pk(~sk)) ]
+
+/* ---- The Mac that asks (the initiator; "S") ------------------------------------------------ */
+
+rule S_Hello:
+    [ Fr(~e), !Ltk($S, ~sk) ]
+  --[ Neq($S, $R) ]->
+    [ S_0($S, $R, ~sk, ~e), Out(~e) ]
+
+/* X: the static key the other end of the handshake presented; fr: its fresh value. */
+#ifdef NoHashBinding
+rule S_Commit:
+  let hh = h(<'handshake', pk(~sk), X, ~e, fr>)
+      commit = h(<'commit', ~ns>)
+  in
+    [ S_0($S, $R, ~sk, ~e), In(<X, fr>), Fr(~ns) ]
+  -->
+    [ S_1($S, $R, X, hh, ~ns), Out(commit) ]
+
+rule S_Reveal:
+  let mine   = sas('sender',   ~ns, nr, 'none')
+      expect = sas('receiver', ~ns, nr, 'none')
+  in
+    [ S_1($S, $R, X, hh, ~ns), In(nr) ]
+  --[ SCodes($S, $R, X, mine, expect) ]->
+    [ S_2($S, $R, X, expect), !Shows($S, mine), Out(~ns) ]
+#else
+rule S_Commit:
+  let hh = h(<'handshake', pk(~sk), X, ~e, fr>)
+      commit = h(<'commit', hh, ~ns>)
+  in
+    [ S_0($S, $R, ~sk, ~e), In(<X, fr>), Fr(~ns) ]
+  -->
+    [ S_1($S, $R, X, hh, ~ns), Out(commit) ]
+
+rule S_Reveal:
+  let mine   = sas('sender',   ~ns, nr, hh)
+      expect = sas('receiver', ~ns, nr, hh)
+  in
+    [ S_1($S, $R, X, hh, ~ns), In(nr) ]
+  --[ SCodes($S, $R, X, mine, expect) ]->
+    [ S_2($S, $R, X, expect), !Shows($S, mine), Out(~ns) ]
+#endif
+
+/* The person at S types what the Mac they mean to pair with shows. */
+rule S_Typed:
+    [ S_2($S, $R, X, expect), !Shows($R, code) ]
+  --[ Eq(code, expect), Stored($S, $R, X) ]->
+    [ ]
+
+/* ---- The Mac that is asked (the responder; "R") --------------------------------------------- */
+
+rule R_Hello:
+  let hh = h(<'handshake', Y, pk(~sk), fr, ~e>)
+  in
+    [ Fr(~e), !Ltk($R, ~sk), In(<Y, fr>) ]
+  --[ Neq($S, $R) ]->
+    [ R_0($R, $S, Y, hh), Out(~e) ]
+
+/* Nr is made here and not before: the other side has committed. */
+rule R_Nonce:
+    [ R_0($R, $S, Y, hh), In(commit), Fr(~nr) ]
+  -->
+    [ R_1($R, $S, Y, hh, commit, ~nr), Out(~nr) ]
+
+#ifdef NoHashBinding
+rule R_Codes:
+  let mine   = sas('receiver', ns, ~nr, 'none')
+      expect = sas('sender',   ns, ~nr, 'none')
+      opened = h(<'commit', ns>)
+  in
+    [ R_1($R, $S, Y, hh, commit, ~nr), In(ns) ]
+  --[ Eq(commit, opened), RCodes($R, $S, Y, mine, expect) ]->
+    [ R_2($R, $S, Y, expect), !Shows($R, mine) ]
+#endif
+
+#ifdef NoCommitCheck
+rule R_Codes:
+  let mine   = sas('receiver', ns, ~nr, hh)
+      expect = sas('sender',   ns, ~nr, hh)
+  in
+    [ R_1($R, $S, Y, hh, commit, ~nr), In(ns) ]
+  --[ RCodes($R, $S, Y, mine, expect) ]->
+    [ R_2($R, $S, Y, expect), !Shows($R, mine) ]
+#endif
+
+#ifdef not NoHashBinding & not NoCommitCheck
+rule R_Codes:
+  let mine   = sas('receiver', ns, ~nr, hh)
+      expect = sas('sender',   ns, ~nr, hh)
+      opened = h(<'commit', hh, ns>)
+  in
+    [ R_1($R, $S, Y, hh, commit, ~nr), In(ns) ]
+  --[ Eq(commit, opened), RCodes($R, $S, Y, mine, expect) ]->
+    [ R_2($R, $S, Y, expect), !Shows($R, mine) ]
+#endif
+
+rule R_Typed:
+    [ R_2($R, $S, Y, expect), !Shows($S, code) ]
+  --[ Eq(code, expect), Stored($R, $S, Y) ]->
+    [ ]
+
+/* ---- Pairing by identity number (purpose `verify`): no exchange; each person enters the
+   other Mac's thirty digits, which that Mac shows and which stand for its key alone.
+   Thirty digits are 99.7 bits and are treated as a perfect hash of the key.                */
+
+rule Shows_Number:
+    [ !Ltk($A, ~sk) ]
+  -->
+    [ !ShowsNumber($A, idnum(pk(~sk))), Out(idnum(pk(~sk))) ]
+
+rule Typed_Number:
+    [ !Ltk($A, ~sk), In(X), !ShowsNumber($B, number) ]
+  --[ Neq($A, $B), Eq(number, idnum(X)), Stored($A, $B, X) ]->
+    [ ]
+
+/* ================================== Lemmas ================================================ */
+
+/* Two honest people, nobody in the way: both Macs store each other's key. */
+lemma two_people_can_pair: exists-trace
+  "Ex S R ks kr #i #j #a #b.
+      Stored(S, R, kr) @ i & Stored(R, S, ks) @ j & Key(S, ks) @ a & Key(R, kr) @ b
+      & (Ex mine expect #c. SCodes(S, R, kr, mine, expect) @ c)
+      & (Ex mine expect #c. RCodes(R, S, ks, mine, expect) @ c)"
+
+/* THE RESULT. Whatever a Mac stores as "the Mac my person was pairing with" is that Mac's
+   own key: in either role, with any number of pairings going on at once, with the attacker
+   in the middle of all of them, hearing every code and able to steer a code whenever it
+   holds the last input to it.                                                                */
+lemma a_stored_pairing_is_with_the_mac_the_person_meant:
+  "All A B X #i. Stored(A, B, X) @ i ==> Ex #j. Key(B, X) @ j"
+
+end

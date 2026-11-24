@@ -3,7 +3,14 @@
 import Foundation
 import NimbusDropChaos
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// Whole drops sent through `ChaosProxy`: a real sender, a real receiver, and a network between
 /// them that turns bad on cue. Every test ends on one of two acceptable outcomes and checks

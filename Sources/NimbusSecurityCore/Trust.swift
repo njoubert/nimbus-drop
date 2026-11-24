@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Darwin
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
 
 /// A Mac this one has paired with.
 public struct KnownMac: Codable, Identifiable, Equatable, Sendable {
@@ -160,6 +163,19 @@ public final class MemoryStorage: TrustStorage, @unchecked Sendable {
     public var stored: Data? { lock.withLock { data } }
 }
 
+/// Something a key authenticated and that must end when trust in that key does: a drop in
+/// either direction, a speed test. The trust store knows no more of it than this; what a
+/// session is and does is the transfer core's business.
+package protocol TrustedSession: AnyObject {
+    /// Over, however it ended.
+    var isFinal: Bool { get }
+    /// Asked about and not yet answered: nothing has begun.
+    var isWaitingForAccept: Bool { get }
+    func log(_ message: @autoclosure () -> String, _ level: LogLevel)
+    /// The key that authenticated it is no longer trusted. Ends it now, and its keys with it.
+    func withdrawn(_ error: DropError)
+}
+
 /// This Mac's identity and everything it knows about other Macs' identities: one object, one
 /// file, one atomic write per change.
 ///
@@ -218,10 +234,10 @@ public final class Trust: @unchecked Sendable {
     private var lastSave = 0.0
     /// Live sessions, who authenticated each, and the reading of the elapsed counter past which
     /// it may not run.
-    private var sessions: [(transfer: () -> Transfer?, key: PublicKey, deadline: Double)] = []
+    private var sessions: [(transfer: () -> TrustedSession?, key: PublicKey, deadline: Double)] = []
     private var watchers: [(PublicKey) -> Void] = []
     /// One pairing at a time on this Mac, whoever started it.
-    let gate = PairingGate()
+    package let gate = PairingGate()
 
     /// Called (on whatever thread made the change) after anything a window would show changes.
     public var onChange: (@Sendable () -> Void)?
@@ -536,9 +552,25 @@ public final class Trust: @unchecked Sendable {
     /// A session authenticated by `key`: ended at once if that key's trust is withdrawn. When a
     /// key merely runs out (the other Mac's or this one's) a running session may finish, but not
     /// for ever: at most a day past the end, or one key lifetime if that is shorter.
-    func track(_ transfer: Transfer, key: PublicKey) {
+    ///
+    /// A session asks who a key is at the start of its handshake and comes here at the end of
+    /// it, with the network (and the other Mac's leisure) in between. If trust in the key was
+    /// withdrawn in that gap, the withdrawal found nothing of this session to end, so it is
+    /// ended here: the question and the registration are one decision, made under the lock.
+    /// Without this a drop begun in the moment its Mac was forgotten or retired ran to the end
+    /// (found by `formal/tla/TrustWithdraw.tla`, 2026-11-24, as `NothingOutlivesTheWithdrawal`).
+    /// A key that has run out on schedule is still on the Known list, and is not caught here:
+    /// what it began may finish, within the time below.
+    package func track(_ transfer: TrustedSession, key: PublicKey) {
         locked {
             sessions.removeAll { $0.transfer() == nil }
+            guard file.known.contains(where: { $0.key == key }) else {
+                afterwards.append {
+                    transfer.log("ended: trust in \(key.tag) was withdrawn while this was being set up", .warn)
+                    transfer.withdrawn(DropError("That Mac is no longer paired with this one"))
+                }
+                return
+            }
             let theirs = file.known.first { $0.key == key }?.endsElapsed ?? file.elapsed
             let end = min(theirs, file.endsElapsed)
             sessions.append(({ [weak transfer] in transfer }, key, end + min(86400, file.lifetime)))
@@ -547,7 +579,7 @@ public final class Trust: @unchecked Sendable {
 
     /// Called with a key whose trust was withdrawn, after the store is written and its sessions
     /// are ended. The listener uses it to cancel what is waiting on a person.
-    func onWithdrawn(_ body: @escaping (PublicKey) -> Void) { locked { watchers.append(body) } }
+    package func onWithdrawn(_ body: @escaping (PublicKey) -> Void) { locked { watchers.append(body) } }
 
     /// The steps every withdrawal of trust takes, in order: written to disk, then nothing new
     /// accepted (the store says so from here), then everything the key had authenticated ended
@@ -572,7 +604,7 @@ public final class Trust: @unchecked Sendable {
         let mine = sessions.filter { $0.key == key }.compactMap { $0.transfer() }
         sessions.removeAll { $0.key == key || $0.transfer() == nil }
         afterwards.append {
-            for t in mine where !t.state.isFinal {
+            for t in mine where !t.isFinal {
                 t.log("ended: \(because)", .warn)
                 t.withdrawn(DropError(because.prefix(1).uppercased() + because.dropFirst()))
             }
@@ -589,18 +621,18 @@ public final class Trust: @unchecked Sendable {
     /// time allowed. One that has not begun (the question is still on screen, or still
     /// unanswered at the other Mac) does not begin: the pairing it was offered under is over.
     private func endSessionsPastGrace() {
-        sessions.removeAll { $0.transfer().map(\.state.isFinal) ?? true }
+        sessions.removeAll { $0.transfer().map(\.isFinal) ?? true }
         let late = sessions.filter { file.elapsed > $0.deadline }.compactMap { $0.transfer() }
         sessions.removeAll { file.elapsed > $0.deadline }
         let paired = Set(file.known.filter { current($0.endsElapsed, $0.endsWall) }.map(\.key))
-        let unbegun = sessions.filter { !paired.contains($0.key) }.compactMap { $0.transfer() }.filter { $0.state == .waitingForAccept }
+        let unbegun = sessions.filter { !paired.contains($0.key) }.compactMap { $0.transfer() }.filter { $0.isWaitingForAccept }
         guard !late.isEmpty || !unbegun.isEmpty else { return }
         afterwards.append {
-            for t in late where !t.state.isFinal {
+            for t in late where !t.isFinal {
                 t.log("ended: its key ran out and the time allowed to finish has passed", .warn)
                 t.withdrawn(DropError("The pairing ran out before the drop finished; pair again and send it again to continue"))
             }
-            for t in unbegun where t.state == .waitingForAccept {
+            for t in unbegun where t.isWaitingForAccept {
                 t.log("ended: the pairing ran out before the drop was accepted", .warn)
                 t.withdrawn(DropError("The pairing ran out before the drop was accepted; pair again and send it again"))
             }
@@ -649,7 +681,7 @@ public final class Trust: @unchecked Sendable {
     }
 
     /// Whether `key` was paired no more than `seconds` ago.
-    func pairedWithin(_ seconds: Double, _ key: PublicKey) -> Bool {
+    package func pairedWithin(_ seconds: Double, _ key: PublicKey) -> Bool {
         locked { file.known.first { $0.key == key }.map { abs(clock.wall.timeIntervalSince($0.pairedAt)) < seconds } ?? false }
     }
 
@@ -725,5 +757,5 @@ public final class Trust: @unchecked Sendable {
 
     /// Writes the store now; throws if it did not reach the disk. For changes that are about to
     /// be acknowledged to another Mac.
-    func commit() throws { try locked { try saveOrThrow() } }
+    package func commit() throws { try locked { try saveOrThrow() } }
 }

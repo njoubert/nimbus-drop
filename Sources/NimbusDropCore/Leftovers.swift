@@ -1,6 +1,13 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
+import NimbusSafeStorageCore
+import NimbusSecurityCore
+import NimbusDiscovery
+import NimbusTransferCore
 
 /// Everything a copy of the app leaves on a Mac, for the uninstaller to remove: one list, so
 /// that what is kept and what is cleaned up cannot drift apart. Something new that the app

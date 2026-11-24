@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// What the review of the code against the plan found (Phase 5, 2026-11-23, at d1863b8;
 /// docs/plans/protocol3-code-review.md), as tests. Each of the first group failed on the code
@@ -700,7 +707,7 @@ final class ReviewTests: XCTestCase {
             try mine.withUnsafeBytes { try socket.writeAll($0.baseAddress!, mine.count) }
             _ = try Opening.readKind(socket)
             let theirs = try Opening.readRest(socket)
-            let noise = Noise(initiator: true, prologue: Channel.prologue(initiator: mine, responder: theirs.bytes), s: KeyPair())
+            let noise = Noise(initiator: true, prologue: Noise.prologue(initiator: mine, responder: theirs.bytes), s: KeyPair())
             try Channel.write(socket, try noise.write(payload: payload))
             return try Channel.read(socket, limit: 1024)
         }
@@ -769,7 +776,7 @@ final class ReviewTests: XCTestCase {
             try mine.withUnsafeBytes { try socket.writeAll($0.baseAddress!, mine.count) }
             guard try Opening.readKind(socket) == Opening.control else { throw DropError("not NDROP") }
             let theirs = try Opening.readRest(socket)
-            let noise = Noise(initiator: true, prologue: Channel.prologue(initiator: mine, responder: theirs.bytes), s: keys)
+            let noise = Noise(initiator: true, prologue: Noise.prologue(initiator: mine, responder: theirs.bytes), s: keys)
             try Channel.write(socket, try noise.write())
             _ = try noise.read(try Channel.read(socket, limit: 1024))
             try Channel.write(socket, try noise.write())

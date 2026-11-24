@@ -3,7 +3,14 @@
 import Darwin
 import Foundation
 import XCTest
+@testable import NimbusBase
+@testable import NimbusCrypto
+@testable import NimbusDiscovery
 @testable import NimbusDropCore
+@testable import NimbusNet
+@testable import NimbusSafeStorageCore
+@testable import NimbusSecurityCore
+@testable import NimbusTransferCore
 
 /// Protocol 3 against a second implementation: `scripts/vectors.py`, written from the
 /// specification in Python with another crypto library. What that script printed is below. A
@@ -116,7 +123,7 @@ final class VectorTests: XCTestCase {
         let wire = sent()
         XCTAssertEqual(wire.byA.hex, (d("opening") + frames[0] + frames[2] + d("control_frame_initiator")).hex, "everything the initiator put on the wire")
         XCTAssertEqual(wire.byB.hex, (d("opening") + frames[1] + d("control_frame_responder")).hex, "and everything the responder did")
-        XCTAssertEqual(Channel.prologue(initiator: d("opening"), responder: d("opening")), d("prologue"))
+        XCTAssertEqual(Noise.prologue(initiator: d("opening"), responder: d("opening")), d("prologue"))
     }
 
     func testTheDropsKeys() throws {

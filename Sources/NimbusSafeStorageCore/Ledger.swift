@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Darwin
 import Foundation
+import NimbusBase
 
 /// Which chunks of a drop are already on the receiver's disk. An append-only file of
 /// `(file, chunk)` pairs beside the partial data, written after each chunk lands, so a drop that
@@ -9,7 +10,7 @@ import Foundation
 ///
 /// The records reach the page cache, not the platter: they survive the process, not a power cut.
 /// A receiver that lost power mid-drop should have its partial folder deleted rather than resumed.
-final class Ledger: @unchecked Sendable {
+package final class Ledger: @unchecked Sendable {
     private let manifest: Manifest
     private let lock = NSLock()
     private var done = Set<UInt64>()
@@ -18,14 +19,14 @@ final class Ledger: @unchecked Sendable {
     private var fd: Int32 = -1
     private var _doneBytes: Int64 = 0
     private var _doneFiles = 0
-    var doneBytes: Int64 { lock.withLock { _doneBytes } }
-    var doneFiles: Int { lock.withLock { _doneFiles } }
+    package var doneBytes: Int64 { lock.withLock { _doneBytes } }
+    package var doneFiles: Int { lock.withLock { _doneFiles } }
 
     private static func pack(_ file: Int, _ chunk: Int) -> UInt64 { UInt64(file) << 32 | UInt64(chunk) }
 
     /// Opens (or starts) the ledger at `url`. A record counts only if the file it speaks of is
     /// still there in the tree, an ordinary file long enough to hold that chunk; the rest are forgotten.
-    init(url: URL, manifest: Manifest, tree: SafeTree) throws {
+    package init(url: URL, manifest: Manifest, tree: SafeTree) throws {
         self.manifest = manifest
         remaining = manifest.entries.indices.map { Int32(clamping: manifest.chunkCount($0)) }
 
@@ -73,7 +74,7 @@ final class Ledger: @unchecked Sendable {
 
     /// Notes a chunk as written. Returns whether that completed its file.
     @discardableResult
-    func record(file: Int, chunk: Int) throws -> Bool {
+    package func record(file: Int, chunk: Int) throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard done.insert(Ledger.pack(file, chunk)).inserted else { return false }
@@ -85,14 +86,14 @@ final class Ledger: @unchecked Sendable {
         return remaining[file] == 0
     }
 
-    var isComplete: Bool {
+    package var isComplete: Bool {
         lock.lock()
         defer { lock.unlock() }
         return remaining.allSatisfy { $0 == 0 }
     }
 
     /// What the sender may skip.
-    func plan() -> Plan {
+    package func plan() -> Plan {
         lock.lock()
         defer { lock.unlock() }
         var complete: [Int] = []

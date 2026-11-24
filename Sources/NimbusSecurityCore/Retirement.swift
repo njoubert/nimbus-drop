@@ -1,6 +1,9 @@
 // Copyright (C) 2026 Niels Joubert
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
+import NimbusBase
+import NimbusCrypto
+import NimbusNet
 
 /// Reset Identity: tell the Macs this one is paired with that its key is retired, while the key
 /// still exists to prove the telling; then replace it.

@@ -2,120 +2,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import Darwin
 import Foundation
-
-/// The one error type the engine throws; its message is what the user reads.
-public struct DropError: Error, CustomStringConvertible, LocalizedError, Equatable {
-    public let message: String
-    /// The link's fault rather than anybody's decision: the connection closed, timed out, could
-    /// not be made, or carried a damaged message. These are what a drop tries to reconnect after.
-    var connection = false
-    /// The two Macs are not paired (or no longer are): pair, then send again.
-    public var needsPairing = false
-    /// The Mac that answered is not the one that was meant.
-    public var identity = false
-    public init(_ message: String) { self.message = message }
-    init(_ message: String, connection: Bool) { self.message = message; self.connection = connection }
-    public static func == (a: DropError, b: DropError) -> Bool { a.message == b.message }
-    public var description: String { message }
-    public var errorDescription: String? { message }
-}
-
-func errnoError(_ what: String) -> DropError {
-    DropError("\(what): \(String(cString: strerror(errno)))")
-}
-
-/// The protocol's version, in two parts.
-///
-/// **Major** changes when two copies can no longer exchange a drop. Every connection opens by
-/// listing the majors each side speaks, and those openings are bound into the handshake, so the
-/// choice cannot be altered on the way. **Minor** changes when something is added that an older
-/// copy can ignore (a new optional field, which JSON decoding skips); it travels inside the
-/// encrypted hello.
-///
-/// Protocol 3 is encrypted and authenticated end to end and has nothing in common with 2 on the
-/// wire. It does not read, answer or recognise protocol 2 (decided 2026-11-22: it ran on four
-/// Macs, all the owner's).
-public let protocolVersion = 3
-public let protocolMinor = 1
-
-/// "3.0".
-public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
+import NimbusBase
 
 /// The port the listener asks for first, so a peer can also be reached by address alone. A
 /// second copy on the same Mac (or anything else holding it) falls back to an ephemeral port;
 /// Bonjour carries whichever it got.
 public let defaultPort: UInt16 = 47823
 
-/// The engine's patience, in one place so the tests can shorten it.
-enum Tuning {
-    /// A data connection that moves nothing for this long is closed and its chunks are sent
-    /// again on another. A drop with no sign of life for three times this long is given up.
-    nonisolated(unsafe) static var stallSeconds: Double = 60
-    /// How long a sender keeps trying to open data connections when none will open.
-    nonisolated(unsafe) static var connectRetrySeconds: Double = 30
-    nonisolated(unsafe) static var connectTimeout: Double = 10
-    /// Repair rounds in a row that deliver nothing before the receiver gives up.
-    nonisolated(unsafe) static var idleRounds = 5
-    /// How long both sides hold a drop open after the connection that carries the conversation
-    /// is lost: the sender trying to reconnect, the receiver waiting for it.
-    nonisolated(unsafe) static var reconnectSeconds: Double = 60
-    /// How long a connection has to say what it is, in all.
-    nonisolated(unsafe) static var strangerSeconds: Double = 10
-    /// Connections that have not yet said what they are, at once; more are closed on arrival.
-    nonisolated(unsafe) static var strangers = 64
-    /// Of which from one address. At either limit the oldest gives way to the newcomer.
-    nonisolated(unsafe) static var strangersPerAddress = 8
-    /// New connections a second from one address, under `arrivalsPerSecond` from all. A Mac
-    /// sending several drops at once on 32 connections each opens well over a hundred in a second.
-    nonisolated(unsafe) static var arrivalsPerAddress = 200
-    /// Of `unattachedPerDrop`, from one address.
-    nonisolated(unsafe) static var unattachedPerAddress = 4
-    /// Tests only: how long a pairing this Mac starts waits before it connects, as a slow
-    /// machine would.
-    nonisolated(unsafe) static var pairDialDelay: Double = 0
-    /// After a speed test from a key is answered (run, or declined): no other from that key
-    /// for this long.
-    nonisolated(unsafe) static var speedPauseSeconds: Double = 10
-    /// Connections from one paired key that have not yet said what they came for.
-    nonisolated(unsafe) static var pairedWaiting = 8
-    /// Offers waiting for the person's answer at once, in all and from one address; more are
-    /// declined, so that nobody can bury the screen in panels.
-    nonisolated(unsafe) static var pendingOffers = 6
-    nonisolated(unsafe) static var pendingOffersPerAddress = 2
-    /// Connections that have completed a handshake with a key nobody here has paired, at once.
-    nonisolated(unsafe) static var unpaired = 8
-    /// New connections taken per second, whoever they are from. A handshake costs this Mac a
-    /// key generation and two key agreements, about a seventh of a millisecond: this many a
-    /// second is under a tenth of one core. (It was 50 at first, and a test showed fifty
-    /// strangers arriving in one second then kept a paired Mac out for the rest of it.)
-    nonisolated(unsafe) static var arrivalsPerSecond = 500
-    /// Requests to pair that may wait behind the one on screen.
-    nonisolated(unsafe) static var pairRequestsWaiting = 4
-    /// How long a pairing's codes live, and how long a request waits for the person.
-    nonisolated(unsafe) static var pairSeconds: Double = 120
-    /// After a request to pair is refused, fails or is abandoned, none is shown for this long;
-    /// doubled each time up to `pairQuietLongest`, and back to nothing after a success.
-    nonisolated(unsafe) static var pairQuietSeconds: Double = 10
-    nonisolated(unsafe) static var pairQuietLongest: Double = 600
-    /// Data connections that have not yet proved they belong to a drop: this many per drop in
-    /// progress, and this long to prove it.
-    nonisolated(unsafe) static var unattachedPerDrop = 16
-    nonisolated(unsafe) static var attachSeconds: Double = 5
-    /// Bytes of control messages being reassembled at once, across every drop.
-    nonisolated(unsafe) static var controlBudget = 1 << 30
-    /// Data connections one drop may have open.
-    nonisolated(unsafe) static var streamsPerDrop = 64
-    /// How long a receiver waits for connections the sender says it opened but that never arrived.
-    nonisolated(unsafe) static var settleSeconds: Double = 1
-}
-
 /// A blocking TCP socket. One thread reads it, one writes it; `shutdown()` from any other thread
 /// unblocks both, which is how a transfer is cancelled. The descriptor closes with the object.
-final class Socket: @unchecked Sendable {
+package final class Socket: @unchecked Sendable {
     let fd: Int32
     private let writeLock = NSLock()
 
-    init(fd: Int32) {
+    package init(fd: Int32) {
         self.fd = fd
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
@@ -132,20 +32,20 @@ final class Socket: @unchecked Sendable {
     deinit { Darwin.close(fd) }
 
     /// Unblocks any thread reading or writing this socket; both then fail.
-    func shutdown() { _ = Darwin.shutdown(fd, SHUT_RDWR) }
+    package func shutdown() { _ = Darwin.shutdown(fd, SHUT_RDWR) }
 
-    func setNoDelay() {
+    package func setNoDelay() {
         var one: Int32 = 1
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
     }
 
     /// Seconds a read may block; 0 clears it.
-    func setReadTimeout(_ seconds: Int) {
+    package func setReadTimeout(_ seconds: Int) {
         var tv = timeval(tv_sec: seconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     }
 
-    func readExactly(_ buffer: UnsafeMutableRawPointer, _ count: Int, progress: ((Int) -> Void)? = nil) throws {
+    package func readExactly(_ buffer: UnsafeMutableRawPointer, _ count: Int, progress: ((Int) -> Void)? = nil) throws {
         var got = 0
         while got < count {
             let n = Darwin.read(fd, buffer + got, count - got)
@@ -161,7 +61,7 @@ final class Socket: @unchecked Sendable {
     }
 
     /// Writes everything, at most `slice` bytes per call so `progress` moves on a slow link.
-    func writeAll(_ buffer: UnsafeRawPointer, _ count: Int, slice: Int = .max, progress: ((Int) -> Void)? = nil) throws {
+    package func writeAll(_ buffer: UnsafeRawPointer, _ count: Int, slice: Int = .max, progress: ((Int) -> Void)? = nil) throws {
         var sent = 0
         while sent < count {
             let n = Darwin.write(fd, buffer + sent, min(slice, count - sent))
@@ -175,14 +75,14 @@ final class Socket: @unchecked Sendable {
     }
 
     /// Whether something (data or a hang-up) is waiting to be read within `milliseconds`.
-    func waitReadable(milliseconds: Int32) -> Bool {
+    package func waitReadable(milliseconds: Int32) -> Bool {
         var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         return poll(&p, 1, milliseconds) > 0
     }
 
     /// The name of this Mac's interface the connection leaves by ("en0", "bridge0"), found
     /// by the local address it has. Nil when it cannot be told.
-    var localInterface: String? {
+    package var localInterface: String? {
         var storage = sockaddr_storage()
         var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
         guard withUnsafeMutablePointer(to: &storage, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) } }) == 0 else { return nil }
@@ -206,7 +106,7 @@ final class Socket: @unchecked Sendable {
     }
 
     /// The other end's address, numeric, without a port.
-    var peerAddress: String {
+    package var peerAddress: String {
         var storage = sockaddr_storage()
         var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
         let ok = withUnsafeMutablePointer(to: &storage) {
@@ -228,7 +128,7 @@ final class Socket: @unchecked Sendable {
 
     // MARK: Connecting and listening
 
-    static func connect(host: String, port: UInt16, timeout: TimeInterval = Tuning.connectTimeout) throws -> Socket {
+    package static func connect(host: String, port: UInt16, timeout: TimeInterval = Tuning.connectTimeout) throws -> Socket {
         var hints = addrinfo()
         hints.ai_socktype = SOCK_STREAM
         var list: UnsafeMutablePointer<addrinfo>?
@@ -270,7 +170,7 @@ final class Socket: @unchecked Sendable {
     }
 
     /// A dual-stack listening socket and the port it got. `port` 0 asks for any free one.
-    static func listen(port: UInt16) throws -> (fd: Int32, port: UInt16) {
+    package static func listen(port: UInt16) throws -> (fd: Int32, port: UInt16) {
         let fd = socket(AF_INET6, SOCK_STREAM, 0)
         guard fd >= 0 else { throw errnoError("socket") }
         var off: Int32 = 0, on: Int32 = 1
@@ -300,7 +200,7 @@ final class Socket: @unchecked Sendable {
     /// Writes three buffers as one stream of bytes with `writev`, at most `slice` bytes per
     /// call so that `progress` moves on a slow link. For a sealed header, a sealed chunk and its
     /// tag: no copy to join them and no small packet between them.
-    func writeAll(_ a: Data, _ b: Data, _ c: Data, slice: Int = .max, progress: ((Int) -> Void)? = nil) throws {
+    package func writeAll(_ a: Data, _ b: Data, _ c: Data, slice: Int = .max, progress: ((Int) -> Void)? = nil) throws {
         try a.withUnsafeBytes { pa in
             try b.withUnsafeBytes { pb in
                 try c.withUnsafeBytes { pc in
@@ -335,64 +235,9 @@ final class Socket: @unchecked Sendable {
 
 extension DropError {
     /// Either a damaged message or something that is not Nimbus Drop at all.
-    static let damagedMessage = DropError("A message from the other Mac arrived damaged", connection: true)
+    package static let damagedMessage = DropError("A message from the other Mac arrived damaged", connection: true)
 }
 
-/// The largest control message ever reassembled: a manifest of about two million files.
-let maxFrameBytes = 512 << 20
-
-enum FrameType: UInt8 {
-    case offer = 1, accept, decline, manifest, plan, done, complete, error, hello, resume, resumed
-    case pairRequest = 32, pairGo, commit, nonce, reveal, paired, pairFailed, busy
-    case retire = 48, retired
-    case speed = 64, speedGo, speedUpDone, speedCount, speedDown, speedDone
+extension Tuning {
+    package nonisolated(unsafe) static var connectTimeout: Double = 10
 }
-
-func decode<T: Decodable>(_ type: T.Type, from body: Data) throws -> T {
-    do { return try JSONDecoder().decode(type, from: body) } catch { throw DropError("Malformed message from the other Mac") }
-}
-
-// MARK: Messages
-
-/// What the sender proposes; enough for the receiving person to decide. Who the sender is came
-/// with the handshake and the hello, not from here.
-struct Offer: Codable {
-    /// The top-level names being sent.
-    var items: [String]
-    var fileCount: Int
-    var totalBytes: Int64
-}
-
-struct Empty: Codable {}
-
-struct Reason: Codable {
-    var message: String
-    /// With `busy` to a request to pair: the seconds for which requests nobody here asked for
-    /// are not being shown. The asking Mac's tile says to start the pairing from this one.
-    var pause: Double?
-}
-
-/// The receiver's answer to a manifest: what it already holds from an earlier attempt.
-struct Plan: Codable {
-    struct Partial: Codable { var file: Int; var chunks: [Int] }
-    var completeFiles: [Int]
-    var partialFiles: [Partial]
-}
-
-/// "Every chunk I had to send has been written." `streams` is how many data connections the
-/// sender has opened in all, so the receiver knows how many to wait for.
-struct Done: Codable {
-    var streams: Int
-    /// Chunks the sender has sent more than once so far.
-    var resent: Int?
-}
-
-struct Complete: Codable { var saved: [String] }
-
-/// "This is the drop with that session id, and here is proof that I hold its keys": an HMAC
-/// under the drop's resume key over the new connection's handshake hash.
-struct Resume: Codable { var session: Data; var proof: Data }
-struct Resumed: Codable { var proof: Data }
-
-/// A value in the pairing exchange: the commitment, or one of the two random values.
-struct PairValue: Codable { var value: Data }

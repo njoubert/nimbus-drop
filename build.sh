@@ -3,6 +3,9 @@
 #
 #   ./build.sh              debug build → .build/debug/NimbusDrop
 #   ./build.sh test         whole drops over loopback, the manifest, the resume ledger (swift test)
+#   ./build.sh verify [word…]  everything that is checked by a machine: the layers, the formal models
+#                           and their mutants (formal/check.py: TLC and Tamarin), the short-code
+#                           simulation, and swift test. Words narrow the models ("tla", "Drop").
 #   ./build.sh run [args]   debug build as dist/debug/Nimbus Drop Dev.app, (re)launch it detached.
 #                           Add --fg to run in the foreground instead (logs here, Ctrl-C quits).
 #                           Its identifier is com.njoubert.nimbusdrop.dev: its own settings,
@@ -278,6 +281,14 @@ case "$cmd" in
     swift test
     ;;
 
+  verify)
+    python3 scripts/check-layers.py
+    python3 formal/sas-bound.py
+    python3 formal/check.py "$@"
+    # The tests include the one that holds formal/tla/PairingImpl.tla to what the code does.
+    swift test
+    say "verified: the layers, the models and their mutants, the tests"
+    ;;
   run)
     fg=0; args=()
     for a in "$@"; do [ "$a" = "--fg" ] && fg=1 || args+=("$a"); done

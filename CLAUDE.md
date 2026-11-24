@@ -40,6 +40,17 @@ rest: how to work here, how the engine is put together, and what was measured.
   The first mutation run missed 4 of 17: tests that passed whether or not their guard existed.
   The review of the code (2026-11-23) then removed 16 more guards by hand and 13 went
   unnoticed; each has a test in `ReviewTests` and a line in `mutate.py` now.
+- **A change to what a model is about is a change to the model first** (`formal/`, and
+  Verification below): the pairing transaction (`PairingMachine`, which TLC holds EQUAL to its
+  specification, so the build fails until both say the same), the order of a withdrawal of
+  trust, the rounds of a drop, the tie-break when two Macs ask at once, the handshake and the
+  keys derived from it. Then `./build.sh verify`. A new guard gets a mutant in
+  `formal/check.py` as well as a line in `scripts/mutate.py`: a model that holds with the
+  guard removed was saying nothing about it.
+- **The layers hold.** A module imports only what is under it; `NimbusCrypto` stays pure
+  (decisions about a protocol go there as functions of their inputs, and whoever owns the
+  socket and the clock calls them); the trust store knows a session only as a
+  `TrustedSession`. `scripts/check-layers.py` says no; do not teach it to say yes.
 - **No cryptography of our own making.** Primitives from CryptoKit only. Speed is never a
   reason to write a cipher or call a private API.
 - **Never write outside what the person chose.** A manifest is input from another machine and
@@ -96,49 +107,74 @@ rest: how to work here, how the engine is put together, and what was measured.
 
 ## Layout
 
+The engine is seven modules in layers, each a SwiftPM target that may import only the ones under
+it (Package.swift; `scripts/check-layers.py` holds each to its system frameworks too, as a prek
+hook). No AppKit anywhere in them. What one layer needs of another is `package`, never `public`.
+
 ```
-Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopback.
-  Wire.swift                DropError; protocolVersion / protocolMinor; Tuning (the engine's
-                            patience and its admission limits, shortened by the tests); Socket
-                            (blocking TCP: connect, listen, exact read/write, writev, keepalive,
-                            shutdown-to-cancel); the messages
+Sources/NimbusBase/          under everything, and knows nothing of the protocol
+  Errors.swift              DropError (its message is what the user reads), errnoError
+  Log.swift                 DropLog (the engine's and the app's debug lines, to whatever sink the
+                            app sets), LogFile (stamped, appended from any thread, rotated), Locked
+  Sanitize.swift            text from another machine, made fit to show and to log
+  Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
+  Tuning.swift              the namespace only: each module adds the knobs it owns in an extension
+Sources/NimbusCrypto/        PURE: no socket, file, clock, lock or thread (check-layers.py refuses
+                            one). Foundation and CryptoKit only. What formal/ is about.
   Crypto.swift              KDF, PublicKey (canonical form, tag, identity number), KeyPair,
                             CipherState (AES-GCM with a counter nonce and a limit), Noise XX
-  Channel.swift             the opening, the handshake both ways, probe, sealed and fragmented
-                            control messages; DropKeys (everything derived from `master`);
-                            RecordHeader (a data record on the wire)
-  Trust.swift               this Mac's key and what it knows of others': Known Macs, tombstones,
-                            the pair-again list, expiry in elapsed time, withdrawing trust;
-                            TrustClock, TrustStorage, MemoryStorage
-  EnclaveStorage.swift      the trust file on disk, sealed under a Secure Enclave key agreement
-  Pairing.swift             PairCodes, PairingGate (one at a time, rationing), PairingSession
-  Retirement.swift          the retire notice, Trust.reset; Trust.paired() for tests
+  Version.swift             protocolVersion / protocolMinor; Noise.prologue
+  DropKeys.swift            DropKeys (everything derived from `master`); RecordHeader (a data
+                            record on the wire)
+  PairCodes.swift           the commitment and the two six-digit codes
+  PairingMachine.swift      the pairing transaction as a state machine: (state, event) -> effects.
+                            Held EQUAL to formal/tla/PairingMachine.tla (see Verification)
+Sources/NimbusNet/           Socket (blocking TCP: connect, listen, exact read/write, writev,
+                            keepalive, shutdown-to-cancel), Deadline, LocalHost, LocalNetwork
+Sources/NimbusSafeStorageCore/   a manifest, and every file operation a receiver performs
   Manifest.swift            Manifest (+ validate, key, chunk arithmetic); Scanner (walks what is
-                            being sent); Naming.unique ("keep both"); checksum (zlib CRC-32)
+                            being sent); Naming.unique ("keep both")
   SafeTree.swift            every file operation a receiver performs on a drop, confined to its
                             folder (openat, no symlinks followed); see Security
-  Ledger.swift              which chunks are on the receiver's disk: the resume record
-  Transfer.swift            Identity (name, id, app version), TransferState, TransferProgress,
-                            TransferStats; Transfer, the base both sessions share (thread-safe
-                            state, progress, cancel, the silence watchdog)
+  Ledger.swift, Plan.swift  which chunks are on the receiver's disk: the resume record, and what
+                            it tells the sender
+  Quarantine.swift          the mark macOS puts on what came from elsewhere
+Sources/NimbusSecurityCore/  who a Mac is, and the channel that proves it. Knows no drop.
+  Trust.swift               this Mac's key and what it knows of others': Known Macs, tombstones,
+                            the pair-again list, expiry in elapsed time, withdrawing trust;
+                            TrustClock, TrustStorage, MemoryStorage; TrustedSession (all Trust
+                            knows of a drop: is it over, is it waiting for a yes, end it)
+  EnclaveStorage.swift      the trust file on disk, sealed under a Secure Enclave key agreement
+  Channel.swift             the opening, the handshake both ways, probe, sealed and fragmented
+                            control messages
+  Messages.swift            FrameType and the messages of the channel and of pairing
+  Pairing.swift             PairingGate (one at a time, rationing), PairingSession (the
+                            connection, the person and the clock around a PairingMachine)
+  Retirement.swift          the retire notice, Trust.reset; Trust.paired() for tests
+  Identity.swift            Identity (name, id, app version)
+Sources/NimbusDiscovery/     Advertiser (dns_sd register; no key material); Probe (ask an address
+                            to prove a key), Prober (the same, rationed); PeerTable (pure: one peer
+                            per browse result); PeerBrowser (NWBrowser + resolve + probe)
+Sources/NimbusTransferCore/  drops: scheduling, rounds, progress, reconnecting, admission
+  Tuning.swift              the engine's patience and its admission limits, shortened by the tests
+  Messages.swift            offer, done, complete, resume, resumed
+  Transfer.swift            TransferState, TransferProgress, TransferStats; Transfer, the base
+                            both sessions share (thread-safe state, progress, cancel, the silence
+                            watchdog)
   Sender.swift              SendSession: scan → offer → manifest → rounds of (plan → N stream
                             threads → done); replaces failed connections; closes stalled ones
-  Receiver.swift            DropListener (accept loop; routes offers, data streams, hellos);
-                            ReceiveSession (decision, tree, streams, rounds, settle, finalize)
-  Discovery.swift           Advertiser (dns_sd register; no key material); Probe (ask an address to
-                            prove a key), Prober (the same, rationed); PeerTable (pure: one peer
-                            per browse result); PeerBrowser (NWBrowser + resolve + probe)
-  Host.swift                LocalHost: the Bonjour host name, the IPv4 addresses
-  Log.swift                 DropLog (the engine's and the app's debug lines, to whatever sink the
-                            app sets) and LogFile (stamped, appended from any thread, rotated)
-  History.swift             HistoryEntry, HistoryStore (one JSON file, newest first, 500 at most)
-  FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
-                            extension to mean); ScannedDrop.keeping(kinds:) (send only some)
-  Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
+  Listener.swift            DropListener (accept loop; admission; routes offers, data streams,
+                            hellos, requests to pair)
+  Receiver.swift            ReceiveSession (decision, tree, streams, rounds, settle, finalize)
   SpeedTest.swift           the speed test (the plan's Addendum B): SpeedWire (a drop's records
                             with no file at either end), SpeedTest (the Mac that asks),
                             SpeedResponder (the Mac that is asked), DataSession (what data
                             connections attach to: a drop being received, or a speed test)
+Sources/NimbusDropCore/      the umbrella: re-exports all of the above, so the app and the tests
+                            `import NimbusDropCore`; and what only an app needs of the engine
+  History.swift             HistoryEntry, HistoryStore (one JSON file, newest first, 500 at most)
+  FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
+                            extension to mean); ScannedDrop.keeping(kinds:) (send only some)
   Leftovers.swift           everything a copy keeps on a Mac, for the uninstaller: one list
 Sources/NimbusDropChaos/    testing only, never in the app
   ChaosProxy.swift          a TCP proxy that throttles, stalls, cuts connections, refuses new
@@ -175,7 +211,10 @@ Sources/NimbusDrop/         the app
   Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
                             Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  165 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
+Tests/NimbusCryptoTests/    9 tests, depending on NimbusCrypto alone: the pairing machine attacked, and
+                            written out as the relation TLC checks (formal/tla/PairingImpl.tla)
+Tests/NimbusDropCoreTests/  168 tests. ModelFindingsTests (what the formal models found, as attacks),
+                            SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -183,9 +222,15 @@ Tests/NimbusDropCoreTests/  165 tests. SpeedTests (the speed test), ReviewTests 
                             the file), VectorTests (against scripts/vectors.py), CryptoTests
                             (the published Noise vector)
 Tests/NimbusDropChaosTests/ 29 tests: whole drops through ChaosProxy (about 140 s)
-scripts/vectors.py          the second implementation; scripts/mutate.py, the mutation checks
-build.sh                    build / test / run / stop / app / dmg / release / install / uninstall /
-                            status / icon / clean
+scripts/vectors.py          the second implementation; scripts/mutate.py, the mutation checks;
+                            check-layers.py, the modules held to their layers; bench-loopback.py,
+                            the data path as numbers, one build against another
+formal/                     the models (README.md there): tamarin/ (the handshake, the pairing),
+                            tla/ (the pairing machine, two Macs pairing, both asking at once,
+                            withdrawing trust, a drop's rounds), check.py (runs every model and
+                            every mutant of one), sas-bound.py (a six-digit code, by simulation)
+build.sh                    build / test / verify / run / stop / app / dmg / release / install /
+                            uninstall / status / icon / clean
 ```
 
 Swift 5 language mode (`swift-tools-version:5.10`) with the Swift 6 compiler. The app's classes
@@ -206,6 +251,8 @@ swift build -c release       measure with this, never the debug build
 .build/release/NimbusDrop [--streams N] --send TARGET PATH…    TARGET: a name from --peers, HOST, HOST:PORT
 .build/release/NimbusDrop --peers | --print | --identity | --known | --forget TAG | --reset-identity
 python3 scripts/mutate.py [word…]                                   break each guard, expect a test to fail
+./build.sh verify [word…]    the layers, every formal model and its mutants, the tests (see Verification)
+python3 scripts/bench-loopback.py BIN [BIN…]                        the data path over loopback, builds side by side
 .build/debug/NimbusDrop --dump-window P     the window with made-up data → P, P-light, P-empty
 .build/debug/NimbusDrop --dump-bar P        the status item's three looks, light and dark
 ```
@@ -497,6 +544,63 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
 - `nimbus-chaos --to HOST:PORT --listen P [setting…] [--at WHEN setting…]…` is the same proxy
   for two real Macs; `--at` takes seconds (`5s`) or bytes carried (`400MB`).
 
+## Verification (2026-11-24)
+
+`./build.sh verify` runs all of it; `formal/README.md` is the map, and says for every claim how
+it is tied to the Swift. The plan for the work is `docs/plans/modular-core-and-verification-plan.md`.
+
+- **What is checked, and by what.** Tamarin proves two
+  theories (`formal/tamarin`): the handshake with what hangs from it (20 lemmas, a minute,
+  6 GB: secrecy of `master` and the transport keys, agreement, a probe's answer, attach,
+  records, resume; each for a peer key that some Mac made and that was not given away), and
+  the pairing with someone in the middle of every connection who hears the codes and can
+  steer a short code whenever they hold its last input (15 s). Its two mutants (no commitment
+  check; no handshake hash) each produce the attack. The one in a million that a six-digit
+  code agrees by luck is outside a symbolic proof; `formal/sas-bound.py` plays it.
+  TLC model-checks six TLA+ specifications (`formal/tla`): the pairing transaction at one
+  Mac against an other end that keeps to nothing, two honest Macs pairing over a link that may
+  be cut, two people asking each other at once, a withdrawal of trust against sessions running
+  and starting and a disk that refuses writes and a crash anywhere, and a drop's rounds under
+  damaged records, cut connections and a lost conversation (26,542 states at two chunks and
+  three faults; a second or two each).
+- **One piece of the Swift is held EQUAL to its model**: `PairingMachine`. `swift test` writes
+  out every state it reaches under every event (`formal/tla/PairingImpl.tla`: 99 states, 1,683
+  transitions) and fails if the file is stale; TLC checks that relation against the
+  specification's `Step`, both ways. Change one without the other and `verify` fails. After a
+  deliberate change: `NIMBUS_WRITE_IMPL=1 swift test --filter PairingMachineTests`, edit
+  `PairingMachine.tla` to match, verify. Everything else is tied by reading and by mutants;
+  do not describe it as proved of the code.
+- **Every model has mutants** (`formal/check.py`): the model with one guard removed, which
+  must fail on the property named for it. A mutant that passes fails the run. Several are the
+  code's own history (`TrackChecks = FALSE`, `Waits = FALSE`, sessions ended under the lock).
+- **What a model found.** `TrustWithdraw.tla`, the first time it was run against the code as
+  it stood: a session asks who a key is at the start of its handshake and registers with the
+  trust store at the end, and a withdrawal in between ended nothing. Fixed in `Trust.track`
+  (the same day); `ModelFindingsTests`. The lesson for the next model: write down each step
+  where code asks a question and acts on the answer later, as two steps.
+- **A model that holds the first time has usually said nothing.** The first `PairingGate`
+  made a refusal reach the asking Mac at once, had 23 states, and could not show the race it
+  was written about (both Macs turning each other away): the two ends do not learn of a
+  refusal at the same moment, and the model has to say so (`answer`, `Hear`). `Drop.tla`
+  first let the receiver judge a round with records still in flight and looped for ever; and
+  it deadlocks when `MaxConns` is too small for `MaxFaults` (three connections can be wasted
+  per lost conversation), which is the bound and not the protocol. Check that the good
+  outcome is reachable (`NeverBothStored` must be violated) before believing a safety result.
+- **Not modelled**: admission, key expiry against the clock, the manifest and `SafeTree`,
+  discovery. `PairingGate` has two Macs and no third, no pause, no queue.
+- **Tools.** TLC needs a Java; `/usr/bin/java` on a Mac is an invitation to install one and
+  fails when run (`check.py` takes the first that works: `brew install openjdk`). The jar is
+  fetched once to `formal/.tools/` against a pinned SHA-256. Tamarin is
+  `brew trust tamarin-prover/tap && brew install tamarin-prover/tap/tamarin-prover` (Homebrew
+  refuses its `maude` formula until the tap is trusted). Both were installed on the MacBook
+  Pro on 2026-11-23 for this.
+- **`scripts/mutate.py` edits the sources while it runs** and puts each back afterwards from
+  memory: do not edit, build or commit under `Sources/` until it has finished (it takes over
+  an hour for the whole list).
+- **CI** runs the layers, the simulation and the TLA+ models on every push (`models`, on
+  Linux); the Tamarin proofs weekly and on request (`proofs`), a job nobody had seen run when
+  it was written.
+
 ## Platform facts (checked 2026-11-22, macOS 27)
 
 - **Bonjour registration is `DNSServiceRegister` (dns_sd), not `NWListener`**, because the
@@ -670,6 +774,18 @@ one-second stall near 80 %); to the Air's own SSD (86 % full) 8.5 Gbit/s on one 
 and more connections do not help a disk-bound receiver (they hurt slightly). What holds a
 real drop to about 20 Gbit/s with a RAM disk under it (reading the page cache, or every
 connection writing one file) is not found yet.
+
+**The engine in modules (2026-11-24, release build, loopback on the MacBook Pro,
+`scripts/bench-loopback.py` with the build before the split and the build after it taking
+turns, best of three; a Tamarin proof was using four cores throughout, so compare the columns
+and not these figures with the ones above):** one 4 GB file on 8 connections 26.0 Gbit/s
+before and 25.6 after; on 1 connection 21.5 and 20.8; 200 × 8 MB 42.3 and 41.8; 10,000 small
+files 736 and 742 Mbit/s (1.0 s both); the speed test 46.1 and 46.0 up, 47.7 and 52.0 down.
+The same run with only the split (before the pairing machine): 25.1 and 24.8, 19.0 and 20.1,
+41.8 and 43.4, 730 and 725, 45.0 and 46.4, 46.9 and 50.0. No difference that is not noise:
+`CipherState`, `Socket` and `Ledger` are each called once or twice a chunk, and a module
+boundary costs nothing at that rate. A change that puts a cross-module call per byte or per
+small write on the data path is a different matter; measure it the same way.
 
 **Not measured yet:** Wi-Fi, 10 GbE itself, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size

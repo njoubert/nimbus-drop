@@ -85,3 +85,37 @@ jobs:
       - uses: actions/checkout@v4
       - name: Shellcheck
         run: shellcheck build.sh
+      - name: The engine's layers
+        # Each module depends on what Package.swift and scripts/check-layers.py both say, imports
+        # only the system frameworks its layer may, and NimbusCrypto stays pure.
+        run: python3 scripts/check-layers.py
+
+  # The formal models that run in seconds: every TLA+ specification in formal/tla with TLC,
+  # every mutant of one (each must fail, on the property named for it), the check that the
+  # Swift pairing machine's transition relation (formal/tla/PairingImpl.tla, which `swift test`
+  # holds to the code) is the specification's, and the short-code simulation.
+  models:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: The short codes, by simulation
+        run: python3 formal/sas-bound.py
+      - name: TLA+ models and their mutants
+        run: python3 formal/check.py tla
+
+  # The Tamarin proofs take minutes and a Homebrew install, so not on every push: weekly and
+  # on request. `./build.sh verify` runs them on the owner's Mac. (This job had not yet been
+  # seen to run when it was written, 2026-11-24.)
+  proofs:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tamarin
+        run: brew install tamarin-prover/tap/tamarin-prover
+      - name: Tamarin models and their mutants
+        run: python3 formal/check.py tamarin

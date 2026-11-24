@@ -261,6 +261,8 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
     private var upOpen = 0, upDone = 0, downOpen = 0, downDone = 0
     private var sendUntil: Date?
     private var sentBytes: Int64 = 0
+    /// Called just before the last word is said: the Mac may take another speed test.
+    var served: (() -> Void)?
 
     init(channel: Channel, ask: SpeedAsk, mac: KnownMac, listener: DropListener) {
         control = channel
@@ -343,6 +345,7 @@ final class SpeedResponder: Transfer, DataSession, @unchecked Sendable {
             while downDone < downOpen, !isOver, phase.wait(until: finished) {}
             let sent = sentBytes
             phase.unlock()
+            served?()
             try control.send(.speedDone, SpeedCount(bytes: sent, seconds: seconds))
             log("to \(peerName): \(Format.bytes(sent)) sent in \(Int(seconds)) s")
             Thread.sleep(forTimeInterval: 0.2)

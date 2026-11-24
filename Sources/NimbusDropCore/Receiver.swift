@@ -411,6 +411,8 @@ public final class DropListener: @unchecked Sendable {
             socket.setReadTimeout(0)
             socket.setNoDelay()
             let test = SpeedResponder(channel: channel, ask: ask, mac: mac, listener: self)
+            // Free for the next one from the moment this one has its answer, not a moment after.
+            test.served = { [weak self] in self?.lock.withLock { self?.speedTesting = false } }
             onSpeedTest?(test)
             test.run()
             socket.shutdown()

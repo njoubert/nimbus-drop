@@ -20,6 +20,10 @@ package struct TrustCore {
     package static let longestLifetime: Double = 90 * 86400
     /// Tombstones kept, by default. See `tombstonesKept`.
     package static let tombstonesKeptByDefault = 2000
+    /// No count of seconds and no date in a trust file is further from nought than this
+    /// (thirty million years), and no counter higher than `mostCounted`. See `File.sound`.
+    package static let farthest: Double = 1e15
+    package static let mostCounted = 1 << 40
 
     /// The trust file. The names of its fields are the file's format.
     struct File: Codable {
@@ -38,6 +42,25 @@ package struct TrustCore {
         var tombstones: [Tombstone] = []
         var again: [Renewal] = []
         var requestsOff = false
+
+        /// Whether these are numbers this Mac could have written. Everything from the trust
+        /// file is held to this before any arithmetic is done with it: the file is authentic
+        /// (it is sealed), and it may still be damaged. A count of seconds or a date further
+        /// than `farthest` from nought is no reading of any clock; with a count and a lifetime
+        /// both near the largest number there is, the sum that gives a new key its end was
+        /// infinite, which JSON cannot hold, and the file could never be written again (the
+        /// fuzzer's seed from the clock found that, on CI, 2026-11-24). A counter at the
+        /// largest integer trapped at its next increment; none is taken above what counting
+        /// could reach.
+        var sound: Bool {
+            func ok(_ x: Double) -> Bool { x.isFinite && abs(x) <= TrustCore.farthest }
+            func at(_ d: Date) -> Bool { ok(d.timeIntervalSinceReferenceDate) }
+            func counted(_ n: Int) -> Bool { n >= 0 && n <= TrustCore.mostCounted }
+            return ok(endsElapsed) && ok(lifetime) && ok(elapsed) && ok(lastContinuous) && at(made) && at(endsWall) && at(lastWall)
+                && known.allSatisfy { ok($0.endsElapsed) && at($0.endsWall) && at($0.pairedAt) && ($0.lastSeen.map(at) ?? true) && counted($0.impostors) && counted($0.major) }
+                && tombstones.allSatisfy { at($0.at) && counted($0.attempts) }
+                && again.allSatisfy { ok($0.endsElapsed) && at($0.endsWall) }
+        }
     }
 
     /// Something a key authenticated: all the core knows of it is its number, its key, and the
@@ -115,7 +138,7 @@ package struct TrustCore {
     /// From the trust file's plaintext. Nil when that is not what it is.
     package init?(decoding data: Data, tombstonesKept: Int = TrustCore.tombstonesKeptByDefault) {
         self.tombstonesKept = tombstonesKept
-        guard let f = try? JSONDecoder().decode(File.self, from: data), let k = KeyPair(raw: f.secret), f.schema == 1 else { return nil }
+        guard let f = try? JSONDecoder().decode(File.self, from: data), let k = KeyPair(raw: f.secret), f.schema == 1, f.sound else { return nil }
         file = f
         pair = k
     }

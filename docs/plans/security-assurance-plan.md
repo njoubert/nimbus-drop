@@ -103,10 +103,10 @@ models assume. That stays "by reading, with a mutant on each side" (`formal/READ
 |---|---|
 | The four next steps | `TrustCore`, `RoundMachine` and `Admission` are pure machines in `NimbusCrypto`, each held equal to its TLA+ specification; `Expiry.tla` is new; thirteen handshake mutants are in the theory and run. Open: four more flags that did not settle. |
 | The work order | Findings 1, 2, 3, 4, 7, 8 and the trust machine: done as the table above says. One piece of 2 is left (`Trust.store` is still `public`). Nothing of 5 or 6 was done. |
-| Tests | 231 + 29 chaos + 74 in `NimbusCryptoTests` (168 + 29 + 9 before) |
+| Tests | 232 + 29 chaos + 74 in `NimbusCryptoTests` (168 + 29 + 9 before) |
 | Models | Tamarin: 43 lemmas in two theories, 15 mutants. TLC: four refinements and their system models, with mutants and reachability runs (`formal/README.md`). |
-| Mutation | 263 guards in `scripts/mutate.py` (85 before) |
-| Found | 28 defects fixed, two of them in part, and five limits written down. From an independent review given the code and not the conclusions: twelve, one of them a crash on one accepted drop. From the containment tests: ten, two of them the review's leads. From building and checking the models: seven, one of them also the review's. From the fuzzers and from reading while fixing: two. Listed in `formal/README.md`, `docs/security/filesystem-containment.md` and the commit messages. |
+| Mutation | 266 guards in `scripts/mutate.py` (85 before) |
+| Found | 29 defects fixed, two of them in part, and five limits written down. From an independent review given the code and not the conclusions: twelve, one of them a crash on one accepted drop. From the containment tests: ten, two of them the review's leads. From building and checking the models: seven, one of them also the review's. From the fuzzers and from reading while fixing: three, one of them by the fuzzer's seed from the clock when CI ran it (a trust file that could not be written again). Listed in `formal/README.md`, `docs/security/filesystem-containment.md` and the commit messages. |
 | Data path | loopback, before and after, within noise on every line (CLAUDE.md, Measured) |
 | Not done | a run between two Macs; the Tamarin job seen to pass in CI; CryptoVerif; a Linux build of the core; content hashing (ruled out); the decisions in `docs/security/claims.md`, "Open for the owner" |
 

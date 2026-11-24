@@ -258,7 +258,7 @@ Sources/NimbusDrop/         the app
 Tests/NimbusCryptoTests/    74 tests, depending on NimbusCrypto alone: the four machines attacked,
                             written out as the relations TLC checks (formal/tla/*Impl.tla), and
                             walked at random with seeds; Wycheproof's X25519 vectors (Vectors/)
-Tests/NimbusDropCoreTests/  231 tests. ContainmentTests (the whole tree read before and after a
+Tests/NimbusDropCoreTests/  232 tests. ContainmentTests (the whole tree read before and after a
                             drop), IndependentReviewTests and RoundReviewTests (what the review of
                             2026-11-24 found), TrustShellTests (the trust store's lock, disk and
                             order), SecretsTests (a whole session's log searched for key material),
@@ -272,7 +272,7 @@ Tests/NimbusDropCoreTests/  231 tests. ContainmentTests (the whole tree read bef
                             Noise vector)
 Tests/NimbusDropChaosTests/ 29 tests: whole drops through ChaosProxy (about 140 s)
 scripts/vectors.py          the second implementation; scripts/mutate.py, the mutation checks
-                            (263 guards); check-layers.py, the modules held to their layers, and
+                            (266 guards); check-layers.py, the modules held to their layers, and
                             test-check-layers.py, the checker held to its job; test-capabilities.py,
                             programs that must not compile; bench-loopback.py, the data path as
                             numbers, one build against another
@@ -657,7 +657,7 @@ compiler's, by reading, or not established). The plans for the work are
   not match what was printed; a request that matches nothing. Each is a failure, never a
   pass. Raw output and versions are kept in `formal/.results/`.
 - **Every model has mutants** (`formal/check.py`), and every guard in the Swift has a line in
-  `scripts/mutate.py` (263). A mutant that passes fails the run.
+  `scripts/mutate.py` (266). A mutant that passes fails the run.
 - **What the models and the review found** is listed in `formal/README.md` and in the
   commits of 2026-11-24. The lessons, for the next model: write each step where code asks a
   question and acts on the answer later as two steps; a guard in a model with no line in the
@@ -701,6 +701,11 @@ compiler's, by reading, or not established). The plans for the work are
   where `test-capabilities.py` did not look, and a mutant with two ways to fail reporting the
   other one (a run that must fail now asks TLC for the one thing it must fail on:
   `check.py`, `asked_for`). A green `./build.sh verify` is not a green CI: wait for it.
+- **A fuzzer's seed from the clock is a different test every run**, and the next push's was
+  the one that found something: a trust file with a count and a lifetime near the largest
+  number there is opened, the next key's end was their sum (infinite), and the file could
+  never be written again. Four fixed seeds and a dozen local runs had not. It is not a flaky
+  test: a failure names its seed, and `NIMBUS_SEED=n` runs it alone.
 
 ## Platform facts (checked 2026-11-22, macOS 27)
 

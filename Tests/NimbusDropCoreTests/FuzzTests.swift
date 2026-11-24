@@ -28,8 +28,13 @@ final class FuzzTests: XCTestCase {
         }
     }
 
-    /// Fixed seeds, and one from the clock so that every run also looks somewhere new.
-    static var seeds: [UInt64] { [1, 2, 3, 0xF0220, UInt64(Date().timeIntervalSince1970 * 1000)] }
+    /// Fixed seeds, and one from the clock so that every run also looks somewhere new (it was
+    /// that one, on CI, that found a trust file that could not be written again). A failure
+    /// says its seed; `NIMBUS_SEED=n` runs that seed alone.
+    static var seeds: [UInt64] {
+        if let one = ProcessInfo.processInfo.environment["NIMBUS_SEED"].flatMap({ UInt64($0) }) { return [one] }
+        return [1, 2, 3, 0xF0220, UInt64(Date().timeIntervalSince1970 * 1000)]
+    }
 
     static let nastyInts: [Int64] = [0, 1, -1, 4095, 4096, 4097, 1 << 20, 1 << 31, (1 << 32) - 1, 1 << 32, 1 << 50, (1 << 50) + 1, 1 << 60, .max, .min, .max - 1]
     static let nastyDoubles: [Double] = [0, -0.0, 1, -1, 0.1, 1e-300, 1e11, -1e11, 1e300, -1e300, .infinity, -.infinity, .nan, .greatestFiniteMagnitude, .leastNonzeroMagnitude,
@@ -165,15 +170,20 @@ final class FuzzTests: XCTestCase {
     func testTrustFilesOfAnything() throws {
         let clock = ClockReading(boot: "b", continuous: 1000, wall: Date(timeIntervalSince1970: 1_800_000_000))
         var core = TrustCore(fresh: clock, lifetime: 30 * 86400)
-        let other = PublicKey.madeUp()
+        let other = PublicKey.madeUp(), gone = PublicKey.madeUp()
         _ = try core.store(pairing: other, announced: "air", method: "codes", remaining: 86400, major: 3, replacing: nil, name: nil, wall: clock.wall)
-        _ = core.retire(PublicKey.madeUp(), wall: clock.wall)
+        _ = try core.store(pairing: gone, announced: "mini", method: "codes", remaining: 86400, major: 3, replacing: nil, name: nil, wall: clock.wall)
+        _ = core.retire(gone, wall: clock.wall)
         let good = try XCTUnwrap(String(data: try core.encoded(), encoding: .utf8))
-        let numbers = ["0", "-1", "1e300", "-1e300", "1e999", "9223372036854775807", "-9223372036854775808", "1.7976931348623157e308", "null", "\"x\"", "[]", "{}", "true", "0.0000001"]
+        XCTAssertTrue(good.contains("\"attempts\"") && good.contains("\"impostors\""), "the file has no tombstone or no Known Mac: nothing counts")
+        // Numbers no clock reaches and no count (the file is refused), and numbers at the very edge
+        // of what is taken (it opens, and everything done with it has to hold up).
+        let numbers = ["0", "-1", "1e300", "-1e300", "1e999", "9223372036854775807", "-9223372036854775808", "1.7976931348623157e308", "null", "\"x\"", "[]", "{}", "true", "0.0000001",
+                       "1e15", "-1e15", "999999999999999", "1e12", "-1e12", "1099511627776", "1099511627775", "4294967296", "86400", "3", "0.5", "-0.5", "1e15", "1e14"]
         var opened = 0
         for seed in Self.seeds {
             var rng = SplitMix(seed: seed)
-            for _ in 0..<1500 {
+            for round in 0..<1500 {
                 var text = good
                 for _ in 0..<(1 + Int(rng.next() % 3)) {
                     // Replace one number, or cut, or double a stretch.
@@ -205,14 +215,59 @@ final class FuzzTests: XCTestCase {
                     _ = mutated.remaining(wall: reading.wall)
                     _ = mutated.nameClash("air", key: PublicKey.madeUp(), wall: reading.wall)
                     _ = mutated.noteRefused(other, wall: reading.wall)
+                    _ = mutated.noteRefused(gone, wall: reading.wall)
+                    _ = mutated.noteImpostor(of: other, at: "10.0.0.9")
                     _ = mutated.track(1, key: other)
                     _ = try? mutated.store(pairing: PublicKey.madeUp(), announced: "x", method: "codes", remaining: 1e300, major: 3, replacing: other, name: nil, wall: reading.wall)
                     _ = Format.lifetime(mutated.lifetime)
                 }
-                _ = try mutated.encoded()
+                // And it can be written again. (It could not: see the test after this one.)
+                XCTAssertNoThrow(try mutated.encoded(), "seed \(seed), round \(round): a trust file that opened could not be written again")
             }
         }
-        XCTAssertGreaterThan(opened, 300, "the fuzzer made nothing that opens: it is testing the refusals only")
+        print("FuzzTests: \(opened) trust files opened and lived with, of \(1500 * Self.seeds.count) made")
+        XCTAssertGreaterThan(opened, 50 * Self.seeds.count, "the fuzzer made too little that opens (\(opened)): it is testing the refusals only")
+    }
+
+    /// A trust file is sealed, so what opens is this Mac's own; it may still be damaged. With a
+    /// count of seconds and a lifetime both near the largest number there is, it opened, and at
+    /// the next change of key the new key's end was their sum: infinite, which JSON cannot hold,
+    /// so the file could never be written again and every change to trust after that was lost
+    /// at the next launch. A counter at the largest integer trapped the next time it counted.
+    /// The fuzzer above found the first with its seed from the clock, on CI (2026-11-24); its
+    /// four fixed seeds had not. Numbers from the file are held to what a clock or a count
+    /// could reach before anything is done with them, and a file that says otherwise is damaged.
+    func testATrustFileWithNumbersNoClockCouldReachIsDamaged() throws {
+        let clock = ClockReading(boot: "b", continuous: 1000, wall: Date(timeIntervalSince1970: 1_800_000_000))
+        var core = TrustCore(fresh: clock, lifetime: 30 * 86400)
+        let other = PublicKey.madeUp(), gone = PublicKey.madeUp()
+        _ = try core.store(pairing: other, announced: "air", method: "codes", remaining: 86400, major: 3, replacing: nil, name: nil, wall: clock.wall)
+        _ = try core.store(pairing: gone, announced: "mini", method: "codes", remaining: 86400, major: 3, replacing: nil, name: nil, wall: clock.wall)
+        _ = core.retire(gone, wall: clock.wall)
+        let good = try XCTUnwrap(String(data: try core.encoded(), encoding: .utf8))
+        XCTAssertNotNil(TrustCore(decoding: Data(good.utf8)), "the file as it was written does not open")
+
+        func with(_ field: String, _ value: String, in text: String) throws -> String {
+            let found = try XCTUnwrap(text.range(of: "\"\(field)\":[-0-9.eE+]+", options: .regularExpression), "the file has no number called \(field)")
+            return text.replacingCharacters(in: found, with: "\"\(field)\":\(value)")
+        }
+        // What the seed made: a count and a lifetime, each a number, their sum not one.
+        let both = try with("lifetime", "1e300", in: try with("elapsed", "1.7976931348623157e308", in: good))
+        XCTAssertNil(TrustCore(decoding: Data(both.utf8)), "a trust file whose next key would end at infinity was opened")
+        // Each number of the file by itself, further than any clock goes or any count reaches.
+        for (field, value) in [("elapsed", "1e300"), ("lifetime", "-1e300"), ("endsElapsed", "1.7976931348623157e308"), ("lastContinuous", "1e16"),
+                               ("made", "1e300"), ("endsWall", "-1e16"), ("lastWall", "1e16"), ("pairedAt", "1e300"), ("lastSeen", "-1e300"), ("at", "1e16"),
+                               ("impostors", "9223372036854775807"), ("attempts", "9223372036854775807"), ("impostors", "-1"), ("major", "-1")] {
+            XCTAssertNil(TrustCore(decoding: Data(try with(field, value, in: good).utf8)), "a trust file whose \(field) is \(value) was opened")
+        }
+        // What a clock can reach still opens: a century counted, a calendar a thousand years on.
+        for (field, value) in [("elapsed", "3200000000"), ("lastWall", "32000000000"), ("lastContinuous", "0"), ("impostors", "100000"), ("attempts", "100000")] {
+            var opened = try XCTUnwrap(TrustCore(decoding: Data(try with(field, value, in: good).utf8)), "a trust file whose \(field) is \(value) was refused")
+            _ = opened.tick(ClockReading(boot: "c", continuous: 5, wall: clock.wall.addingTimeInterval(1e9)))
+            _ = opened.noteImpostor(of: other, at: "10.0.0.9")
+            _ = opened.noteRefused(gone, wall: clock.wall)
+            XCTAssertNoThrow(try opened.encoded())
+        }
     }
 
     // MARK: What is shown

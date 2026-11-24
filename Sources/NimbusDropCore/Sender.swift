@@ -578,7 +578,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
         guard nextJob < jobs.count else { return nil }
         if let limit = failAfterChunks, chunksSent >= limit {
             // Marked as the link's fault, so nothing is said to the receiver: a dropped link says nothing.
-            DispatchQueue.global().async { self.fail(DropError("Stopped by the test", connection: true)) }
+            // On a thread of its own, at once: left to a queue, a busy machine could run it late
+            // enough for the drop to end some other way first (the test of the log saw that).
+            Thread.detachNewThread { self.fail(DropError("Stopped by the test", connection: true)) }
             return nil
         }
         chunksSent += 1

@@ -15,6 +15,8 @@ enum Purpose: String, Codable {
     case resume
     /// "The key that proved this session is retired."
     case retire
+    /// Measure the link: a drop's records each way, with no file at either end (protocol 3.1).
+    case speed
 }
 
 /// The first message inside the encrypted channel, each way.

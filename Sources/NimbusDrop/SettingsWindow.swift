@@ -11,6 +11,8 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     let updater: Updater?
     @State private var automatic: Bool
+    @State private var serviceShown = ServiceMenu.isShown
+    static var serviceName: String { "\(Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "Nimbus Drop") To…" }
     /// For the picture of it: as tall as its contents. On screen it scrolls instead, since
     /// with a few Known Macs it is taller than a laptop's display.
     var whole = false
@@ -30,8 +32,6 @@ struct SettingsView: View {
                         Text(n == Settings.defaultStreams ? "\(n) (default)" : "\(n)").tag(n)
                     }
                 }
-                Text("How many connections a drop you send is spread over. More helps on fast wired networks and with many small files. The receiving Mac takes however many the sender opens.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Receiving") {
                 Toggle("Only from the local network", isOn: Binding(get: { model.localOnly }, set: { model.setLocalOnly($0) }))
@@ -49,8 +49,6 @@ struct SettingsView: View {
                     Text("1 day").tag(86400.0)
                     Text("1 hour").tag(3600.0)
                 }
-                Text("When a key reaches its end this Mac makes a new one, and each Mac it is paired with is paired again, with two codes, the next time you send to it or it to you. A shorter time means pairing more often.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Let other Macs ask to pair", isOn: Binding(get: { !model.trust.requestsOff }, set: { model.setRequestsOff(!$0) }))
                     .help("Off: a pairing can only be started from this Mac.")
                 HStack {
@@ -109,6 +107,8 @@ struct SettingsView: View {
             Section("General") {
                 Toggle("Open at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
                     .disabled(Bundle.main.bundleIdentifier == nil)
+                Toggle("Show “\(Self.serviceName)” in Finder's Services menu", isOn: Binding(get: { serviceShown }, set: { serviceShown = $0; ServiceMenu.setShown($0) }))
+                    .disabled(ServiceMenu.key == nil)
             }
             Section("History and log") {
                 HStack {
@@ -135,6 +135,14 @@ struct SettingsView: View {
                     Text(updater == nil ? "Updates are for the installed app; this is a development build."
                                         : "Updates install only into /Applications, and this copy runs from somewhere else.")
                         .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Section("Uninstall") {
+                HStack {
+                    Text("Removes the app and everything it has kept on this Mac, as if it had never been installed.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Uninstall Nimbus Drop…", role: .destructive) { Uninstaller.ask(model: model) }.disabled(model.resetting)
                 }
             }
             Section("About") {

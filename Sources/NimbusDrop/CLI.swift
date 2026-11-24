@@ -17,6 +17,7 @@ enum CLI {
         case known
         case forget(tag: String)
         case resetIdentity
+        case speed(target: String)
         case keyLifetime(String)
         case watchPeers
         case print
@@ -28,6 +29,8 @@ enum CLI {
     static var name: String?
     static var port: UInt16?
     static var streams: Int?
+    /// Set by `--seconds`: how long a speed test measures each direction.
+    static var speedSeconds = 5.0
     static var advertise = true
     /// Set by `--any-network`: take drops from addresses beyond the local network too.
     static var anyNetwork = false
@@ -118,6 +121,29 @@ enum CLI {
         return (host, hostPort, peerName)
     }
 
+    /// Where a target is and whose key it must prove. A name means one Known Mac, and what is
+    /// sent goes to the key that Mac is paired by, wherever on the network that key is proved.
+    /// What a Mac announces itself as picks nothing: `--send air` used to go to whichever
+    /// paired Mac answered under "air". An address means whoever is there, provided it proves
+    /// a key this identity is paired with. Nil (and a line on stderr) when it cannot be found.
+    private static func aim(_ target: String) -> (host: String, port: UInt16, name: String, expect: PublicKey?)? {
+        let parts = target.split(separator: ":")
+        if target.contains(".") || (parts.count == 2 && UInt16(parts[1]) != nil) {
+            let (host, hostPort, peerName) = locate(target)
+            return (host, hostPort, peerName, nil)
+        }
+        guard let mac = trust.knownMac(called: target) else {
+            fputs("this identity is not paired with a Mac it calls “\(target)” (see --known). Pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)\n", stderr)
+            return nil
+        }
+        let found = browse(seconds: 5) { $0.contains { $0.key == mac.key && $0.address != nil } }
+        guard let peer = found.first(where: { $0.key == mac.key }), let a = peer.address, let p = peer.port else {
+            fputs("\(mac.name) [\(mac.key.tag)] was not found on the network\n", stderr)
+            return nil
+        }
+        return (a, p, mac.name, mac.key)
+    }
+
     private static func describe(_ key: PublicKey?) -> String {
         guard let key else { return "not proved" }
         switch trust.standing(of: key) {
@@ -174,8 +200,10 @@ enum CLI {
             guard let mac = trust.known.first(where: { $0.key.tag.replacingOccurrences(of: "-", with: "").hasPrefix(tag.uppercased().replacingOccurrences(of: "-", with: "")) }) else {
                 fputs("no paired Mac has a key beginning \(tag)\n", stderr); return 1
             }
-            trust.forget(mac.key)
-            Swift.print("forgot \(mac.name)")
+            let found = browse(seconds: 3) { $0.contains { $0.key == mac.key && $0.address != nil } }
+            let place = found.first { $0.key == mac.key }.flatMap { p in p.address.flatMap { a in p.port.map { (host: a, port: $0) } } }
+            let told = trust.forget(mac.key, telling: place, identity: identity)
+            Swift.print("forgot \(mac.name)" + (told ? "; it was told" : "; it could not be told and will learn at its next drop"))
             return 0
 
         case .keyLifetime(let text):
@@ -227,6 +255,19 @@ enum CLI {
             let trust = trust
             let advertiser = advertise ? try? Advertiser(identity: identity, port: listener.port) : nil
             let finished = DispatchSemaphore(value: 0)
+            listener.onSpeedTest = { test in
+                // The standing grant covers the Mac it names for this too; anyone else is asked about.
+                let tag = test.peerKey?.tag.replacingOccurrences(of: "-", with: "") ?? ""
+                if let grant = unattended, tag == grant {
+                    Swift.print("speed test from \(test.peerName): allowed unattended")
+                    test.accept()
+                    return
+                }
+                Thread.detachNewThread {
+                    let yes = ["y", "yes"].contains(ask("\(test.peerName) (\(test.peerAddress)) asks to test the speed between the two Macs (\(Int(test.secondsEachWay)) s each way). allow? [y/N]").lowercased())
+                    if yes { test.accept() } else { test.decline() }
+                }
+            }
             listener.onOffer = { session in
                 Swift.print("\(session.peerName) [\(session.sender.key.tag)] (\(session.peerAddress)) wants to send \(session.title): \(Format.files(session.offeredFiles)), \(Format.bytes(session.offeredBytes))")
                 if let grant = unattended {
@@ -273,27 +314,7 @@ enum CLI {
         case .send(let target, let paths):
             let urls = paths.map { URL(fileURLWithPath: $0) }
             for u in urls where (try? u.checkResourceIsReachable()) != true { fputs("\(u.path) does not exist\n", stderr); return 1 }
-            // A name means one Known Mac, and the drop goes to the key that Mac is paired by,
-            // wherever on the network that key is proved. What a Mac announces itself as picks
-            // nothing: `--send air` used to go to whichever paired Mac answered under "air".
-            var (host, hostPort, peerName) = (target, port ?? defaultPort, target)
-            var expect: PublicKey?
-            let parts = target.split(separator: ":")
-            if target.contains(".") || (parts.count == 2 && UInt16(parts[1]) != nil) {
-                // An address: whoever is there, provided it proves a key this identity is paired with.
-                (host, hostPort, peerName) = locate(target)
-            } else {
-                guard let mac = trust.knownMac(called: target) else {
-                    fputs("this identity is not paired with a Mac it calls “\(target)” (see --known). Pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)\n", stderr)
-                    return 1
-                }
-                let found = browse(seconds: 5) { $0.contains { $0.key == mac.key && $0.address != nil } }
-                guard let peer = found.first(where: { $0.key == mac.key }), let a = peer.address, let p = peer.port else {
-                    fputs("\(mac.name) [\(mac.key.tag)] was not found on the network\n", stderr)
-                    return 1
-                }
-                (host, hostPort, peerName, expect) = (a, p, mac.name, mac.key)
-            }
+            guard let (host, hostPort, peerName, expect) = aim(target) else { return 1 }
             var prescanned: ScannedDrop?
             if let only {
                 // --only jpg,cr3: the kinds those extensions belong to (so jpg brings .jpeg too).
@@ -310,6 +331,34 @@ enum CLI {
             let code = watch(session)
             if case .failed = session.state, session.needsPairing { Swift.print("pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)") }
             return code
+
+        case .speed(let target):
+            guard let (host, hostPort, peerName, expect) = aim(target) else { return 1 }
+            let test = SpeedTest(host: host, port: hostPort, peerName: peerName, identity: identity, trust: trust, expect: expect,
+                                 seconds: speedSeconds, streams: streams ?? Settings.streams)
+            test.start()
+            var said = "", waiting = false
+            while !test.state.isFinal {
+                Thread.sleep(forTimeInterval: 0.25)
+                if test.state == .waitingForAccept, !waiting { waiting = true; Swift.print("waiting for the person at \(peerName) to allow it…") }
+                let phase = test.phase
+                if phase != said, !phase.isEmpty { said = phase; Swift.print("measuring \(phase)…") }
+            }
+            guard test.state == .completed else {
+                if case .failed(let why) = test.state { Swift.print("failed: \(why)") }
+                else if case .declined(let why) = test.state { Swift.print("declined: \(why)") }
+                else { Swift.print("\(test.state)") }
+                if test.needsPairing { Swift.print("pair first:  NimbusDrop\(name.map { " --name \($0)" } ?? "") --pair \(target)") }
+                return 1
+            }
+            let r = test.result
+            // By the name this identity has for the key that answered, not the address typed.
+            var shown = peerName
+            if let key = test.peerKey, case .paired(let mac) = trust.standing(of: key) { shown = "\(mac.name) [\(key.tag)]" }
+            Swift.print("to \(shown):    \(Format.bitRate(r.upRate))  (\(Format.bytes(r.upBytes)) in \(String(format: "%.1f", r.upSeconds)) s)")
+            Swift.print("from \(shown):  \(Format.bitRate(r.downRate))  (\(Format.bytes(r.downBytes)) in \(String(format: "%.1f", r.downSeconds)) s)")
+            Swift.print("\(Format.connections(r.streams))" + (test.linkInterface.map { ", over \(LinkName.display($0))" } ?? ""))
+            return 0
 
         case .checkUpdate:
             guard let current = Updates.runningVersion ?? Updates.installedVersion else {

@@ -3,6 +3,7 @@
 import dnssd
 import Foundation
 import Network
+import SystemConfiguration
 
 public let bonjourType = "_nimbusdrop._tcp"
 
@@ -195,6 +196,9 @@ public final class PeerBrowser: @unchecked Sendable {
     private let selfID: String
     private var browser: NWBrowser?
     private var endpoints: [String: NWEndpoint] = [:]
+    /// The interfaces each peer was found on, and the same by browse result.
+    private var interfaces: [String: [NWInterface]] = [:]
+    private var reachedOn: [String: [NWInterface]] = [:]
     private var table = PeerTable()
     private var resolving: [String: NWConnection] = [:]
     private var restartPending = false
@@ -282,6 +286,7 @@ public final class PeerBrowser: @unchecked Sendable {
             onTrace?("result \(r.endpoint) txt=\(r.metadata) interfaces=\(r.interfaces.map(\.name))")
             let key = "\(r.endpoint)"
             byKey[key] = r.endpoint
+            reachedOn[key] = r.interfaces
             var txt: [String: String]?
             if case .bonjour(let record) = r.metadata { txt = record.dictionary }
             return PeerTable.Seen(key: key, txt: txt)
@@ -291,7 +296,9 @@ public final class PeerBrowser: @unchecked Sendable {
         // were; a fresh browse fetches the records back.
         let outcome = table.apply(seen, selfID: selfID)
         endpoints = [:]
-        for (id, key) in table.keys { endpoints[id] = byKey[key] }
+        interfaces = [:]
+        for (id, key) in table.keys { endpoints[id] = byKey[key]; interfaces[id] = reachedOn[key] }
+        reachedOn = reachedOn.filter { byKey[$0.key] != nil }
         for id in resolving.keys where table.peers[id] == nil {
             resolving[id]?.cancel()
             resolving[id] = nil
@@ -304,12 +311,45 @@ public final class PeerBrowser: @unchecked Sendable {
     /// Looks the peer's address and port up afresh; `completion` gets the peer as it then stands
     /// (without an address when it could not be reached). The port changes whenever the other
     /// copy restarts, so a send resolves first.
-    public func resolve(_ id: String, completion: ((Peer?) -> Void)? = nil) {
+    public func resolve(_ id: String, completion: ((Peer?) -> Void)? = nil) { resolve(id, anyInterface: false, completion: completion) }
+
+    /// The interface to reach a Mac on, when it is found on several: the one that comes first
+    /// in this Mac's own service order (System Settings › Network › Set Service Order), which
+    /// is the person's stated preference among their networks. An interface that is not a
+    /// network service at all comes after every one that is. Nil (macOS chooses) when the Mac
+    /// is on one interface, or on none that is in the order.
+    ///
+    /// Left to macOS, a Mac cabled by Thunderbolt was resolved over an interface that is in no
+    /// service order: the USB networking the same cable also brings up between two Macs, at
+    /// 300 Mbit/s beside the Thunderbolt Bridge's 37 Gbit/s (the owner's first speed test in
+    /// the app, 2026-11-23). The first fix preferred any interface named "bridge…", which was
+    /// a guess about names; this asks the Mac what its person prefers.
+    static func preferred(among found: [String], order: [String]) -> String? {
+        guard found.count > 1 else { return nil }
+        return order.first { found.contains($0) }
+    }
+
+    /// The BSD names of this Mac's network services that are switched on, in service order.
+    static func serviceOrder() -> [String] {
+        guard let prefs = SCPreferencesCreate(nil, "NimbusDrop" as CFString, nil), let set = SCNetworkSetCopyCurrent(prefs),
+              let ids = SCNetworkSetGetServiceOrder(set) as? [String] else { return [] }
+        return ids.compactMap { id in
+            guard let service = SCNetworkServiceCopy(prefs, id as CFString), SCNetworkServiceGetEnabled(service),
+                  let interface = SCNetworkServiceGetInterface(service) else { return nil }
+            return SCNetworkInterfaceGetBSDName(interface) as String?
+        }
+    }
+
+    private func resolve(_ id: String, anyInterface: Bool, completion: ((Peer?) -> Void)?) {
         guard let endpoint = endpoints[id] else { completion?(nil); return }
         resolving[id]?.cancel()
         // IPv4, so the address shown is the one people recognise; the listener is dual-stack.
         let parameters = NWParameters.tcp
         (parameters.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options)?.version = .v4
+        let found = interfaces[id] ?? []
+        let name = anyInterface ? nil : Self.preferred(among: found.map(\.name), order: Self.serviceOrder())
+        let chosen = found.first { $0.name == name }
+        parameters.requiredInterface = chosen
         let connection = NWConnection(to: endpoint, using: parameters)
         resolving[id] = connection
         var finished = false
@@ -331,13 +371,28 @@ public final class PeerBrowser: @unchecked Sendable {
                 }
                 finish(table.peers[id])
             case .failed, .cancelled:
+                // The interface that was preferred did not answer: any will do. Only when this
+                // resolve is still the one wanted: one that was superseded by another, or
+                // cancelled because the browser stopped, starts nothing.
+                if case .failed = state, chosen != nil, !finished, !stopped, resolving[id] === connection {
+                    finished = true
+                    connection.cancel()
+                    resolve(id, anyInterface: true, completion: completion)
+                    return
+                }
                 finish(table.peers[id].map { var p = $0; p.address = nil; p.port = nil; return p })
             default:
                 break
             }
         }
         connection.start(queue: .main)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + (chosen != nil ? 2 : 5)) { [weak self] in
+            if chosen != nil, !finished, let self, !self.stopped, self.resolving[id] === connection {
+                finished = true
+                connection.cancel()
+                self.resolve(id, anyInterface: true, completion: completion)
+                return
+            }
             finish(self?.table.peers[id].map { var p = $0; p.address = nil; p.port = nil; return p })
         }
     }

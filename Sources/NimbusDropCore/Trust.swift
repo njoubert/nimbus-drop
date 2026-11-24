@@ -648,6 +648,11 @@ public final class Trust: @unchecked Sendable {
         if changed { onChange?() }
     }
 
+    /// Whether `key` was paired no more than `seconds` ago.
+    func pairedWithin(_ seconds: Double, _ key: PublicKey) -> Bool {
+        locked { file.known.first { $0.key == key }.map { abs(clock.wall.timeIntervalSince($0.pairedAt)) < seconds } ?? false }
+    }
+
     /// A retired or expired key was presented. Counts it; true when the person should be told
     /// (once a day per key, three times a day in all).
     public func noteRefused(_ key: PublicKey) -> Bool {

@@ -4,7 +4,7 @@ import Darwin
 import Foundation
 
 /// Closes a socket unless told in time that it has earned its keep.
-private final class Deadline: @unchecked Sendable {
+final class Deadline: @unchecked Sendable {
     private let lock = NSLock()
     private var generation = 0
     private weak var socket: Socket?
@@ -43,13 +43,22 @@ public final class DropListener: @unchecked Sendable {
     /// Called on a background thread when another Mac asks to pair and its request has reached
     /// the front of the queue. One at a time.
     public var onPairRequest: (@Sendable (PairingSession) -> Void)?
+    /// A paired Mac asks to measure the link to this one. Called on a background thread; the
+    /// test waits for `accept()` or `decline()`, and with nobody to ask it is declined.
+    public var onSpeedTest: (@Sendable (SpeedResponder) -> Void)?
     /// A retired or run-out identity was used, and the person should be told (rationed).
     public var onRefusedIdentity: (@Sendable (_ name: String, _ address: String) -> Void)?
 
     private let fd: Int32
     private let lock = NSLock()
     private var stopped = false
-    private var sessions: [Data: ReceiveSession] = [:]
+    private var sessions: [Data: DataSession] = [:]
+    /// One speed test (or one question about one) at a time on this Mac, whoever asks. Set by
+    /// the one that is let in and cleared by it alone, when it has ended and not before: an
+    /// earlier version cleared it early as well, and a third test got in beside a second.
+    private var speedTesting = false
+    /// When each key last had a speed test answered, allowed or not: a pause before its next.
+    private var speedAsked: [PublicKey: Date] = [:]
     private var holders: [String: ReceiveSession] = [:]
     /// A connection that has proved nothing yet, and where it came from. Each pool is in order
     /// of arrival: when it is full, the first (the one that has waited longest without proving
@@ -230,7 +239,7 @@ public final class DropListener: @unchecked Sendable {
         }
         // A key has been proved. What it is to this Mac decides everything from here.
         let key = channel.remote
-        let standing = trust.standing(of: key)
+        var standing = trust.standing(of: key)
         noLongerAStranger()
         switch standing {
         case .mine: socket.shutdown(); return
@@ -275,9 +284,32 @@ public final class DropListener: @unchecked Sendable {
         }
         defer { saidWhatItCameFor() }
 
-        guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body),
-              (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
-                                                     paired: standing.isPaired, purpose: nil))) != nil else { socket.shutdown(); return }
+        guard let first = try? channel.read(), first.type == .hello, let hello = try? decode(SecureHello.self, from: first.body) else { socket.shutdown(); return }
+        // A Mac this one has paired proves its key and says it no longer has this Mac paired:
+        // someone there chose Forget (and it is telling us), or it is about to ask to pair
+        // again. This Mac's half is worth nothing from here on, and goes now rather than at
+        // the next drop. Only that key can say this, sealed under its own handshake, and only
+        // about itself; it is what answering a drop with `paired: false` has always done.
+        // Not on a reconnect: a drop that is running may finish after its sender's own key
+        // was replaced on schedule, and that sender truthfully says it no longer has this
+        // Mac paired. What a resume may do is decided by its proof of the drop's keys.
+        // Nor from a key paired in the last few seconds: a hello that was truthful when it was
+        // sealed (a probe during the pairing, a Forget just before pairing again) can arrive
+        // after the pairing it predates, and someone on the path can hold it back that long,
+        // but no longer than a connection may take to prove a key.
+        if standing.isPaired, !hello.paired, hello.purpose != .resume, !trust.pairedWithin(Tuning.strangerSeconds, key) {
+            trust.notePairingGone(key)
+            standing = trust.standing(of: key)
+            // It is a key nobody has paired now, and is held to what one may send.
+            channel.limit = 16 << 10
+        }
+        // What this Mac says of the pairing. On a reconnect from a key that has run out, the
+        // drop it belongs to may still finish (below), and the sender takes `paired: false`
+        // here for a Forget: so it is told what is true of the drop, that it will be taken.
+        var says = standing.isPaired
+        if hello.purpose == .resume, case .expired = standing { says = true }
+        guard (try? channel.send(.hello, SecureHello(minor: protocolMinor, app: identity.appVersion, name: identity.name, remaining: trust.remaining,
+                                                     paired: says, purpose: nil))) != nil else { socket.shutdown(); return }
         let name = Sanitize.label(hello.name, limit: 64)
 
         switch hello.purpose {
@@ -323,7 +355,7 @@ public final class DropListener: @unchecked Sendable {
                 try? channel.send(.complete, done.answer)
                 return
             }
-            guard let session = lock.withLock({ sessions[resume.session] }), session.peerKey == key, session.resume(on: channel, proof: resume.proof) else {
+            guard let session = lock.withLock({ sessions[resume.session] }) as? ReceiveSession, session.peerKey == key, session.resume(on: channel, proof: resume.proof) else {
                 logCounted("resume", "refused \(from): it asked to pick up a drop it could not prove it holds")
                 socket.shutdown()
                 return
@@ -362,6 +394,44 @@ public final class DropListener: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.2)
             socket.shutdown()
 
+        case .speed:
+            // As for a drop: both sides must hold the pairing, and the person here is asked
+            // (the plan's Addendum B). One question, or one test, at a time.
+            guard hello.paired, case .paired(let mac) = standing else { socket.shutdown(); return }
+            guard let frame = try? channel.read(), frame.type == .speed, let ask = try? decode(SpeedAsk.self, from: frame.body) else { socket.shutdown(); return }
+            saidWhatItCameFor()
+            let refusal = lock.withLock { () -> String? in
+                let now = Date()
+                speedAsked = speedAsked.filter { now.timeIntervalSince($0.value) < Tuning.speedPauseSeconds }
+                // A pause for each key after its last: a paired Mac cannot put question after
+                // question on screen, or run test after test, without a gap.
+                if let last = speedAsked[key] {
+                    return "\(identity.name) answered a speed test from this Mac a moment ago; try again in \(Int((Tuning.speedPauseSeconds - now.timeIntervalSince(last)).rounded(.up))) s"
+                }
+                guard !speedTesting else { return "\(identity.name) is in the middle of another speed test" }
+                speedTesting = true
+                return nil
+            }
+            if let refusal {
+                try? channel.send(.busy, Reason(message: refusal))
+                Thread.sleep(forTimeInterval: 0.2)
+                socket.shutdown()
+                return
+            }
+            deadline.cancel()
+            socket.setReadTimeout(0)
+            socket.setNoDelay()
+            let test = SpeedResponder(channel: channel, ask: ask, mac: mac, listener: self)
+            test.run()
+            // Free for the next only now; then every connection it had is closed, the control
+            // connection last of all.
+            lock.withLock {
+                speedTesting = false
+                speedAsked[key] = Date()
+            }
+            test.closeAll()
+            socket.shutdown()
+
         case nil:
             socket.shutdown()
         }
@@ -379,7 +449,15 @@ public final class DropListener: @unchecked Sendable {
             _ = channel
         }
         if trust.requestsOff { return busy("\(identity.name) is not taking requests to pair; start the pairing from that Mac", log: "requests are off in Settings") }
-        // Both asked at the same moment: the request from the lower key goes ahead.
+        // Both asked at the same moment: the request from the lower key goes ahead. This Mac's
+        // own request may be so new that it has not yet proved who it is talking to, in which
+        // case it cannot be told whether the two are the same pairing: wait a moment for it.
+        // Without the wait, on a slow machine, this request was answered "in the middle of
+        // another pairing" and both people ended with nothing (seen in CI, 2026-11-23).
+        if let mine = trust.gate.active, mine.initiator, mine.peerKey == nil {
+            let patience = Date().addingTimeInterval(2)
+            while mine.peerKey == nil, !mine.state.isFinal, Date() < patience { Thread.sleep(forTimeInterval: 0.02) }
+        }
         if let mine = trust.gate.active, mine.initiator, mine.peerKey == pairing.peerKey, mine.state == .asking || mine.state == .connecting,
            let theirs = pairing.peerKey {
             if trust.publicKey.raw.lexicographicallyPrecedes(theirs.raw) { return busy("Both Macs asked at once; carry on with the request from \(identity.name)", log: "this Mac asked first") }
@@ -453,7 +531,7 @@ public final class DropListener: @unchecked Sendable {
         }
     }
 
-    func register(_ session: ReceiveSession, id: Data) { lock.withLock { sessions[id] = session } }
+    func register(_ session: DataSession, id: Data) { lock.withLock { sessions[id] = session } }
     func unregister(id: Data) { lock.withLock { sessions[id] = nil } }
 
     /// Trust in `key` was withdrawn. Its sessions have been ended by `Trust`; what is left here
@@ -510,7 +588,7 @@ public final class DropListener: @unchecked Sendable {
 /// The transfer runs in rounds (see `SendSession`): a data connection that is lost or carries a
 /// damaged chunk is closed and what it did not deliver is asked for again, on the same accepted
 /// drop, without asking the person twice.
-public final class ReceiveSession: Transfer, @unchecked Sendable {
+public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     /// The sender's key, as text: what a re-sent drop is recognised by.
     public let senderID: String
     /// The Known Mac the sender proved to be.

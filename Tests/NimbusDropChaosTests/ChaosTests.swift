@@ -52,6 +52,7 @@ final class ChaosTests: XCTestCase {
         Tuning.settleSeconds = 1
         Tuning.reconnectSeconds = 60
         Tuning.idleRounds = 5
+        Tuning.strangerSeconds = 10
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -325,6 +326,10 @@ final class ChaosTests: XCTestCase {
         senderTrust = Trust.inMemory(clock: clock, lifetime: 3600)
         senderTrust.adopt(receiverTrust, as: "receiver")
         receiverTrust.adopt(senderTrust, as: "sender")
+        // Paired a while ago, as far as the receiver's rule about fresh pairings goes: what
+        // lets the reconnect through must be that it is a reconnect.
+        Tuning.strangerSeconds = 0.5
+        Thread.sleep(forTimeInterval: 0.6)
         let began = senderTrust.publicKey
         let trust = senderTrust!
         let src = try makeTree(megabytes: 48)

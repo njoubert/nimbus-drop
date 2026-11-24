@@ -375,6 +375,18 @@ final class DropTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: url, encoding: .utf8).hasSuffix("line 99 with enough in it to fill the file up and force it over\n"))
     }
 
+    /// A Mac found on several interfaces is reached on the one this Mac's person put first.
+    func testAMacOnSeveralInterfacesIsReachedByTheServiceOrder() {
+        let order = ["en9", "en11", "bridge0", "en0"]   // Ethernet, a Thunderbolt Ethernet card, Thunderbolt Bridge, Wi-Fi
+        XCTAssertEqual(PeerBrowser.preferred(among: ["bridge0", "en13"], order: order), "bridge0", "en13 is no network service: it comes after one that is")
+        XCTAssertEqual(PeerBrowser.preferred(among: ["en0", "bridge0"], order: order), "bridge0")
+        XCTAssertEqual(PeerBrowser.preferred(among: ["en0", "en9", "bridge0"], order: order), "en9", "the person put Ethernet first")
+        XCTAssertEqual(PeerBrowser.preferred(among: ["en0", "bridge0"], order: ["en0", "bridge0"]), "en0", "and if they put Wi-Fi first, Wi-Fi it is")
+        XCTAssertNil(PeerBrowser.preferred(among: ["bridge0"], order: order), "one interface: nothing to choose")
+        XCTAssertNil(PeerBrowser.preferred(among: ["en13", "en14"], order: order), "none of them a service: macOS chooses")
+        XCTAssertNil(PeerBrowser.preferred(among: [], order: order))
+    }
+
     func testADropLeavesItsStoryInTheLog() throws {
         let lines = Box<[String]>([])
         DropLog.sink = { _, line in lines.value += [line] }

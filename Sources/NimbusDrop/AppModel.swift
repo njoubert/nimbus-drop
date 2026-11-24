@@ -332,6 +332,9 @@ final class AppModel: ObservableObject {
                 l.onPairRequest = { [weak self] pairing in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.pairRequested(pairing) } }
                 }
+                l.onSpeedTest = { [weak self] test in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.speedAsked(test) } }
+                }
                 l.onRefusedIdentity = { [weak self] name, address in
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.refusedIdentity(name: name, address: address) } }
                 }
@@ -599,8 +602,10 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let trust = trust
-        DispatchQueue.global().async { trust.forget(mac.key) }
+        // Forgotten here whatever happens; the other Mac is told if it is on the network now.
+        let place = destinations.first { $0.key == mac.key }.flatMap { p in p.address.flatMap { a in p.port.map { (host: a, port: $0) } } }
+        let trust = trust, identity = identity
+        DispatchQueue.global().async { trust.forget(mac.key, telling: place, identity: identity) }
     }
 
     func rename(_ mac: KnownMac) {
@@ -658,6 +663,23 @@ final class AppModel: ObservableObject {
         DispatchQueue.global().async {
             trust.reset(identity: identity, reach: { reach[$0].map { (host: $0.0, port: $0.1) } })
             DispatchQueue.main.async { MainActor.assumeIsolated { self.resetting = false; self.browser?.probeAll() } }
+        }
+    }
+
+    /// For the uninstaller: tells every paired Mac that can be reached that this Mac's identity
+    /// is finished (as Reset Identity does, for at most ten seconds), stops listening, then
+    /// calls `done` on the main thread.
+    func retireEverything(then done: @escaping @MainActor () -> Void) {
+        var places: [PublicKey: (String, UInt16)] = [:]
+        for p in destinations { if let key = p.key, let a = p.address, let port = p.port { places[key] = (a, port) } }
+        let reach = places
+        let trust = trust, identity = identity
+        resetting = true
+        listener?.stop()
+        advertiser = nil
+        DispatchQueue.global().async {
+            if !trust.known.isEmpty { trust.reset(identity: identity, reach: { reach[$0].map { (host: $0.0, port: $0.1) } }) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { done() } }
         }
     }
 
@@ -837,6 +859,26 @@ final class AppModel: ObservableObject {
         q.show(cascade: place)
     }
 
+    /// A paired Mac asks to measure the link to this one: the person here says whether it may.
+    private func speedAsked(_ test: SpeedResponder) {
+        add(test)
+        let id = test.id
+        test.onWithdrawn = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.withdraw(id) } }
+        }
+        let q = OfferPanel(speed: test) { [weak self] answer in
+            MainActor.assumeIsolated {
+                self?.asking[id] = nil
+                if answer == .allow, test.state == .waitingForAccept { test.accept() } else { test.decline() }
+            }
+        }
+        let place = asking.count
+        asking[id] = Asking(question: q, chooser: nil)
+        NSApp.activate(ignoringOtherApps: true)
+        NSSound(named: "Glass")?.play()
+        q.show(cascade: place)
+    }
+
     private func askWhere(_ session: ReceiveSession) {
         let id = session.id
         let p = NSOpenPanel()
@@ -921,6 +963,8 @@ final class AppModel: ObservableObject {
     private func refresh() {
         let now = Date()
         for t in transfers where t.state.isFinal && announced.insert(t.id).inserted {
+            // A speed test is not a drop: nothing to announce, nothing for the history.
+            if t.isSpeedTest { continue }
             announce(t)
             record(t)
             if t.needsPairing, sends[t.id] != nil {
@@ -950,10 +994,13 @@ final class AppModel: ObservableObject {
             RunLoop.main.add(t, forMode: .common)
             timer = t
         }
-        if active, activity == nil {
+        // The Mac is held awake for its own drops and tests, not for a speed test another Mac
+        // asked for: that one may not keep this Mac from sleeping.
+        let holding = transfers.contains { !$0.state.isFinal && !($0.isSpeedTest && $0.direction == .receive) }
+        if holding, activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
                                                              reason: "A drop is under way")
-        } else if !active, let a = activity {
+        } else if !holding, let a = activity {
             ProcessInfo.processInfo.endActivity(a)
             activity = nil
         }
@@ -1049,6 +1096,7 @@ final class AppModel: ObservableObject {
     }
 
     private func row(for t: Transfer, now: Date) -> TransferRow {
+        if t.isSpeedTest { return speedRow(for: t, now: now) }
         let state = t.state, p = t.progress
         var status = "", indeterminate = false, failed = false
         switch state {
@@ -1084,6 +1132,51 @@ final class AppModel: ObservableObject {
                            isIndeterminate: indeterminate, failed: failed,
                            canReveal: state == .completed && !t.savedURLs.isEmpty,
                            canRetry: failed && sends[t.id] != nil)
+    }
+
+    /// A speed test's row: what is being measured now, then the two rates. On the Mac that
+    /// was asked there is only the fact of it.
+    private func speedRow(for t: Transfer, now: Date) -> TransferRow {
+        let state = t.state
+        let test = t as? SpeedTest
+        var status = "", indeterminate = false, failed = false, fraction = 0.0
+        switch state {
+        case .completed:
+            // The same two figures at both Macs, each from its own side.
+            let r = t.speedResult ?? SpeedResult()
+            status = "↑ \(r.upSeconds > 0 ? Format.bitRate(r.upRate) : "?") to \(t.peerName) · ↓ \(r.downSeconds > 0 ? Format.bitRate(r.downRate) : "?") from \(t.peerName)"
+            status += "\n\(Format.connections(r.streams))" + (t.linkInterface.map { " · over \(LinkName.display($0))" } ?? "")
+                + (test == nil ? " · asked for by \(t.peerName)" : "")
+            fraction = 1
+        case .declined(let why), .failed(let why): status = why; failed = true
+        case .cancelled: status = "Cancelled"; failed = true
+        case .transferring:
+            if let test {
+                let rate = max(0, meters[t.id]?.rate(bytes: t.progress.doneBytes, now: now) ?? 0)
+                status = "Measuring \(test.phase)…" + (rate > 0 ? " \(Format.bitRate(rate))" : "")
+                fraction = min(1, now.timeIntervalSince(t.transferStartedAt ?? now) / (2 * test.secondsEachWay))
+            } else {
+                status = "\(t.peerName) is measuring the link to this Mac…"
+                indeterminate = true
+            }
+        case .waitingForAccept:
+            status = test != nil ? "Waiting for \(t.peerName) to allow it…" : "\(t.peerName) asks to test the speed between the two Macs…"
+            indeterminate = true
+        default: status = "Connecting to \(t.peerAddress)…"; indeterminate = true
+        }
+        return TransferRow(id: t.id, direction: t.direction, peerName: t.peerName, peerAddress: t.peerAddress, title: "Speed test",
+                           status: status, fraction: fraction, isActive: !state.isFinal, isIndeterminate: indeterminate, failed: failed, canReveal: false)
+    }
+
+    /// Measures the link to a paired Mac, both ways, with no disk at either end: the drop's own
+    /// data path, for as long as it takes to read a steady rate. From a tile's right-click menu.
+    func testSpeed(to peer: Peer) {
+        guard case .paired = standing(peer), let address = peer.address, let key = peer.key else { return }
+        let test = SpeedTest(host: address, port: peer.port ?? defaultPort, peerName: displayName(peer), identity: identity, trust: trust,
+                             expect: key, seconds: 5, streams: Settings.streams)
+        DropLog.write("speed test with \(peer.name) at \(address)")
+        add(test)
+        test.start()
     }
 
     /// What the drop got past, as what it cost: the chunks that went a second time. How many

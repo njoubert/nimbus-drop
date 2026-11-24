@@ -35,6 +35,9 @@ import NimbusUpdater
 //   --identity              this identity's key tag, identity number and end date; exit
 //   --known                 the Macs this identity is paired with; --forget TAG removes one
 //   --reset-identity        tell the paired Macs this key is retired, and make a new one
+//   --speed TARGET          measure the link to a paired Mac, both ways, no disk ([--seconds N] [--streams N] before it)
+//   --service show|hide|status   “Nimbus Drop To…” in the Services menu (the binary inside the app)
+//   --uninstall [--yes]     list everything this copy has left on this Mac; with --yes, remove it and the app
 //   --key-lifetime 90d      how long keys last: 1h, 1d, 1w, 30d or 90d
 //   --send TARGET PATH…     send to TARGET: a Mac's name as --peers shows it, HOST or HOST:PORT
 //   --peers                 the Macs found on the network in three seconds; exit
@@ -123,6 +126,19 @@ while !args.isEmpty {
         guard rest.count >= 2 else { fputs("--send needs a target and at least one path\n", stderr); usage() }
         sendArgs = rest
     case "--peers": cli = .peers
+    case "--speed": cli = .speed(target: takeValue(a))
+    case "--seconds": let v = Double(takeValue(a)); MainActor.assumeIsolated { if let v { CLI.speedSeconds = v } }
+    case "--uninstall":
+        let yes = args.first == "--yes"
+        exit(MainActor.assumeIsolated { Uninstaller.commandLine(confirmed: yes) })
+    case "--service":
+        let v = takeValue(a)
+        MainActor.assumeIsolated {
+            guard ServiceMenu.key != nil else { fputs("--service needs the app's bundle: run the binary inside the app\n", stderr); exit(1) }
+            if v == "show" || v == "hide" { ServiceMenu.setShown(v == "show"); Thread.sleep(forTimeInterval: 0.5) }
+            print("“\(ServiceMenu.key ?? "")” is \(ServiceMenu.isShown ? "shown" : "hidden") in the Services menu")
+        }
+        exit(0)
     case "--pair": cli = .pair(target: takeValue(a), byNumber: false)
     case "--verify": cli = .pair(target: takeValue(a), byNumber: true)
     case "--identity": cli = .identity

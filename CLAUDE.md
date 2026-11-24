@@ -15,6 +15,17 @@ rest: how to work here, how the engine is put together, and what was measured.
   `ReceiveSession.receive`, `Socket`, `Ledger.record`) gets measured before and after, over
   loopback and over the LAN (below). Do not add a copy, a lock per byte or a syscall per small
   write there without a number.
+- **Nothing one Mac has another Mac do happens without a yes from the person at that Mac**
+  (the owner, 2026-11-23, as a core tenet: "interactions between machines need consent").
+  Being paired is who a Mac is, not permission for what it asks: a drop is asked about, a
+  pairing is asked about, and a speed test is asked about (as first built it was not: a
+  paired Mac could start one on another with nobody approving, and the owner called that
+  "no good"). A new kind of request between Macs gets its question, with no Return key on the
+  yes, taken away if the asker gives up, and declined when there is nobody to ask. The
+  argument "it writes nothing and its cost is bounded" is not a substitute for asking. What
+  needs no yes is only what a Mac says about itself: proving its key to a probe, and
+  withdrawing its own trust (retire, Forget). The one standing grant is the command line's
+  `--unattended-from`, which a person types for one key.
 - **Nothing is sent to, or shown from, a key that is not paired**, and nothing decides who a
   Mac is but the key it proved. Names, addresses and Bonjour records are labels. A change that
   lets a name, an address or a record affect what a paired key may do, or where its tile
@@ -124,6 +135,11 @@ Sources/NimbusDropCore/     the engine; no AppKit. The tests drive it over loopb
   FileTypes.swift           FileKinds (which kinds of file a drop holds, by what macOS takes the
                             extension to mean); ScannedDrop.keeping(kinds:) (send only some)
   Format.swift              bytes, byte rates, bit rates (Mbps), durations, counts
+  SpeedTest.swift           the speed test (the plan's Addendum B): SpeedWire (a drop's records
+                            with no file at either end), SpeedTest (the Mac that asks),
+                            SpeedResponder (the Mac that is asked), DataSession (what data
+                            connections attach to: a drop being received, or a speed test)
+  Leftovers.swift           everything a copy keeps on a Mac, for the uninstaller: one list
 Sources/NimbusDropChaos/    testing only, never in the app
   ChaosProxy.swift          a TCP proxy that throttles, stalls, cuts connections, refuses new
                             ones and flips bits, on triggers by bytes carried or by time. Knows
@@ -156,8 +172,10 @@ Sources/NimbusDrop/         the app
                             every stage; --dump-pairing writes all of them
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
+  Uninstall.swift           ServiceMenu (whether macOS shows "Nimbus Drop To…": the switch in
+                            Settings) and Uninstaller (Settings › Uninstall, `--uninstall`)
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  143 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  165 tests. SpeedTests (the speed test), ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -223,7 +241,7 @@ onto a tile need a person. What can be checked without one: that the prompt wind
 (`CGWindowListCopyWindowInfo` lists a window named "Incoming Drop" for the app's process, no
 Screen Recording permission needed) and that it goes away when the sender gives up.
 
-## The protocol (version 3.0)
+## The protocol (version 3.1)
 
 The specification is `docs/plans/secure-drops-plan.html` (draft 6); this is the map. Encrypted
 and authenticated end to end; not one byte in common with protocol 2.
@@ -250,6 +268,9 @@ pair                  pair-request -> (a person says yes) pair-go -> commit -> n
                       each types the other's; paired {} each way; stored when both are true
 verify                the same without the exchange: each enters the other's 30-digit identity number
 retire                retire {} -> the key is tombstoned, its sessions ended -> retired {}
+speed (3.1)           speed {seconds, streams} -> speed-go (as granted) | busy; 2n data connections
+                      up: records {file 0} on 1…n for `seconds` -> speed-up-done -> speed-count
+                      down: speed-down -> records on n+1…2n -> speed-done. Nothing read or written.
 ```
 
 - **Who a Mac is.** `Trust.standing(of:)`: mine, paired, expired, retired, renew, unknown.
@@ -317,7 +338,19 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   then the store refuses the key, then every session it authenticated is ended and its keys
   wiped (`Transfer.withdrawn`), then listeners drop what it had waiting, and only then is a
   retire notice acknowledged. Retire and "It Replaces…" leave a tombstone (refused for good);
-  Forget does not, and tells nobody: the forgotten Mac learns at its next drop, when the key
+  Forget does not. It tells the other Mac when it can (`Trust.forget(_:telling:identity:)`: a
+  connection that proves this Mac's key, hello `paired: false`, no purpose; three seconds at
+  most, best effort), and a responder that has the proved key paired and reads
+  `paired: false` in its hello drops its half there and then, whatever the purpose but
+  `resume` (`DropListener.serve`; a reconnect after the sender's own key was replaced on
+  schedule says `paired: false` truthfully, and `testADropFinishesOnTheKeyItStartedWith`
+  failed on the first version of this). An independent review the same day found no way to
+  end an established pairing without one of the two keys, and three smaller things, now
+  `ForgetReviewTests`: the responder's reply to a `resume` from a run-out key said
+  `paired: false` and the sender took that for a Forget (a drop in its grace died at its
+  first reconnect; the chaos test moved only the sender's clock); the notice had a deadline
+  per read, not in all; and a truthful `paired: false` sealed just before a pairing could
+  end it just after (ignored now for `Tuning.strangerSeconds` after pairing). Otherwise the forgotten Mac learns at its next drop, when the key
   it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
   withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
   2026-11-23 it stayed "Paired" and every drop failed). The same is read from the hello of a
@@ -367,6 +400,21 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   kept); one session per partial folder. The drop's key is SHA-256 over the sender's static
   key, the chunk size and every entry, so a resume needs the same sender key: after a key is
   replaced, an interrupted drop starts over.
+- **The speed test** (`--speed TARGET`, a paired tile's right-click › Request Speed Test…): a
+  paired key only, and the person at the other Mac is asked (`SpeedResponder.accept` /
+  `decline`; the Allow / Decline panel is `OfferPanel(speed:)`; nothing attaches, is sent or
+  is counted before the yes). Bounded as well: one question or test at a time on a Mac, 30 s
+  each way and 32 connections each way at most, an absolute deadline once allowed, 10 s
+  before the same key may ask again (`Tuning.speedPauseSeconds`), and every connection closed
+  when it ends (`Transfer.closeAll`; `finish(.completed)` closes nothing by design, which is
+  right for a drop and left a finished test's data connections open for as long as the tester
+  liked). An independent review found that, a way for a third test in beside a second, and no
+  gap between tests (a thousand served to one key in two seconds): `SpeedReviewTests`. The Mac
+  is not held awake for a test another Mac asked for. Each rate is counted by the end
+  that receives. It is the drop's data path with the files taken out, so the difference
+  between it and a real drop is the two disks. A 3.0 copy does not know the purpose and hangs
+  up; the tester says it may need a newer Nimbus Drop. Its first version deadlocked on itself
+  (it read `peerName`, which takes `Transfer.lock`, inside that lock).
 - **Not proved:** bytes left in a partial folder between attempts (the ledger's word, as
   before). Not hidden: volume and timing. Not claimed: anything against software running as
   the user.
@@ -508,6 +556,24 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   `NSRegisterServicesProvider` under that same name. The development bundle's item is
   "Nimbus Drop Dev To…", so the two can be told apart. `/System/Library/CoreServices/pbs -update`
   then `pbs -dump | grep -A12 "Nimbus Drop"` shows whether macOS has picked it up.
+- **The Service cannot be removed from a signed app, only hidden**: it is declared in the
+  Info.plist. Whether macOS shows it is kept in the `pbs` preferences, `NSServicesStatus`,
+  under "<bundle id> - <menu item> - <message>" (`enabled_services_menu`,
+  `enabled_context_menu`, `presentation_modes`); no entry means shown. `ServiceMenu` writes
+  that and runs `pbs -update`: the same switch as System Settings › Keyboard › Keyboard
+  Shortcuts › Services. Checked 2026-11-23 by reading the preference back; nobody has yet
+  looked at Finder's menu after flipping it.
+- **Uninstalling** (`Uninstaller`; Settings › Uninstall, or `--uninstall [--yes]` from the
+  binary inside the app, which lists without `--yes`): tells the paired Macs (as Reset
+  Identity does; the app only), unregisters the Login Item, removes the Service's entry and
+  notifications, deletes what `Leftovers.library` lists and any partial folders beside saved
+  drops and in Downloads, then a detached `sh` waits for the process to exit and removes what
+  it rewrites on the way out (preferences, the log) and the app itself, with `lsregister -u`
+  and `tccutil reset All`. **Something new the app writes outside a drop's destination goes
+  in `Leftovers`**, and in `build.sh uninstall`, which repeats the list from outside. Not
+  removable by anyone but macOS: the entry under Privacy & Security › Local Network. Tested
+  on a throwaway copy with its own bundle id (planted files, then `--uninstall --yes`: all
+  gone, the other copies' files untouched); never run from the Settings button.
 - **A right-click on a status item that has no menu**: `sendAction(on: [.leftMouseUp,
   .rightMouseUp])`, and in the action, for a right-click, set `item.menu`, `performClick`, and
   unset it. A status item with a menu set shows it on every click.
@@ -523,6 +589,17 @@ change with `set { }`; triggers are `whenForwarded(bytes:)` (repeatable) and `af
   the window is already key closes it, so the icon toggles.
 - **A peer's port changes when its copy restarts** (the preferred port is taken while the old
   socket lingers, or a second copy is running), so `AppModel.send` resolves again every time.
+- **A Mac found on several interfaces is resolved on the one that comes first in this Mac's
+  service order** (System Settings › Network › Set Service Order; `PeerBrowser.preferred`,
+  `serviceOrder`: `NWBrowser` lists the interfaces of each result, and the resolve sets
+  `requiredInterface`; two seconds, then any interface). An interface that is no network
+  service comes last. A Thunderbolt cable between two Macs brings up two links: the
+  Thunderbolt Bridge, and USB networking (`en13` here, "type: USB Ethernet", in no service
+  order). Left to macOS the Air resolved over the second, and the owner's first speed test
+  in the app read 300 Mbit/s beside a 37 Gbit/s link (2026-11-23). The first fix preferred
+  any interface named `bridge…`; the owner asked for nothing hardcoded. A speed
+  test's row and the command line name the interface it went over (`Transfer.linkInterface`,
+  `LinkName.display`), which is how to tell.
 - **A Mac with two interfaces on one subnet** (Wi-Fi and Ethernet) shows whichever address the
   resolve picked; the kernel's route decides which interface carries the data. On the owner's
   MacBook Pro that is en9 (Ethernet), as it should be.
@@ -582,7 +659,19 @@ Pro: the Air was told, forgot the pairing, and refused a copy of the old key by 
 re-send while the killed sender's drop was still held for its reconnect; `--unattended-from`
 now lets an offer through when the drop in its way is only `.reconnecting`.
 
-**Not measured yet:** encryption on a link faster than gigabit, Wi-Fi, 10 GbE, a drop larger than the receiver's
+**Thunderbolt 4, MacBook Pro ↔ MacBook Air M4 (2026-11-23, release build, link-local over the
+Thunderbolt Bridge, MTU 1500; iperf3 says the link carries 37.6 Gbit/s):**
+the speed test (encrypted, no disk): 31 Gbit/s each way on one connection, 36 to 38 Gbit/s on
+2 to 32. **The engine and the encryption fill the link.** Real drops of one 10.5 GB file of
+random data, from the sender's page cache: to a RAM disk on the Air 20 to 23 Gbit/s whatever
+the number of connections; Air to the Pro's SSD 17 Gbit/s overall (24 while moving, with a
+one-second stall near 80 %); to the Air's own SSD (86 % full) 8.5 Gbit/s on one connection and
+7.4 on eight. So above gigabit the disks are the limit, on the Air well under a 10 GbE wire,
+and more connections do not help a disk-bound receiver (they hurt slightly). What holds a
+real drop to about 20 Gbit/s with a RAM disk under it (reading the page cache, or every
+connection writing one file) is not found yet.
+
+**Not measured yet:** Wi-Fi, 10 GbE itself, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
 
@@ -624,7 +713,10 @@ from the git-ignored `.signing` (copied from a sibling on this machine).
 Mac to 0.3 without asking whether the others are ready, and from then on it and a 0.2 Mac
 show each other as "Needs an update".
 
-Releases: **0.3.0 on 2026-11-23** (protocol 3: encrypted and authenticated, pairing, key
+Releases: **0.3.1 on 2026-11-23** (protocol 3.1: the speed test, asked about at the other
+Mac; Forget tells the other Mac; Uninstall and the Services switch in Settings; a Mac on
+several interfaces is reached by the service order; a pairing that works pulses on the tile),
+**0.3.0 on 2026-11-23** (protocol 3: encrypted and authenticated, pairing, key
 expiry; reviewed against its plan the same day and the findings fixed before release; the
 first release the auto-updater carries anyone to), **0.2.2 on 2026-11-22** (the security release: see Security; update everything to it),
 **0.2.1 on 2026-11-22** (protocol 2.2: a receiver that is getting data no longer shows

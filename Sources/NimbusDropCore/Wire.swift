@@ -36,7 +36,7 @@ func errnoError(_ what: String) -> DropError {
 /// wire. It does not read, answer or recognise protocol 2 (decided 2026-11-22: it ran on four
 /// Macs, all the owner's).
 public let protocolVersion = 3
-public let protocolMinor = 0
+public let protocolMinor = 1
 
 /// "3.0".
 public var protocolVersionText: String { "\(protocolVersion).\(protocolMinor)" }
@@ -70,6 +70,12 @@ enum Tuning {
     nonisolated(unsafe) static var arrivalsPerAddress = 200
     /// Of `unattachedPerDrop`, from one address.
     nonisolated(unsafe) static var unattachedPerAddress = 4
+    /// Tests only: how long a pairing this Mac starts waits before it connects, as a slow
+    /// machine would.
+    nonisolated(unsafe) static var pairDialDelay: Double = 0
+    /// After a speed test from a key is answered (run, or declined): no other from that key
+    /// for this long.
+    nonisolated(unsafe) static var speedPauseSeconds: Double = 10
     /// Connections from one paired key that have not yet said what they came for.
     nonisolated(unsafe) static var pairedWaiting = 8
     /// Offers waiting for the person's answer at once, in all and from one address; more are
@@ -172,6 +178,31 @@ final class Socket: @unchecked Sendable {
     func waitReadable(milliseconds: Int32) -> Bool {
         var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         return poll(&p, 1, milliseconds) > 0
+    }
+
+    /// The name of this Mac's interface the connection leaves by ("en0", "bridge0"), found
+    /// by the local address it has. Nil when it cannot be told.
+    var localInterface: String? {
+        var storage = sockaddr_storage()
+        var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        guard withUnsafeMutablePointer(to: &storage, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) } }) == 0 else { return nil }
+        func text(_ sa: UnsafePointer<sockaddr>, _ n: socklen_t) -> String? {
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(sa, n, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
+            // "fe80::1%en0" and "::ffff:192.168.1.5" both come down to the address itself.
+            return String(cString: host).split(separator: "%").first.map { $0.replacingOccurrences(of: "::ffff:", with: "") }
+        }
+        guard let mine = withUnsafePointer(to: &storage, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { text($0, len) } }) else { return nil }
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0 else { return nil }
+        defer { freeifaddrs(list) }
+        var next = list
+        while let ifa = next {
+            next = ifa.pointee.ifa_next
+            guard let sa = ifa.pointee.ifa_addr, sa.pointee.sa_family == sa_family_t(AF_INET) || sa.pointee.sa_family == sa_family_t(AF_INET6) else { continue }
+            if text(sa, socklen_t(sa.pointee.sa_len)) == mine { return String(cString: ifa.pointee.ifa_name) }
+        }
+        return nil
     }
 
     /// The other end's address, numeric, without a port.
@@ -314,6 +345,7 @@ enum FrameType: UInt8 {
     case offer = 1, accept, decline, manifest, plan, done, complete, error, hello, resume, resumed
     case pairRequest = 32, pairGo, commit, nonce, reveal, paired, pairFailed, busy
     case retire = 48, retired
+    case speed = 64, speedGo, speedUpDone, speedCount, speedDown, speedDone
 }
 
 func decode<T: Decodable>(_ type: T.Type, from body: Data) throws -> T {

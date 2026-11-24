@@ -148,19 +148,163 @@ TLA_RUNS = [
      ("Drop.tla", "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Reconnect \\/ Refused",
       "Protocol == SPlan \\/ SComplete \\/ Open \\/ SNotice \\/ SDone \\/ SLost \\/ RDone \\/ RLost \\/ Refused")),
 
-    # ---- Admission: which connection gets a place, and which gives way (one block; see ADMISSION below) ----
+]
+
+# ---- Admission: which connection has a place at the listener, and which gives way (one block) ------------
+# Admission.tla is Admission.swift: AdmissionRefinement holds the two equal, both ways, at the two sets of
+# limits the Swift was walked at. AdmissionSystem.tla is a listener that asks that machine, one honest
+# paired Mac that is watched, and everyone else: any number of connections, from anywhere, as slow as they
+# like. Every run is bounded by the limits written here (a pool of three, a rate of four; the listener
+# runs at 64, 8, 500 and 200), and is bounded checking, not proof.
+
+ADMISSION_INV = ["TypeOK", "PoolsWithinLimits", "TheRateHolds", "EveryPlaceIsHeldByItsConnection", "AnAddressDecidesOnlyWhoWaits",
+                 "ANewcomerWithinTheRateGetsAPlace", "OverTheRateTheNewcomerIsClosed", "TheOldestGivesWay", "ElsewhereCountsForNothing",
+                 "NoDropNoPlace", "AKeysPlacesAreItsOwn", "ARetiredKeyGetsNothing", "OneThatGaveWayGetsNothingMore",
+                 "GivesWayOnlyAfterAPoolOfNewcomers", "KeptOutByTheRateOnlyOnItsOwnAccount", "APairedMacIsNotTurnedAwayForOthers"]
+
+
+def admission(**changes):
+    """The pools: three places for strangers and two an address; a place for a data connection for each drop
+    in progress, of which there are none, one or two; one connection from a key nobody paired and one from
+    each of two paired keys; an address that is not on the local network. No rate to speak of. Anyone may
+    arrive from the watched Mac's own address."""
+    c = {"Addresses": '{"h", "x", "far"}', "Outside": '{"far"}', "Honest": '"h"', "Keys": '{"kh", "kx"}', "HonestKey": '"kh"',
+         "Strangers": "3", "StrangersPerAddress": "2", "Arrivals": "1", "ArrivalsPerAddress": "1", "Window": "0", "Gaps": "{1}",
+         "UnattachedPerDrop": "1", "UnattachedPerAddress": "1", "Unpaired": "1", "PairedWaiting": "1", "Drops": "{0, 1, 2}",
+         "Alone": "FALSE", "Quick": "FALSE", "SetBack": "0"}
+    c.update(changes)
+    return c
+
+
+def admission_rate(**changes):
+    """The rate: four arrivals in a window of one tick and two from one address; a clock that moves by
+    nothing, one tick or two between arrivals; one other address. One place of each kind."""
+    return admission(**{**{"Addresses": '{"h", "x"}', "Outside": "{}", "Keys": '{"kh"}', "Strangers": "1", "StrangersPerAddress": "1",
+                           "Arrivals": "4", "ArrivalsPerAddress": "2", "Window": "1", "Gaps": "{0, 1, 2}", "Drops": "{0, 1}"}, **changes})
+
+
+def admission_mutant(what, invariant, old, new, constants=None):
+    """The machine with one guard changed (in Admission.tla, which the Swift is held equal to): the system
+    must fail on the property named, and that property alone is checked."""
+    return (f"AdmissionSystem / mutant: {what}", "AdmissionSystem", constants or admission(), [invariant], [], invariant,
+            ("Admission.tla", old, new))
+
+
+RATED = "IN IF Len(recent) >= Arrivals \\/ From(recent, e[2]) >= ArrivalsPerAddress"
+FULL = "ELSE IF Len(pool) > 0 /\\ Len(pool) >= limit THEN 1"
+OWN = "THEN CHOOSE i \\in 1..Len(pool): pool[i] = a /\\ \\A j \\in 1..(i - 1): pool[j] # a"
+
+ADMISSION_RUNS = [
     # The Swift machine is the specification's machine, at the two sets of limits it was walked at.
     ("AdmissionRefinement (the Swift code is Step: three places and two an address, two keys)", "AdmissionRefinement",
      {"Walk": '"Pools"'}, ["SpecIsImpl"], [], HOLDS, None),
     ("AdmissionRefinement (the Swift code is Step: three arrivals a window and two an address, a clock that moves)", "AdmissionRefinement",
      {"Walk": '"Rate"'}, ["SpecIsImpl"], [], HOLDS, None),
     ("AdmissionRefinement / mutant: the specification differs from the code (an address at its limit pushes out the oldest of all)",
-     "AdmissionRefinement", {"Walk": '"Pools"'}, ["SpecIsImpl"], [], "ImplIsSpec",
-     ("Admission.tla", "THEN CHOOSE i \\in 1..Len(pool): pool[i] = a /\\ \\A j \\in 1..(i - 1): pool[j] # a", "THEN 1")),
+     "AdmissionRefinement", {"Walk": '"Pools"'}, ["SpecIsImpl"], [], "ImplIsSpec", ("Admission.tla", OWN, "THEN 1")),
     ("AdmissionRefinement / mutant: the specification differs from the code (an arrival counts for a tick longer)",
      "AdmissionRefinement", {"Walk": '"Rate"'}, ["SpecIsImpl"], [], "ImplIsSpec",
      ("Admission.tla", "StillCounts(x) == x.age <= Window", "StillCounts(x) == x.age <= Window + 1")),
+
+    # The listener, the machine, one honest paired Mac and everyone else.
+    ("AdmissionSystem (the pools)", "AdmissionSystem", admission(), ADMISSION_INV, [], HOLDS, None),
+    ("AdmissionSystem (the pools; nobody else at the watched Mac's address)", "AdmissionSystem", admission(Alone="TRUE"), ADMISSION_INV, [], HOLDS, None),
+    ("AdmissionSystem (the rate)", "AdmissionSystem", admission_rate(), ADMISSION_INV + ["NotKeptOutByOthers"], [], HOLDS, None),
+    ("AdmissionSystem (the rate; two other addresses, which can fill it between them)", "AdmissionSystem",
+     admission_rate(Addresses='{"h", "x", "y"}'), ADMISSION_INV, [], HOLDS, None),
+    # The strongest thing that is true of an honest Mac's place among those that have proved nothing: it is
+    # lost only when as many were given places after it as the pool holds (or as an address may hold, from
+    # its own address). So one that moves on before that is never pushed out; and at exactly that many, it is.
+    ("AdmissionSystem (a Mac that moves on before a pool's worth of newcomers is never pushed out)", "AdmissionSystem",
+     admission(Quick="TRUE"), ADMISSION_INV + ["TheWatchedMacIsNeverPushedOut"], [], HOLDS, None),
+    ("AdmissionSystem / known limit: a pool's worth of newcomers pushes out a Mac that has not yet proved its key", "AdmissionSystem",
+     admission(), ["TheWatchedMacIsNeverPushedOut"], [], "TheWatchedMacIsNeverPushedOut", None),
+    # What is NOT true, each with the run that shows it. CLAUDE.md: "Not claimed: that a flood from many
+    # addresses cannot stop a drop."
+    ("AdmissionSystem / known limit: as many addresses as can fill the rate between them keep a Mac out (three, at 200 of the 500 a second)",
+     "AdmissionSystem", admission_rate(Addresses='{"h", "x", "y"}'), ["NotKeptOutByOthers"], [], "NotKeptOutByOthers", None),
+    ("AdmissionSystem / known limit: keys nobody paired, holding on, keep the next one out (there the newcomer is the one refused)",
+     "AdmissionSystem", admission(), ["AKeyNobodyPairedIsNeverTurnedAway"], [], "AKeyNobodyPairedIsNeverTurnedAway", None),
+    ("AdmissionSystem / known limit: on a clock that can be set back a Mac within the rate is turned away (the calendar, which the listener read)",
+     "AdmissionSystem", admission_rate(SetBack="1"), ["ANewcomerWithinTheRateGetsAPlace"], [], "ANewcomerWithinTheRateGetsAPlace", None),
+    # Found by this model, 2026-11-24: the pool of data connections has so many places for each drop in
+    # progress, and when a drop ended nobody gave any up.
+    ("AdmissionSystem / found: the pool of data connections is over its limit when a drop ends", "AdmissionSystem",
+     admission(), ["UnattachedWithinItsLimit"], [], "UnattachedWithinItsLimit", None),
+    # The good outcome is reachable: an invariant that says it never happens, which must be violated.
+    ("AdmissionSystem / reachable: the watched Mac proves its key and says what it came for", "AdmissionSystem",
+     admission(), ["TheWatchedMacNeverSaysWhatItCameFor"], [], "TheWatchedMacNeverSaysWhatItCameFor", None),
+    ("AdmissionSystem / reachable: the watched Mac's data connection attaches to its drop", "AdmissionSystem",
+     admission(), ["TheWatchedMacNeverAttaches"], [], "TheWatchedMacNeverAttaches", None),
+
+    admission_mutant("a full pool turns the newcomer away (the listener before F1: 64 silent connections kept every paired Mac out)",
+                     "ANewcomerWithinTheRateGetsAPlace", RATED, RATED + " \\/ GivesWay(s.strangers, e[2], Strangers, StrangersPerAddress) # 0"),
+    admission_mutant("a pool has no size", "PoolsWithinLimits", FULL, "ELSE IF FALSE THEN 1"),
+    admission_mutant("one address may hold every place", "PoolsWithinLimits", "IF Count(pool, a) > 0 /\\ Count(pool, a) >= perAddress", "IF FALSE"),
+    admission_mutant("a full pool closes its newest, not its oldest", "TheOldestGivesWay", FULL, FULL[:-1] + "Len(pool)"),
+    admission_mutant("an address at its limit loses its newest, not its oldest", "TheOldestGivesWay", OWN,
+                     "THEN CHOOSE i \\in 1..Len(pool): pool[i] = a /\\ \\A j \\in (i + 1)..Len(pool): pool[j] # a"),
+    admission_mutant("an address at its limit pushes out the oldest of all, not its own", "TheOldestGivesWay", OWN, "THEN 1"),
+    admission_mutant("an address at its limit pushes out the oldest of all, who then loses its place to fewer newcomers than the pool holds",
+                     "GivesWayOnlyAfterAPoolOfNewcomers", OWN, "THEN 1", admission(Strangers="4")),
+    admission_mutant("a pool gives up a place one newcomer early", "GivesWayOnlyAfterAPoolOfNewcomers", FULL,
+                     "ELSE IF Len(pool) > 0 /\\ Len(pool) + 1 >= limit THEN 1"),
+    admission_mutant("a pool gives up a place one newcomer early, and a Mac that was quick enough is pushed out", "TheWatchedMacIsNeverPushedOut", FULL,
+                     "ELSE IF Len(pool) > 0 /\\ Len(pool) + 1 >= limit THEN 1", admission(Quick="TRUE")),
+    # (With one other address the two cannot arrive more often between them than the rate allows, and the
+    # rate for all decides nothing: a run at those limits passed with it removed. So: two others.)
+    admission_mutant("arrivals are not rationed", "TheRateHolds", RATED, "IN IF From(recent, e[2]) >= ArrivalsPerAddress",
+                     admission_rate(Addresses='{"h", "x", "y"}')),
+    admission_mutant("arrivals from one address are not rationed", "OverTheRateTheNewcomerIsClosed", RATED, "IN IF Len(recent) >= Arrivals",
+                     admission_rate()),
+    admission_mutant("one address's arrivals count against every address", "KeptOutByTheRateOnlyOnItsOwnAccount", RATED,
+                     "IN IF Len(recent) >= ArrivalsPerAddress", admission_rate()),
+    admission_mutant("one address's arrivals count against every address, and a Mac that has not arrived in the window is kept out", "NotKeptOutByOthers",
+                     RATED, "IN IF Len(recent) >= ArrivalsPerAddress", admission_rate()),
+    admission_mutant("an arrival counts for a tick longer", "ANewcomerWithinTheRateGetsAPlace", "StillCounts(x) == x.age <= Window",
+                     "StillCounts(x) == x.age <= Window + 1", admission_rate()),
+    admission_mutant("an arrival is forgotten a tick early", "TheRateHolds", "StillCounts(x) == x.age <= Window", "StillCounts(x) == x.age < Window",
+                     admission_rate()),
+    admission_mutant("a connection from elsewhere is given a place", "ElsewhereCountsForNothing", 'IF e[3] # "local" THEN Close(s, "elsewhere")',
+                     'IF FALSE THEN Close(s, "elsewhere")'),
+    admission_mutant("a data connection gets a place with no drop in progress", "NoDropNoPlace", 'IN IF e[3] = 0 THEN Close(t, "noDrop")',
+                     'IN IF FALSE THEN Close(t, "noDrop")'),
+    admission_mutant("a connection that proved a key keeps its place among the strangers (and could be the one that gives way)",
+                     "EveryPlaceIsHeldByItsConnection",
+                     'ELSE LET t == [s EXCEPT !.strangers = Remove(@, who[2])]\n             IN IF e[3] \\in {"mine", "retired"}',
+                     'ELSE LET t == s\n             IN IF e[3] \\in {"mine", "retired"}'),
+    admission_mutant("keys nobody paired are not counted", "PoolsWithinLimits", "IF s.unpaired < Unpaired THEN", "IF TRUE THEN"),
+    admission_mutant("a paired key that has asked for nothing is not counted", "PoolsWithinLimits", "IF s.waiting[e[3]] < PairedWaiting THEN", "IF TRUE THEN"),
+    admission_mutant("paired keys share one count", "AKeysPlacesAreItsOwn", "IF s.waiting[e[3]] < PairedWaiting THEN",
+                     "IF Cardinality({k \\in Keys: s.waiting[k] > 0}) < PairedWaiting THEN"),
+    admission_mutant("paired keys share one count, and the watched Mac is turned away for what another key has waiting", "APairedMacIsNotTurnedAwayForOthers",
+                     "IF s.waiting[e[3]] < PairedWaiting THEN", "IF Cardinality({k \\in Keys: s.waiting[k] > 0}) < PairedWaiting THEN"),
+    admission_mutant("where a key comes from decides whether it is counted (an address deciding more than who waits)", "AnAddressDecidesOnlyWhoWaits",
+                     "IF s.unpaired < Unpaired THEN", "IF s.unpaired < Unpaired /\\ Count(t.strangers, s.strangers[who[2]]) = 0 THEN"),
+    admission_mutant("a key nobody paired stops being counted when it asks to pair", "EveryPlaceIsHeldByItsConnection",
+                     'IF who[1] = "waiting" THEN Noted([s EXCEPT !.waiting[who[2]] = @ - 1])\n        ELSE Noted(s)\n    ELSE \\* closed',
+                     'IF who[1] = "waiting" THEN Noted([s EXCEPT !.waiting[who[2]] = @ - 1])\n        ELSE IF who[1] = "unpaired" THEN '
+                     'Noted([s EXCEPT !.unpaired = @ - 1])\n        ELSE Noted(s)\n    ELSE \\* closed'),
+    admission_mutant("a paired key is counted after it has said what it came for", "EveryPlaceIsHeldByItsConnection",
+                     'ELSE IF e[1] = "purpose" THEN\n        IF who[1] = "waiting" THEN', 'ELSE IF e[1] = "purpose" THEN\n        IF FALSE THEN'),
+    admission_mutant("a stranger that has gone still holds its place (a count that is never given back)", "EveryPlaceIsHeldByItsConnection",
+                     'given back\n        IF who[1] = "stranger" THEN', 'given back\n        IF FALSE THEN'),
+    admission_mutant("a key nobody paired is still counted when its connection has gone", "EveryPlaceIsHeldByItsConnection",
+                     'ELSE IF who[1] = "unpaired" THEN Noted(', 'ELSE IF FALSE THEN Noted('),
+    admission_mutant("an attached data connection goes on holding its place", "EveryPlaceIsHeldByItsConnection",
+                     'ELSE IF e[1] = "attached" THEN\n        IF who[1] = "unattached" THEN', 'ELSE IF e[1] = "attached" THEN\n        IF FALSE THEN'),
+    admission_mutant("a connection that gave way is told it has a place", "OneThatGaveWayGetsNothingMore",
+                     'IF who[1] # "stranger" THEN Close(s, "gone")\n        ELSE LET t == [s EXCEPT !.strangers = Remove(@, who[2])]\n             IN IF e[3] = 0',
+                     'IF who[1] # "stranger" THEN << s, << "moved", 0 >> >>\n        ELSE LET t == [s EXCEPT !.strangers = Remove(@, who[2])]\n'
+                     '             IN IF e[3] = 0'),
+    admission_mutant("a retired key is given a place", "ARetiredKeyGetsNothing", 'IN IF e[3] \\in {"mine", "retired"} THEN Close(t, e[3])',
+                     'IN IF e[3] = "mine" THEN Close(t, e[3])\n                ELSE IF e[3] = "retired" THEN '
+                     '<< [t EXCEPT !.unpaired = @ + 1], << "moved", 0 >> >>'),
 ]
+
+TLA_RUNS += ADMISSION_RUNS
+# ---- end of Admission ---------------------------------------------------------------------------------------
+
 
 
 def run_tlc(java, jar, name, module, constants, invariants, properties, expected, mutation):

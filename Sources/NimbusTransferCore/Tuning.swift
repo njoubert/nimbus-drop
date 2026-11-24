@@ -41,6 +41,14 @@ extension Tuning {
     package nonisolated(unsafe) static var pendingOffersPerAddress = 2
     /// Connections that have completed a handshake with a key nobody here has paired, at once.
     package nonisolated(unsafe) static var unpaired = 8
+    /// Of which from one address. Anyone can make a key, so this pool is kept as the pool of
+    /// connections that have proved nothing is: at either limit the oldest that has asked for
+    /// nothing gives way to the newcomer. Two is what one Mac needs (a pairing can only be one
+    /// at a time, and a second connection may be asking who is here); four addresses would be
+    /// needed to hold every place, and even then the one that has waited longest gives way.
+    /// A connection whose request to pair has been read keeps its place for as long as it
+    /// lasts, so this is also the most requests one address can have waiting for a person.
+    package nonisolated(unsafe) static var unpairedPerAddress = 2
     /// New connections taken per second, whoever they are from. A handshake costs this Mac a
     /// key generation and two key agreements, about a seventh of a millisecond: this many a
     /// second is under a tenth of one core. (It was 50 at first, and a test showed fifty
@@ -65,4 +73,8 @@ extension Tuning {
     /// seconds to encode before the first byte of it went (a debug build, 2026-11-24). It is a
     /// limit on silence, not on the whole: a manifest that keeps coming is waited for.
     package nonisolated(unsafe) static var manifestSeconds: Double = 60
+    /// How long a finished drop's answer is kept, with the one key of the drop that is still
+    /// needed (to know that whoever asks "did it arrive?" is its sender), for a sender whose
+    /// connection was lost before it heard. After that, neither is here any more.
+    package nonisolated(unsafe) static var completedSeconds: Double = 300
 }

@@ -169,6 +169,41 @@ package final class SafeTree {
         fchmodat(fd, name, mode, AT_SYMLINK_NOFOLLOW)
     }
 
+    /// Moves the top-level item `item` out of the tree into `folder` (an open directory: the
+    /// destination) under `name`, replacing nothing: false when something there has that
+    /// name already, whatever it is (a link to nowhere included). The name is asked for by
+    /// taking it. Asking first and moving after left a gap in which two drops finishing
+    /// together both saw a name free, and the second `rename` replaced the first one's file.
+    ///
+    /// Both ends go by descriptor. The item is taken from the root this tree has held open
+    /// since the drop began, not from wherever a path to it leads by now: with `items` moved
+    /// aside mid-drop and a link to another folder put in its place, a move by path took that
+    /// other folder's things.
+    package func place(_ item: String, in folder: Int32, as name: String) throws -> Bool {
+        guard Self.isOneName(item), Self.isOneName(name) else { throw DropError("\(Sanitize.label(item, limit: 120)) cannot be put in place under that name") }
+        if renameatx_np(root, item, folder, name, UInt32(RENAME_EXCL)) == 0 { return true }
+        if errno == EEXIST { return false }
+        guard errno == ENOTSUP else { throw errnoError("Cannot move \(item) into place") }
+        // A volume that cannot refuse and move in one step (exFAT and MS-DOS volumes say so;
+        // checked on exFAT, 2026-11-24): look, then move. The gap is back there, and only there.
+        var st = stat()
+        if fstatat(folder, name, &st, AT_SYMLINK_NOFOLLOW) == 0 { return false }
+        guard errno == ENOENT, renameat(root, item, folder, name) == 0 else { throw errnoError("Cannot move \(item) into place") }
+        return true
+    }
+
+    /// Whether `url` still names the folder this tree's root is in, and not something that
+    /// has been given that folder's name since the drop began.
+    package func isHeld(at url: URL) -> Bool {
+        var mine = stat(), there = stat()
+        return fstat(holder, &mine) == 0 && lstat(url.path, &there) == 0 && mine.st_dev == there.st_dev && mine.st_ino == there.st_ino
+    }
+
+    /// One component, and neither of the two that mean somewhere else.
+    private static func isOneName(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".." && !name.utf8.contains(UInt8(ascii: "/")) && !name.utf8.contains(0)
+    }
+
     /// Lets go of the cached directory (before the tree is moved).
     package func release() {
         if cachedFD >= 0 { close(cachedFD) }

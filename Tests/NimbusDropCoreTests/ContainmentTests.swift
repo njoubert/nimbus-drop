@@ -977,3 +977,154 @@ extension ContainmentTests {
         XCTAssertEqual(try Data(contentsOf: documents.appendingPathComponent("secret.txt")), Data("secret".utf8))
     }
 }
+
+// MARK: - Putting a drop in place: a name is asked for by taking it
+
+extension ContainmentTests {
+    /// Another Mac the victim has paired with.
+    func paired(_ name: String) throws -> TestMac {
+        let trust = Trust.inMemory()
+        trust.adopt(victim.trust, as: "victim")
+        victim.trust.adopt(trust, as: name)
+        return try TestMac(name, trust: trust)
+    }
+
+    /// The destination has a link to nowhere under the name the drop brings. As found, the
+    /// name was taken for free (`fileExists` follows a link, and this one leads nowhere) and
+    /// `rename` then replaced the link.
+    func testALinkToNowhereUnderTheNameIsKept() throws {
+        let fm = FileManager.default
+        try fm.createSymbolicLink(atPath: dst.appendingPathComponent("note.txt").path, withDestinationPath: "/nonexistent/elsewhere")
+        try fm.createSymbolicLink(atPath: dst.appendingPathComponent("Album").path, withDestinationPath: "not-there")
+        let contents = ["note.txt": bytes(50, seed: 1), "Album/a.jpg": bytes(60, seed: 2)]
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "note.txt", kind: .file, size: 50), .init(path: "Album", kind: .directory),
+                                                            .init(path: "Album/a.jpg", kind: .file, size: 60)])
+        let before = snapshot()
+        let reply = try deliver(try Hand(manifest, from: mallory, to: victim), contents)
+        XCTAssertEqual(try ended().state, .completed)
+        assertContained(before, snapshot(), allowing: [allowed(manifest, from: mallory, contents: contents)])
+        XCTAssertEqual(try decode(Complete.self, from: reply.body).saved, ["note 2.txt", "Album 2"])
+    }
+
+    /// Two drops from two Macs bring the same names (files, a folder with something in it, an
+    /// empty folder) and both finish at the same moment. Each name is there twice afterwards,
+    /// once from each. As found, both could see a name free and both `rename` onto it: the
+    /// second replaced the first one's file (and its empty folder), and failed on its full one.
+    func testTwoDropsFinishingAtOnceUnderTheSameNamesBothArrive() throws {
+        let holly = try paired("holly")
+        let rounds = 6, files = 48
+        let before = snapshot()
+        var allowing: [Allowed] = [], expected: [(name: String, isDirectory: Bool, hashes: Set<String>)] = []
+        for round in 0..<rounds {
+            var hands: [Hand] = [], sent: [[String: Data]] = []
+            for (who, mac) in [mallory!, holly].enumerated() {
+                var entries: [Manifest.Entry] = [], contents: [String: Data] = [:]
+                // The second Mac lists the same names the other way round: an item is put in
+                // place in the manifest's order, so somewhere in the middle the two reach for
+                // the same name at the same time.
+                for f in who == 0 ? Array(0..<files) : Array((0..<files).reversed()) {
+                    contents["r\(round)-f\(f).bin"] = bytes(200 + f, seed: UInt8(who * 100 + f))
+                    entries.append(.init(path: "r\(round)-f\(f).bin", kind: .file, size: Int64(200 + f)))
+                }
+                contents["r\(round)-Folder/in.txt"] = bytes(300, seed: UInt8(who + 7))
+                let folders: [Manifest.Entry] = [.init(path: "r\(round)-Folder", kind: .directory), .init(path: "r\(round)-Folder/in.txt", kind: .file, size: 300),
+                                                 .init(path: "r\(round)-Empty", kind: .directory)]
+                entries.insert(contentsOf: folders, at: files / 2)
+                let manifest = Manifest(chunkSize: chunk, entries: entries)
+                let hand = try Hand(manifest, from: mac, to: victim)
+                XCTAssertTrue(hand.planned, hand.refusal ?? "")
+                // Everything but the last word.
+                try hand.stream(manifest.entries.enumerated().filter { $0.element.kind == .file }.flatMap { hand.chunks(of: $0.offset, contents[$0.element.path]!) })
+                hands.append(hand)
+                sent.append(contents)
+                allowing.append(allowed(manifest, from: mac, contents: contents))
+            }
+            for name in sent[0].keys.sorted() where !name.contains("/") { expected.append((name, false, [Self.sha(sent[0][name]!), Self.sha(sent[1][name]!)])) }
+            expected += [("r\(round)-Folder", true, []), ("r\(round)-Empty", true, [])]
+
+            let go = DispatchSemaphore(value: 0), over = DispatchGroup()
+            let replies = Locked<[UInt8]>([])
+            for hand in hands {
+                over.enter()
+                Thread.detachNewThread {
+                    go.wait()
+                    let reply = try? hand.done()
+                    replies.withLock { $0.append(reply?.type ?? 0) }
+                    over.leave()
+                }
+            }
+            go.signal()
+            go.signal()
+            over.wait()
+            XCTAssertEqual(replies.withLock { $0 }, [FrameType.complete.rawValue, FrameType.complete.rawValue], "round \(round): one of the two was not put in place")
+            XCTAssertTrue(until(15) { victim.offers.withLock { $0.allSatisfy { $0.state.isFinal } } })
+            for hand in hands { hand.hangUp() }
+        }
+        let after = snapshot()
+        assertContained(before, after, allowing: allowing)
+        var lost = 0
+        for (name, isDirectory, hashes) in expected {
+            let second = Naming.unique(name, isDirectory: isDirectory) { $0 == name }
+            guard let one = after["\(Self.inside)/\(name)"], let other = after["\(Self.inside)/\(second)"] else { lost += 1; continue }
+            if !isDirectory, Set([one.hash, other.hash]) != hashes { lost += 1 }
+        }
+        XCTAssertEqual(lost, 0, "of \(expected.count) names brought twice, \(lost) are not there twice, once from each Mac")
+    }
+
+    /// While a drop is arriving, its `items` folder is moved aside and a link to a folder
+    /// elsewhere put in its place; that folder has things of its own under the names the
+    /// drop brings. As found, the drop was put in place by path (`…/items/Taxes`), through the
+    /// link: the other folder's `Taxes` and `secret.txt` were moved into the destination, and
+    /// what had actually arrived was deleted with the partial folder.
+    func testAnItemsFolderSwappedForALinkBringsNothingInFromOutside() throws {
+        let contents = ["Taxes/a.bin": bytes(chunk + 5, seed: 1), "secret.txt": bytes(40, seed: 2)]
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "Taxes", kind: .directory), .init(path: "Taxes/a.bin", kind: .file, size: Int64(chunk + 5)),
+                                                            .init(path: "secret.txt", kind: .file, size: 40)])
+        let allow = allowed(manifest, from: mallory, contents: contents)
+        let hand = try Hand(manifest, from: mallory, to: victim)
+        XCTAssertTrue(hand.planned, hand.refusal ?? "")
+        let partial = dst.appendingPathComponent(allow.partial)
+        try FileManager.default.moveItem(at: partial.appendingPathComponent("items"), to: partial.appendingPathComponent("aside"))
+        try FileManager.default.createSymbolicLink(atPath: partial.appendingPathComponent("items").path, withDestinationPath: documents.path)
+        let before = snapshot()
+        XCTAssertEqual(try deliver(hand, contents).type, FrameType.complete.rawValue)
+        XCTAssertEqual(try ended().state, .completed)
+        // (The partial folder is the local actor's own doing here, and goes with the drop.)
+        assertContained(before, snapshot(), allowing: [allow], ignoring: ["\(Self.inside)/\(allow.partial)"])
+        XCTAssertEqual(try Data(contentsOf: dst.appendingPathComponent("Taxes/a.bin")), contents["Taxes/a.bin"], "what was put in place is what arrived")
+    }
+
+    /// While a drop is arriving, its partial folder is moved aside and a folder the person
+    /// already had is given its name. The drop is put in place from the folder it was built
+    /// in; what now has that folder's name is not the drop's to clear away.
+    func testWhatStandsWhereThePartialFolderWasIsNotClearedAway() throws {
+        let contents = ["P/a.bin": bytes(chunk + 5, seed: 1)]
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "P", kind: .directory), .init(path: "P/a.bin", kind: .file, size: Int64(chunk + 5))])
+        let allow = allowed(manifest, from: mallory, contents: contents)
+        let hand = try Hand(manifest, from: mallory, to: victim)
+        XCTAssertTrue(hand.planned, hand.refusal ?? "")
+        let partial = dst.appendingPathComponent(allow.partial)
+        try FileManager.default.moveItem(at: partial, to: dst.appendingPathComponent("aside"))
+        try FileManager.default.moveItem(at: dst.appendingPathComponent("Mine"), to: partial)
+        let before = snapshot()
+        _ = try? deliver(hand, contents)
+        try ended()
+        let after = snapshot()
+        assertContained(before, after, allowing: [allow], ignoring: ["\(Self.inside)/aside"])
+        XCTAssertEqual(after["\(Self.inside)/\(allow.partial)/kept.txt"]?.hash, Self.sha(Data("kept".utf8)), "the person's own file went with the partial folder's name")
+    }
+
+    /// A destination that can be written to and not read (a drop box): a drop still lands in it.
+    func testADestinationThatCannotBeReadStillTakesADrop() throws {
+        let contents = ["note.txt": bytes(50, seed: 1)]
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "note.txt", kind: .file, size: 50)])
+        let before = snapshot()
+        chmod(dst.path, 0o300)
+        defer { chmod(dst.path, 0o755) }
+        let reply = try deliver(try Hand(manifest, from: mallory, to: victim), contents)
+        XCTAssertEqual(reply.type, FrameType.complete.rawValue, (try? decode(Reason.self, from: reply.body).message) ?? "")
+        XCTAssertEqual(try ended().state, .completed)
+        chmod(dst.path, 0o755)
+        assertContained(before, snapshot(), allowing: [allowed(manifest, from: mallory, contents: contents)])
+    }
+}

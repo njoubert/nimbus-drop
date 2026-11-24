@@ -64,9 +64,33 @@ package final class SafeTree {
         return (String(path[..<slash]), String(path[path.index(after: slash)...]))
     }
 
+    /// Whether every part of `path` is a name: not empty, not "." or "..", and with no NUL in
+    /// it (so the path is not absolute, and does not end in a slash, either).
+    ///
+    /// `Manifest.validate` refuses the same text before a drop begins, and for these paths it
+    /// was the only gate: ".." is a real folder, which no refusal to follow symlinks minds, so
+    /// a tree asked for `../x` made `x` outside itself. The tree does not rely on being asked
+    /// only for what was checked elsewhere. (One pass over the bytes; nothing is allocated.)
+    private static func isInside(_ path: String) -> Bool {
+        var length = 0, dots = 0
+        for byte in path.utf8 {
+            if byte == 0 { return false }
+            if byte == UInt8(ascii: "/") {
+                if length == 0 || (dots == length && length <= 2) { return false }
+                length = 0
+                dots = 0
+            } else {
+                length += 1
+                if byte == UInt8(ascii: ".") { dots += 1 }
+            }
+        }
+        return length > 0 && !(dots == length && length <= 2)
+    }
+
     /// The directory holding `path`, opened without following a symlink anywhere on the way.
     /// The descriptor belongs to the tree; do not close it.
     private func parent(of path: String) throws -> (fd: Int32, name: String) {
+        guard Self.isInside(path) else { throw DropError("\(Sanitize.label(path, limit: 120)) is not a path inside the drop; the drop was refused") }
         let (dir, name) = Self.split(path)
         if dir.isEmpty { return (root, name) }
         if dir == cachedPath { return (cachedFD, name) }
@@ -167,7 +191,7 @@ package final class SafeTree {
     /// Like a file of the tree it is never a symlink, and never anything but an ordinary file
     /// with one name: what is written to it goes nowhere else. The caller closes the descriptor.
     package func openBeside(_ name: String) throws -> Int32 {
-        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else { throw DropError("\(name) is not a file beside the drop") }
+        guard Self.isOneName(name) else { throw DropError("\(Sanitize.label(name, limit: 120)) is not a file beside the drop") }
         let fd = openat(holder, name, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
         guard fd >= 0 else {
             throw errno == ELOOP ? DropError("The resume ledger is a link; the drop was refused") : errnoError("Cannot open the resume ledger")
@@ -250,9 +274,7 @@ package final class SafeTree {
     }
 
     /// One component, and neither of the two that mean somewhere else.
-    private static func isOneName(_ name: String) -> Bool {
-        !name.isEmpty && name != "." && name != ".." && !name.utf8.contains(UInt8(ascii: "/")) && !name.utf8.contains(0)
-    }
+    private static func isOneName(_ name: String) -> Bool { isInside(name) && !name.utf8.contains(UInt8(ascii: "/")) }
 
     /// Lets go of the cached directory (before the tree is moved).
     package func release() {

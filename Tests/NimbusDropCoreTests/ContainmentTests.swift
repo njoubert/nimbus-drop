@@ -1290,3 +1290,45 @@ extension ContainmentTests {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).count, pairs.count * 3, "one thing for each first name and nothing for the second")
     }
 }
+
+// MARK: - The tree by itself, asked for paths no manifest may hold
+
+extension ContainmentTests {
+    /// `Manifest.validate` refuses a path that climbs, stands still, is empty in part or holds
+    /// a NUL, before a drop begins. `SafeTree` is the other gate, and was not one for these:
+    /// it walked whatever it was given, and ".." is a real folder that no symlink check
+    /// minds. Asked directly, as found, it made `escape` beside the tree and in the
+    /// destination, opened `Documents/secret.txt` for writing by climbing to it, and set the
+    /// mode of the partial folder and of the destination. Every operation, every such path.
+    func testTheTreeRefusesAPathThatClimbsOrStandsStillOrNamesNothing() throws {
+        let long = String(repeating: "n", count: 256)
+        let root = dst.appendingPathComponent("T.partial/items")
+        let tree = try SafeTree(root: root)
+        try tree.makeDirectory("ok")
+        close(try tree.openFile("ok/file"))
+        let paths = ["..", "../escape", "../../escape", "../ledger", "ok/..", "ok/../..", "ok/../../escape", "ok/../../../../Documents/secret.txt",
+                     "ok/../../../../Documents", "ok/../../../Mine/kept.txt", ".", "./escape", "ok/.", "ok/./file", "", "ok//file", "ok/", "/", "/escape",
+                     "//", root.path + "/ok/file", documents.appendingPathComponent("secret.txt").path, "nul\0byte", "ok/nul\0/x", "ok/file\0", "ok\0/file",
+                     long, "ok/" + long, long + "/x"]
+        let before = snapshot()
+        for path in paths {
+            let what = path.debugDescription
+            XCTAssertThrowsError(try { close(try tree.openFile(path)) }(), "openFile \(what)")
+            XCTAssertThrowsError(try tree.makeDirectory(path), "makeDirectory \(what)")
+            XCTAssertThrowsError(try tree.makeSymlink(path, to: "ok"), "makeSymlink \(what)")
+            XCTAssertThrowsError(try tree.finish(path, mtime: 86400, mode: 0o777), "finish \(what)")
+            XCTAssertThrowsError(try tree.finish(path, directory: true, mtime: 86400, mode: 0o777), "finish \(what) as a folder")
+            XCTAssertNil(tree.fileSize(path), "fileSize \(what)")
+            XCTAssertEqual(before, snapshot(), "an operation on \(what) changed something")
+        }
+        for name in ["..", ".", "", "a/b", "../x", "nul\0"] {
+            XCTAssertThrowsError(try tree.openBeside(name), "openBeside \(name.debugDescription)")
+            XCTAssertThrowsError(try tree.place("ok", in: -1, as: name), "place as \(name.debugDescription)")
+            XCTAssertThrowsError(try tree.place(name, in: -1, as: "ok"), "place \(name.debugDescription)")
+        }
+        XCTAssertEqual(before, snapshot())
+        // Names with dots in them that are names: three dots, a leading dot, a colon, a backslash.
+        for path in ["...", "ok/.hidden", "ok/..two", "ok/a:b", "ok/a\\..\\b", "ok/ ", "ok/~"] { XCTAssertNoThrow(close(try tree.openFile(path)), path) }
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("ok").path)), [".hidden", "..two", "a:b", "a\\..\\b", " ", "~", "file"])
+    }
+}

@@ -58,4 +58,8 @@ extension Tuning {
     package nonisolated(unsafe) static var streamsPerDrop = 64
     /// How long a receiver waits for connections the sender says it opened but that never arrived.
     package nonisolated(unsafe) static var settleSeconds: Double = 1
+    /// How long a finished drop's answer is kept, with the one key of the drop that is still
+    /// needed (to know that whoever asks "did it arrive?" is its sender), for a sender whose
+    /// connection was lost before it heard. After that, neither is here any more.
+    package nonisolated(unsafe) static var completedSeconds: Double = 300
 }

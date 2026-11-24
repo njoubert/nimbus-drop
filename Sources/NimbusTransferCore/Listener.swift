@@ -65,7 +65,11 @@ public final class DropListener: @unchecked Sendable {
     /// Tests only: decides which addresses are let in, in place of the subnet rule.
     var allows: ((String) -> Bool)?
     private var waiting: [(session: ReceiveSession?, key: PublicKey)] = []
-    private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Date)] = [:]
+    /// Drops that finished a moment ago: the answer, the one key of the drop that is still
+    /// needed, whose drop it was, and when (on the clock that cannot be set). See `remember`.
+    private var completed: [Data: (answer: Complete, resumeKey: Data, key: PublicKey, at: Double)] = [:]
+    /// Tests only: how many finished drops' answers (and resume keys) are being kept.
+    var remembered: Int { lock.withLock { completed.count } }
     private var showing: PairingSession?
     /// Requests waiting behind the one on screen.
     private var waitingRequests: [PairingSession] = []
@@ -340,7 +344,7 @@ public final class DropListener: @unchecked Sendable {
             guard let frame = try? channel.read(), frame.type == .resume, let resume = try? decode(Resume.self, from: frame.body) else { socket.shutdown(); return }
             saidWhatItCameFor()
             // A drop that finished while its sender was out of reach: say so again.
-            if let done = lock.withLock({ completed[resume.session] }), done.key == key,
+            if let done = finished(resume.session), done.key == key,
                Crypto.same(resume.proof, DropKeys.resumeProof(done.resumeKey, "resume", h: channel.h)) {
                 try? channel.send(.resumed, Resumed(proof: DropKeys.resumeProof(done.resumeKey, "resumed", h: channel.h)))
                 try? channel.send(.complete, done.answer)
@@ -511,14 +515,34 @@ public final class DropListener: @unchecked Sendable {
 
     // MARK: Sessions
 
-    /// Keeps a finished drop's answer for a few minutes, for a sender whose connection was lost
-    /// before it heard. With it, the one key of the drop that is still needed: the proof that
-    /// whoever asks is that sender.
+    /// Keeps a finished drop's answer for a few minutes (`Tuning.completedSeconds`), for a
+    /// sender whose connection was lost before it heard. With it, the one key of the drop that
+    /// is still needed: the proof that whoever asks is that sender. When the time is up both
+    /// are gone, whether or not anyone asked.
+    ///
+    /// Until 2026-11-24 the time was looked at only here, when another drop finished: a sender
+    /// that asked an hour later was answered, and on a Mac that received nothing else the key
+    /// stayed in memory until the app was quit (an independent review;
+    /// `testAFinishedDropIsNotAnsweredForAfterItsTime`, `testAFinishedDropsKeyIsForgottenWhenItsTimeIsUp`).
     func remember(completed session: Data, _ answer: Complete, resumeKey: Data, key: PublicKey) {
         lock.withLock {
-            let now = Date()
-            completed = completed.filter { now.timeIntervalSince($0.value.at) < 300 }
-            completed[session] = (answer, resumeKey, key, now)
+            forgetFinished()
+            completed[session] = (answer, resumeKey, key, Self.elapsed())
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + Tuning.completedSeconds + 0.5) { [weak self] in self?.lock.withLock { self?.forgetFinished() } }
+    }
+
+    /// With the lock held: the finished drops whose time is up are forgotten.
+    private func forgetFinished() {
+        let now = Self.elapsed()
+        completed = completed.filter { now - $0.value.at < Tuning.completedSeconds }
+    }
+
+    /// A finished drop's answer, if it is still within its time.
+    private func finished(_ session: Data) -> (answer: Complete, resumeKey: Data, key: PublicKey, at: Double)? {
+        lock.withLock {
+            forgetFinished()
+            return completed[session]
         }
     }
 

@@ -81,6 +81,58 @@ extension ReviewTests {
         second.peer.socket.shutdown()
     }
 
+    /// A drop of nothing, finished by hand as its sender; and the sender asking again whether
+    /// it arrived, with the drop's own proof: what comes back.
+    func finishedDrop(from sender: TestMac, to receiver: TestMac) throws -> () -> [UInt8] {
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "note.txt", kind: .file, size: 0)])
+        let p = try RawPeer(port: receiver.port, keys: sender.trust.keyPair)
+        try p.hello(.drop)
+        try p.json(.offer, Offer(items: ["note.txt"], fileCount: 1, totalBytes: 0))
+        guard try p.read().type == FrameType.accept.rawValue else { throw DropError("not accepted") }
+        try p.json(.manifest, manifest)
+        guard try p.read().type == FrameType.plan.rawValue else { throw DropError("no plan") }
+        try p.json(.done, Done(streams: 0, resent: 0))
+        guard try p.read().type == FrameType.complete.rawValue else { throw DropError("not complete") }
+        let keys = DropKeys(master: p.master), port = receiver.port, pair = sender.trust.keyPair
+        return {
+            guard let q = try? RawPeer(port: port, keys: pair), (try? q.hello(.resume)) != nil else { return [] }
+            defer { q.socket.shutdown() }
+            guard (try? q.json(.resume, Resume(session: keys.sessionID, proof: DropKeys.resumeProof(keys.resumeKey, "resume", h: q.h)))) != nil else { return [] }
+            var got: [UInt8] = []
+            while let m = try? q.read() { got.append(m.type) }
+            return got
+        }
+    }
+
+    /// Reported by an independent review (2026-11-24), and shown by these two tests before it
+    /// was put right. A finished drop's answer is kept "for five minutes", with the drop's
+    /// resume key, for a sender that lost its connection before it heard. The five minutes
+    /// were looked at only when ANOTHER drop finished. So, first: a sender that asked long
+    /// after was still answered. Now the age is checked when someone asks. (The time is
+    /// shortened after the drop has finished, so that nothing but that check can be what
+    /// refuses.)
+    func testAFinishedDropIsNotAnsweredForAfterItsTime() throws {
+        defer { Tuning.completedSeconds = 300 }
+        let (sender, receiver) = try pairedMacs()
+        let ask = try finishedDrop(from: sender, to: receiver)
+        XCTAssertEqual(ask(), [FrameType.resumed.rawValue, FrameType.complete.rawValue], "within its time the sender is told again")
+        Tuning.completedSeconds = 0.3
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(ask(), [], "the sender was answered after the time the answer is kept for")
+    }
+
+    /// And second: on a Mac that received nothing else, the answer and the resume key stayed
+    /// in memory until the app was quit. Now both are gone when their time is up, whether or
+    /// not anyone asks.
+    func testAFinishedDropsKeyIsForgottenWhenItsTimeIsUp() throws {
+        Tuning.completedSeconds = 1
+        defer { Tuning.completedSeconds = 300 }
+        let (sender, receiver) = try pairedMacs()
+        _ = try finishedDrop(from: sender, to: receiver)
+        XCTAssertEqual(receiver.listener.remembered, 1)
+        XCTAssertTrue(until(6) { receiver.listener.remembered == 0 }, "its time is up and nobody has asked: the answer and the drop's resume key are still kept")
+    }
+
     /// Found on the way to the model of admission (2026-11-24). The rate is so many arrivals in
     /// a second, and the listener read the second off the calendar: set back, the calendar left
     /// the arrivals of the moment counted until it came round to them again, and with the rate

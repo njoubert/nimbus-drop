@@ -277,6 +277,22 @@ final class ReviewTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dst.appendingPathComponent("for-the-air.txt").path))
     }
 
+    /// Forget at the receiver while a drop is running (the owner, 2026-11-23): the sender
+    /// lost its connections and spent its whole minute "trying to get it back" from a Mac
+    /// that would never take it. The Mac says so at the first attempt, and the drop ends there.
+    func testADropEndsAtOnceWhenTheReceiverForgetsThePairingMidDrop() throws {
+        Tuning.reconnectSeconds = 30
+        let (sender, receiver) = try pairedMacs()
+        let s = send([try file("big.bin", bytes: 300 << 20)], from: sender, to: receiver)
+        XCTAssertTrue(until { s.state == .transferring })
+        Thread.sleep(forTimeInterval: 0.05)
+        receiver.trust.forget(sender.key)
+        XCTAssertTrue(until(8) { s.state.isFinal }, "still \(s.state), with half a minute of reconnecting ahead of it")
+        XCTAssertNotEqual(s.state, .completed)
+        XCTAssertTrue(s.needsPairing, "\(s.state)")
+        guard case .renew = sender.trust.standing(of: receiver.key) else { return XCTFail("the tile would go on saying Paired: \(sender.trust.standing(of: receiver.key))") }
+    }
+
     // MARK: Guards no test noticed the absence of
 
     /// A drop begun by hand, as far as the receiver's first plan, so that what follows can be

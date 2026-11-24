@@ -256,6 +256,14 @@ public final class SendSession: Transfer, @unchecked Sendable {
                     try channel.send(.hello, hello(.resume, to: peer))
                     let theirs = try channel.read()
                     guard theirs.type == .hello else { throw DropError.damagedMessage }
+                    // The Mac itself, proved, says it no longer has this one paired (someone
+                    // there chose Forget while the drop was running, which is also what cut
+                    // the connection). There is nothing to get back: the drop ends now, for
+                    // that reason, instead of a minute of attempts that cannot succeed.
+                    guard try decode(SecureHello.self, from: theirs.body).paired else {
+                        trust.notePairingGone(peer)
+                        throw DropError.notPaired("\(peerName) no longer has this Mac paired; pair again")
+                    }
                     try channel.send(.resume, Resume(session: keys.sessionID, proof: DropKeys.resumeProof(keys.resumeKey, "resume", h: channel.h)))
                     let answer = try channel.read()
                     guard answer.type == .resumed,
@@ -270,6 +278,9 @@ public final class SendSession: Transfer, @unchecked Sendable {
                     socket.shutdown()
                     throw error
                 }
+            } catch let ended as DropError where ended.needsPairing {
+                log("reconnect attempt \(attempt) to \(h):\(p): \(ended.message)", .error)
+                throw ended
             } catch {
                 fresh = nil
                 log("reconnect attempt \(attempt) to \(h):\(p): \((error as? DropError)?.message ?? "\(error)")", .warn)

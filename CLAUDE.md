@@ -157,7 +157,7 @@ Sources/NimbusDrop/         the app
   Palette.swift             the Nimbus colours: icon blue out, icon green in, coral, amber
   Settings.swift            UserDefaults: deviceID, receiving, streams, manualDestinations
   LoginItem.swift, AppIcon.swift, DMGBackground.swift, Updates.swift   as in the siblings
-Tests/NimbusDropCoreTests/  142 tests. ReviewTests (what the review of the code found, as
+Tests/NimbusDropCoreTests/  143 tests. ReviewTests (what the review of the code found, as
                             tests, and its three fuzzers), DropTests (whole drops), SecurityTests (a hostile paired
                             sender against the disk), ProtocolTests (impostors, replay, floods,
                             retirement mid-drop), PairingTests (two people; a man in the middle
@@ -320,7 +320,9 @@ retire                retire {} -> the key is tombstoned, its sessions ended -> 
   Forget does not, and tells nobody: the forgotten Mac learns at its next drop, when the key
   it has paired proves itself and says `paired: false` (`Trust.notePairingGone`: its half is
   withdrawn the same way and the Mac goes on the pair-again list, so the tile says so; until
-  2026-11-23 it stayed "Paired" and every drop failed). The app then asks at once
+  2026-11-23 it stayed "Paired" and every drop failed). The same is read from the hello of a
+  reconnect: a Forget at the receiver mid-drop used to leave the sender a minute of
+  "trying to get it back"; now the first attempt ends the drop, for that reason. The app then asks at once
   (`AppModel.offerToPairAgain`): pair again and send, or not now. Scheduled expiry is different on purpose: a running drop may finish, within
   a day or one key lifetime, whichever is shorter.
 - **Admission** (`DropListener.admit`, `place`, `serve`): a slot before a thread. Not yet a

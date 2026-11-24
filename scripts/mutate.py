@@ -56,6 +56,7 @@ M=[
  ('the pause keeps out a Mac that is to be paired again (F9)','Sources/NimbusDropCore/Receiver.swift','        case .paired, .renew: wanted = true\n','        case .paired, .renew: break\n','ReviewTests/testThePauseDoesNotApplyToAMacThatIsToBePairedAgain'),
  ('the pause lets anyone through (F9)','Sources/NimbusDropCore/Receiver.swift','if quiet > 0, !wanted {','if quiet > 0, false {','ReviewTests/testAStrangerCannotKeepTwoPeopleFromPairing'),
  ('a pause of any length is believed','Sources/NimbusDropCore/Pairing.swift','lock.withLock { _pausedFor = min(p, 600) }','lock.withLock { _pausedFor = p }','ReviewTests/testAPauseOfAnyLengthIsHeldToTenMinutes'),
+ ('a drop goes on trying to reach a Mac that has forgotten this one','Sources/NimbusDropCore/Sender.swift','guard try decode(SecureHello.self, from: theirs.body).paired else {','guard true else {','ReviewTests/testADropEndsAtOnceWhenTheReceiverForgetsThePairingMidDrop'),
  # Not here: removing the all-zero check in KeyPair.agree. CryptoKit refuses that agreement
  # before the check is reached, so no test can tell (the review of 2026-11-23).
 ]

@@ -552,9 +552,25 @@ public final class Trust: @unchecked Sendable {
     /// A session authenticated by `key`: ended at once if that key's trust is withdrawn. When a
     /// key merely runs out (the other Mac's or this one's) a running session may finish, but not
     /// for ever: at most a day past the end, or one key lifetime if that is shorter.
+    ///
+    /// A session asks who a key is at the start of its handshake and comes here at the end of
+    /// it, with the network (and the other Mac's leisure) in between. If trust in the key was
+    /// withdrawn in that gap, the withdrawal found nothing of this session to end, so it is
+    /// ended here: the question and the registration are one decision, made under the lock.
+    /// Without this a drop begun in the moment its Mac was forgotten or retired ran to the end
+    /// (found by `formal/tla/TrustWithdraw.tla`, 2026-11-24, as `NothingOutlivesTheWithdrawal`).
+    /// A key that has run out on schedule is still on the Known list, and is not caught here:
+    /// what it began may finish, within the time below.
     package func track(_ transfer: TrustedSession, key: PublicKey) {
         locked {
             sessions.removeAll { $0.transfer() == nil }
+            guard file.known.contains(where: { $0.key == key }) else {
+                afterwards.append {
+                    transfer.log("ended: trust in \(key.tag) was withdrawn while this was being set up", .warn)
+                    transfer.withdrawn(DropError("That Mac is no longer paired with this one"))
+                }
+                return
+            }
             let theirs = file.known.first { $0.key == key }?.endsElapsed ?? file.elapsed
             let end = min(theirs, file.endsElapsed)
             sessions.append(({ [weak transfer] in transfer }, key, end + min(86400, file.lifetime)))

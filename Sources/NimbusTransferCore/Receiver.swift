@@ -228,6 +228,9 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
             finish(.declined("Not receiving"))
             return
         }
+        // Ended before it was ever shown (trust in the sender was withdrawn while the offer was
+        // on its way in): nobody is asked about it.
+        if isOver { return }
         offer(self)
 
         // Wait for the person here, while watching for the sender giving up.

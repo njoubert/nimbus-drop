@@ -542,11 +542,13 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         let quarantine = Quarantine.value()
         // The tree keeps one directory open between calls, and the stream threads use it too:
         // one at a time, here as there.
-        treeLock.withLock {
+        try treeLock.withLock {
             for e in manifest.entries.reversed() where e.kind != .symlink {
                 // The owner keeps access to what they were just sent, whatever the mode was; and
                 // nothing arrives set-uid (the mask drops every bit above the permissions).
-                tree.finish(e.path, mtime: e.mtime, mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
+                // What is there must still be what the manifest says, or nothing is put in place.
+                try tree.finish(e.path, directory: e.kind == .directory, mtime: e.mtime,
+                                mode: mode_t(e.mode & 0o777) | (e.kind == .directory ? 0o700 : 0o600), quarantine: quarantine)
             }
             tree.release()
         }

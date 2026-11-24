@@ -1128,3 +1128,63 @@ extension ContainmentTests {
         assertContained(before, snapshot(), allowing: [allowed(manifest, from: mallory, contents: contents)])
     }
 }
+
+// MARK: - Modes, times and the quarantine mark go on what the manifest says is there
+
+extension ContainmentTests {
+    /// Between two attempts a file of the drop is changed for a second name for a file
+    /// elsewhere that is long enough, and the ledger made to say it all arrived. Nothing is
+    /// left to send, so the file is never opened for writing (which would refuse it). As
+    /// found, the drop then set its mode, its time and the quarantine mark by name, on the
+    /// file elsewhere, and moved the second name into the destination as if it had arrived.
+    func testAFileThatBecameASecondNameForAFileElsewhereIsNotFinished() throws {
+        let a = bytes(chunk * 2, seed: 1)
+        let manifest = Manifest(chunkSize: chunk, entries: [.init(path: "P", kind: .directory, mode: 0o755),
+                                                            .init(path: "P/a.bin", kind: .file, size: Int64(a.count), mtime: 1_000_000, mode: 0o777)])
+        let partial = try interrupted(manifest) { $0.chunks(of: 1, a) }
+        try FileManager.default.removeItem(at: partial.appendingPathComponent("items/P/a.bin"))
+        try FileManager.default.linkItem(at: documents.appendingPathComponent("large.bin"), to: partial.appendingPathComponent("items/P/a.bin"))
+        try ledgerClaimingEverything(manifest).write(to: partial.appendingPathComponent("ledger"))
+        let before = snapshot()
+        let hand = try Hand(manifest, from: mallory, to: victim)
+        // (That the ledger is believed about a file that is there and long enough is not this test's business.)
+        XCTAssertEqual(try decode(Plan.self, from: hand.reply.body).completeFiles, [1])
+        let reply = try hand.done()
+        XCTAssertEqual(reply.type, FrameType.error.rawValue, "the drop was put in place")
+        XCTAssertNotEqual(try ended().state, .completed)
+        assertContained(before, snapshot(), allowing: [allowed(manifest, from: mallory)])
+        hand.hangUp()
+    }
+
+    /// The same of `SafeTree` by itself: asked to finish a name that is not what the manifest
+    /// has there, it refuses and changes nothing, in the tree or out of it.
+    func testFinishingRefusesWhatIsNotWhatTheManifestHasThere() throws {
+        let fm = FileManager.default
+        let root = dst.appendingPathComponent("T.partial/items")
+        let tree = try SafeTree(root: root)
+        try tree.makeDirectory("folder")
+        close(try tree.openFile("file"))
+        try fm.linkItem(at: documents.appendingPathComponent("secret.txt"), to: root.appendingPathComponent("second-name"))
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("link").path, withDestinationPath: documents.appendingPathComponent("secret.txt").path)
+        try fm.createSymbolicLink(atPath: root.appendingPathComponent("folder-link").path, withDestinationPath: documents.path)
+        XCTAssertEqual(mkfifo(root.appendingPathComponent("pipe").path, 0o600), 0)
+        let held = open(root.appendingPathComponent("pipe").path, O_RDWR)   // so that opening it to look does not wait
+        defer { close(held) }
+        let before = snapshot()
+        for (name, directory) in [("second-name", false), ("link", false), ("folder-link", true), ("folder-link", false), ("pipe", false), ("folder", false),
+                                  ("file", true), ("nothing", false), ("nothing", true), ("link/x", false), ("folder-link/secret.txt", false)] {
+            XCTAssertThrowsError(try tree.finish(name, directory: directory, mtime: 86400, mode: 0o777, quarantine: Array("0081;0;test;".utf8)), "\(name) as a \(directory ? "folder" : "file")")
+        }
+        XCTAssertEqual(before, snapshot(), "refusing to finish something changed it, or what it leads to")
+        // And what is what the manifest says gets all three.
+        try tree.finish("file", mtime: 86400, mode: 0o640, quarantine: Array("0081;0;test;".utf8))
+        try tree.finish("folder", directory: true, mtime: 86400, mode: 0o750, quarantine: Array("0081;0;test;".utf8))
+        let after = snapshot()
+        for (name, mode) in [("file", UInt16(0o640)), ("folder", 0o750)] {
+            let item = try XCTUnwrap(after["\(Self.inside)/T.partial/items/\(name)"])
+            XCTAssertEqual(item.mode, mode)
+            XCTAssertEqual(item.mtime, "86400.0")
+            XCTAssertEqual(item.xattrs, ["com.apple.quarantine"])
+        }
+    }
+}

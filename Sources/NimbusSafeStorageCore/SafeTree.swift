@@ -151,22 +151,32 @@ package final class SafeTree {
         return Int64(st.st_size)
     }
 
-    /// Sets the modification time and the permission bits of the thing itself, never of
-    /// something it might point to; and marks it quarantined, when a mark is given.
-    package func finish(_ path: String, mtime: Double, mode: mode_t, quarantine: [UInt8]? = nil) {
-        guard let (fd, name) = try? parent(of: path) else { return }
-        if let quarantine {
-            // On the thing itself, through a descriptor that is never a symlink's target.
-            let item = openat(fd, name, O_RDONLY | O_NOFOLLOW)
-            if item >= 0 {
-                fsetxattr(item, Quarantine.attribute, quarantine, quarantine.count, 0, 0)
-                close(item)
-            }
+    /// Sets the modification time and the permission bits of what the manifest has at `path`
+    /// (a folder, or else a file), and marks it quarantined when a mark is given: through a
+    /// descriptor of the thing itself, after looking at what that descriptor is. A folder must
+    /// be a folder, and a file an ordinary file with one name, as when it was opened to be
+    /// written; anything else ends the drop.
+    ///
+    /// The three used to be set by name, on whatever had it, and a name that was not there was
+    /// passed over. With a file of an interrupted drop changed for a second name for a file
+    /// elsewhere, and the ledger made to say it had all arrived (so that it was never opened
+    /// to be written, which would have refused it), that other file was given the drop's
+    /// mode, time and mark, and its second name was moved into the destination.
+    package func finish(_ path: String, directory: Bool = false, mtime: Double, mode: mode_t, quarantine: [UInt8]? = nil) throws {
+        let (fd, name) = try parent(of: path)
+        let item = openat(fd, name, O_RDONLY | O_NOFOLLOW | (directory ? O_DIRECTORY : 0))
+        var st = stat()
+        guard item >= 0, fstat(item, &st) == 0,
+              directory ? st.st_mode & S_IFMT == S_IFDIR : st.st_mode & S_IFMT == S_IFREG && st.st_nlink == 1 else {
+            if item >= 0 { close(item) }
+            throw DropError("\(Sanitize.label(path, limit: 120)) is not the \(directory ? "folder" : "file") the drop put there; the drop was refused")
         }
+        defer { close(item) }
+        if let quarantine { fsetxattr(item, Quarantine.attribute, quarantine, quarantine.count, 0, 0) }
         var times = [timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)),
                      timespec(tv_sec: Int(mtime), tv_nsec: Int((mtime - mtime.rounded(.down)) * 1e9))]
-        utimensat(fd, name, &times, AT_SYMLINK_NOFOLLOW)
-        fchmodat(fd, name, mode, AT_SYMLINK_NOFOLLOW)
+        futimens(item, &times)
+        fchmod(item, mode)
     }
 
     /// Moves the top-level item `item` out of the tree into `folder` (an open directory: the

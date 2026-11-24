@@ -129,7 +129,7 @@ final class SecurityTests: XCTestCase {
         XCTAssertNoThrow(try tree.makeSymlink("trap", to: outside.path), "the same link again is a resume")
         XCTAssertNoThrow(try tree.makeDirectory("real"), "a real folder again is a resume")
         XCTAssertNil(tree.fileSize("trap/victim.txt"), "nor is anything measured through a symlink")
-        tree.finish("filetrap", mtime: 0, mode: 0o777)
+        XCTAssertThrowsError(try tree.finish("filetrap", mtime: 0, mode: 0o777), "a link is not finished as the file it points to")
 
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: outside.path), ["victim.txt"], "nothing was made outside")
         XCTAssertEqual(try String(contentsOf: outside.appendingPathComponent("victim.txt"), encoding: .utf8), "secret")

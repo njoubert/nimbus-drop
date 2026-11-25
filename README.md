@@ -51,7 +51,7 @@ tests:
   model-checks those specifications and the systems around them: a clock that lies, a
   network that fails, two Macs asking at once.
 - **The checks are checked.** Every model has mutants that must fail (146 in TLA+, 15 in
-  Tamarin), every guard in the code has a mutation that a named test must notice (266), and
+  Tamarin), every guard in the code has a mutation that a named test must notice (267), and
   the runner refuses any run it cannot read in full.
 - **The keys stay in.** The code that holds keys cannot write to anything, and the code that
   writes cannot read a key: the compiler holds that.

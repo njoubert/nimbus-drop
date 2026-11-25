@@ -377,6 +377,31 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNotEqual(s.state, .completed)
     }
 
+    /// The same, many times over: whichever thread gets there first, the question goes.
+    /// The receiver's own thread read "is the question to go?" and then "what phase is this?",
+    /// and the thread that withdrew trust changed the second before it set the first. Woken
+    /// in between (ending the drop closes its sockets, which is what wakes it), the receiver
+    /// saw an ended drop with nothing to take down and left its question on screen. CI met it
+    /// once in six runs (2026-11-24); this loop meets it in most.
+    func testAQuestionIsTakenAwayHoweverTheWithdrawalAndItsOwnThreadInterleave() throws {
+        let small = try file("a.txt", bytes: 10)
+        for round in 0..<300 {
+            let (sender, receiver) = try pairedMacs()
+            let withdrawn = Locked(0)
+            receiver.listener.onOffer = { [weak receiver] s in
+                s.onWithdrawn = { withdrawn.withLock { $0 += 1 } }
+                receiver?.offers.withLock { $0.append(s) }   // and never answers
+            }
+            let s = send([small], from: sender, to: receiver)
+            guard until(10, { !receiver.offers.withLock { $0 }.isEmpty }) else { return XCTFail("round \(round): the offer did not arrive") }
+            receiver.trust.retire(sender.key)
+            guard until(3, { withdrawn.withLock { $0 } == 1 }) else {
+                return XCTFail("round \(round): the drop ended (\(receiver.offers.withLock { $0[0] }.state)) and its question was left up")
+            }
+            wait(s)
+        }
+    }
+
     func testResetTellsThePairedMacsAndTheOldKeyIsRefusedFromThenOn() throws {
         let (sender, receiver) = try pairedMacs()
         let away = try TestMac("away")

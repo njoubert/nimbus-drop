@@ -42,7 +42,7 @@ final class ChaosTests: XCTestCase {
         (senderTrust, receiverTrust) = Trust.paired()
         listener = try DropListener(identity: Identity(name: "receiver", id: "receiver-id"), trust: receiverTrust, preferredPort: 0)
         listener.onOffer = { session in
-            received.value += [session]
+            received.update { $0.append(session) }
             session.accept(destination: dst)
         }
         listener.start()
@@ -366,7 +366,7 @@ final class ChaosTests: XCTestCase {
         // Here: the control connection dies on the receiver's side only. The drop must carry
         // on, must say it is moving while it moves, and must end with one reconnect.
         let lines = Box<[String]>([])
-        DropLog.sink = { _, line in lines.value += [line] }
+        DropLog.sink = { _, line in lines.update { $0.append(line) } }
         defer { DropLog.sink = nil }
         Tuning.reconnectSeconds = 2   // far less than the rest of the drop takes
         let src = try makeTree(megabytes: 48)
@@ -406,7 +406,7 @@ final class ChaosTests: XCTestCase {
                             streams: 4, chunkSize: chunk)
         let asked = Box(0)
         let newPort = elsewhere.port
-        s.relocate = { asked.value += 1; return ("127.0.0.1", newPort) }
+        s.relocate = { asked.update { $0 += 1 }; return ("127.0.0.1", newPort) }
         s.start()
         wait(s)
         XCTAssertEqual(s.state, .completed)
@@ -708,4 +708,8 @@ final class Box<T>: @unchecked Sendable {
         get { lock.withLock { _value } }
         set { lock.withLock { _value = newValue } }
     }
+    /// One step under the lock. `box.value += x` is a read and then a write, each locked and
+    /// the pair not: two engine threads doing it at once lose one of the two (a log line, in
+    /// CI on 2026-11-24, on a tree that had passed twice).
+    func update(_ change: (inout T) -> Void) { lock.withLock { change(&_value) } }
 }

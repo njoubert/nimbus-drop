@@ -394,9 +394,24 @@ final class DropTests: XCTestCase {
         XCTAssertNil(PeerBrowser.preferred(among: [], order: order))
     }
 
+    /// What the tests count and collect in loses nothing when several engine threads use it at
+    /// once. With `box.value += 1` in place of `update` this comes up short every time.
+    func testTheTestsOwnBoxLosesNothingBetweenThreads() {
+        let count = Box(0)
+        let seen = Box<[Int]>([])
+        DispatchQueue.concurrentPerform(iterations: 8) { thread in
+            for n in 0..<5_000 {
+                count.update { $0 += 1 }
+                seen.update { $0.append(thread * 5_000 + n) }
+            }
+        }
+        XCTAssertEqual(count.value, 40_000)
+        XCTAssertEqual(Set(seen.value).count, 40_000)
+    }
+
     func testADropLeavesItsStoryInTheLog() throws {
         let lines = Box<[String]>([])
-        DropLog.sink = { _, line in lines.value += [line] }
+        DropLog.sink = { _, line in lines.update { $0.append(line) } }
         defer { DropLog.sink = nil }
         let src = try makeTree()
         let dst = try destination()
@@ -420,7 +435,7 @@ final class DropTests: XCTestCase {
 
     func testLogLevelsSayWhatHappenedNotWhatWordsWereUsed() throws {
         let lines = Box<[(LogLevel, String)]>([])
-        DropLog.sink = { level, line in lines.value += [(level, line)] }
+        DropLog.sink = { level, line in lines.update { $0.append((level, line)) } }
         defer { DropLog.sink = nil }
         let src = try makeTree()
         let dst = try destination()
@@ -465,8 +480,8 @@ final class DropTests: XCTestCase {
 
     func testAProbeLearnsWhoIsThereAndSaysNothingOfItself() throws {
         let asked = Box(0)
-        let l = try listen { _ in asked.value += 1 }
-        l.onPairRequest = { _ in asked.value += 1 }
+        let l = try listen { _ in asked.update { $0 += 1 } }
+        l.onPairRequest = { _ in asked.update { $0 += 1 } }
         defer { l.stop() }
         XCTAssertEqual(try Probe.identify(host: "127.0.0.1", port: l.port), receiverTrust.publicKey)
         XCTAssertEqual(asked.value, 0, "nobody was asked anything")
@@ -528,7 +543,7 @@ final class DropTests: XCTestCase {
         // A 0.2 Mac's first frame (a length, its CRC, a type and JSON) is a stranger sending
         // something unreadable: closed, unanswered, and nobody is asked anything.
         let asked = Box(0)
-        let l = try listen { _ in asked.value += 1 }
+        let l = try listen { _ in asked.update { $0 += 1 } }
         defer { l.stop() }
         let s = try Socket.connect(host: "127.0.0.1", port: l.port)
         let old = Data([0, 0, 0, 3, 0x12, 0x34, 0x56, 0x78, 10, 0x7b, 0x7d, 0, 0, 0, 0])
@@ -617,4 +632,8 @@ final class Box<T>: @unchecked Sendable {
         get { lock.withLock { _value } }
         set { lock.withLock { _value = newValue } }
     }
+    /// One step under the lock. `box.value += x` is a read and then a write, each locked and
+    /// the pair not: two engine threads doing it at once lose one of the two (a log line, in
+    /// CI on 2026-11-24, on a tree that had passed twice).
+    func update(_ change: (inout T) -> Void) { lock.withLock { change(&_value) } }
 }

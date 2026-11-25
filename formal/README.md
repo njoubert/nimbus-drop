@@ -33,7 +33,7 @@ on a proof, where on a bounded search, where on a test, and where on someone's r
 | 5 | Random walks | Does anything the model leaves out change what the code does? | `Tests/NimbusCryptoTests` | 1.5 million steps a run, seeds printed |
 | 6 | A second implementation and published vectors | Does the cryptography compute what the specification says, byte for byte? | `scripts/vectors.py`, `VectorTests`, `CryptoTests`, `WycheproofTests` | a Python implementation, the Noise vector, 518 Wycheproof vectors |
 | | **The running application** | | | |
-| 7 | Tests that are attacks | Does each attack we know of fail, against a real listener and a real sender? | `Tests/NimbusDropCoreTests` | 232 tests |
+| 7 | Tests that are attacks | Does each attack we know of fail, against a real listener and a real sender? | `Tests/NimbusDropCoreTests` | 234 tests |
 | 8 | Containment tests | Can a drop touch anything outside what the person chose, or anything that was already there? | `ContainmentTests` | 33 tests |
 | 9 | Chaos tests | Through a failing network, does a drop arrive identical or stop, and never arrive altered? | `Tests/NimbusDropChaosTests`, `Sources/NimbusDropChaos` | 29 tests |
 | 10 | Fuzzing | Does input nobody thought of crash it, or get past a gate? | `FuzzTests`, `ReviewTests` | 8 seeded generators, one new seed every run |
@@ -42,7 +42,7 @@ on a proof, where on a bounded search, where on a test, and where on someone's r
 | 12 | Layers and purity | Does the core stay pure (no socket, file, clock, lock, thread or log), and does each module import only what is under it? | `scripts/check-layers.py` | 9 modules, on every commit |
 | 13 | Programs that must not compile | Can any code outside the core read a key, or make something that stands for authority? | `scripts/test-capabilities.py`, `SecretsTests` | 32 programs, and a whole session's log searched |
 | | **The checks themselves** | | | |
-| 14 | Mutation of the code | If this guard were removed, would any test notice? | `scripts/mutate.py` | 266 guards |
+| 14 | Mutation of the code | If this guard were removed, would any test notice? | `scripts/mutate.py` | 267 guards |
 | 15 | Mutation of the models | Does the model say anything, or does it hold because it is empty? | `check.py` | 146 TLA+ mutants, 15 Tamarin mutants, 14 reachability runs, 12 runs that show a known limit |
 | 16 | A runner that fails closed | Can a proof run pass by accident? | `check.py`, `tamarin/lemmas.json`, `test_check.py` | 41 tests of the runner, 20 of the layer checker |
 | | **People, machines, numbers** | | | |
@@ -145,7 +145,7 @@ difference. Beside it, a test searches the log of a whole session for key materi
 ### The checks themselves
 
 **14. Mutation of the code.** A test that passes whether or not its guard exists is saying
-nothing. `scripts/mutate.py` removes each of 266 guards in turn and expects a named test to
+nothing. `scripts/mutate.py` removes each of 267 guards in turn and expects a named test to
 fail. The first run here missed 4 of 17; a reviewer then removed 16 more by hand and 13 went
 unnoticed. Each has a test now.
 

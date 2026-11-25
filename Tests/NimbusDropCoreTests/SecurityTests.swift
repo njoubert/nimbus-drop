@@ -238,7 +238,7 @@ final class SecurityTests: XCTestCase {
         // 400 MB is refused on its first fragment, with nothing set aside.
         let asked = Box(0)
         let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
-        l.onOffer = { _ in asked.value += 1 }
+        l.onOffer = { _ in asked.update { $0 += 1 } }
         l.start()
         defer { l.stop() }
         let s = try dial(l)
@@ -280,7 +280,7 @@ final class SecurityTests: XCTestCase {
         // A dozen offers from one Mac. Two questions are asked; the rest are declined unseen.
         let asked = Box(0)
         let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
-        l.onOffer = { _ in asked.value += 1 }   // never answers
+        l.onOffer = { _ in asked.update { $0 += 1 } }   // never answers
         l.start()
         defer { l.stop() }
         var channels: [Channel] = [], declined = 0
@@ -420,7 +420,7 @@ final class SecurityTests: XCTestCase {
     func testAnAddressThatIsNotLocalIsTurnedAwayUnread() throws {
         let asked = Box(0)
         let l = try DropListener(identity: Identity(name: "victim", id: "victim-id"), trust: victimTrust, preferredPort: 0)
-        l.onOffer = { _ in asked.value += 1 }
+        l.onOffer = { _ in asked.update { $0 += 1 } }
         l.allows = { _ in false }   // as if 127.0.0.1 were somewhere far away
         l.start()
         defer { l.stop() }

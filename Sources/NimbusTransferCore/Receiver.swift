@@ -102,7 +102,21 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
         listener.trust.track(self, key: channel.remote)
     }
 
-    private func step(_ event: RoundMachine.Receiver.Event) -> [Effect] { lock.withLock { machine.step(event) } }
+    /// One step of the machine. When it says the question goes (`.unask`), that is noted in
+    /// the same breath as the phase changes (here, and in `cancel`, which steps the machine
+    /// under the same lock), and nowhere afterwards: the session's thread reads
+    /// the two together (`conduct`), so it never sees a drop that has ended without also
+    /// seeing that its question is to be taken away. Noted afterwards, by whichever thread
+    /// was carrying out the effects, there was a moment in which it did: trust withdrawn with
+    /// the question up ended the drop, closed its sockets (which woke the session's thread),
+    /// and only then said the question should go, to a thread that had already left.
+    private func step(_ event: RoundMachine.Receiver.Event) -> [Effect] {
+        lock.withLock {
+            let effects = machine.step(event)
+            if effects.contains(.unask) { unasked = true }
+            return effects
+        }
+    }
 
     /// An ending the machine gave to a thread that is not the session's own (or to the session's
     /// own, for an error of this Mac's): the word, then the end. A question still on screen is
@@ -113,8 +127,7 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
             switch effect {
             case .send(.error): try? control.send(.error, Reason(message: (error as? DropError)?.message ?? error.localizedDescription))
             case .end(.failed): super.fail(error)
-            case .unask: lock.withLock { unasked = true }
-            default: break
+            default: break   // `.unask` was noted by `step`, with the phase
             }
         }
         // Cancelled a moment ago, its end still waiting on the farewell: it ends now instead.
@@ -145,9 +158,10 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
     public override func cancel() {
         let effects = lock.withLock { () -> [Effect] in
             cancelRequested = true
-            return machine.step(.cancelled)
+            let said = machine.step(.cancelled)
+            if said.contains(.unask) { unasked = true }
+            return said
         }
-        if effects.contains(.unask) { lock.withLock { unasked = true } }
         // Best effort, so the other side can say who stopped it rather than "connection lost":
         // the word on a queue of its own, and the end a moment after it.
         if effects.contains(.send(.error)) {
@@ -357,7 +371,7 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
                     ask?(self)
 
                 case .unask:
-                    lock.withLock { unasked = true }
+                    break   // noted by `step`, with the phase; the loop below takes the question away
 
                 case .send(.decline(.pairingRanOut)):
                     // A yes to an offer whose pairing has since ended starts nothing: the question
@@ -481,9 +495,13 @@ public final class ReceiveSession: Transfer, DataSession, @unchecked Sendable {
             while !todo.isEmpty { todo = try perform(todo) }
             // The drop ended with the question still up (the sender gave up, trust was
             // withdrawn, it was stopped here): the question goes.
-            if lock.withLock({ unasked }) { onWithdrawn?(); return }
+            // Read together, as `step` writes them together: read one after the other, an
+            // ending from another thread could fall between the two, and this thread would
+            // see an ended drop with no question to take away, and leave it on screen.
+            let (gone, phase) = lock.withLock { (unasked, machine.phase) }
+            if gone { onWithdrawn?(); return }
             cause = nil
-            was = lock.withLock { machine.phase }
+            was = phase
             switch was {
             case .deciding:
                 // Wait for the person here, while watching for the sender giving up.

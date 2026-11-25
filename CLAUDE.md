@@ -258,7 +258,7 @@ Sources/NimbusDrop/         the app
 Tests/NimbusCryptoTests/    74 tests, depending on NimbusCrypto alone: the four machines attacked,
                             written out as the relations TLC checks (formal/tla/*Impl.tla), and
                             walked at random with seeds; Wycheproof's X25519 vectors (Vectors/)
-Tests/NimbusDropCoreTests/  232 tests. ContainmentTests (the whole tree read before and after a
+Tests/NimbusDropCoreTests/  234 tests. ContainmentTests (the whole tree read before and after a
                             drop), IndependentReviewTests and RoundReviewTests (what the review of
                             2026-11-24 found), TrustShellTests (the trust store's lock, disk and
                             order), SecretsTests (a whole session's log searched for key material),
@@ -272,7 +272,7 @@ Tests/NimbusDropCoreTests/  232 tests. ContainmentTests (the whole tree read bef
                             Noise vector)
 Tests/NimbusDropChaosTests/ 29 tests: whole drops through ChaosProxy (about 140 s)
 scripts/vectors.py          the second implementation; scripts/mutate.py, the mutation checks
-                            (266 guards); check-layers.py, the modules held to their layers, and
+                            (267 guards); check-layers.py, the modules held to their layers, and
                             test-check-layers.py, the checker held to its job; test-capabilities.py,
                             programs that must not compile; bench-loopback.py, the data path as
                             numbers, one build against another
@@ -659,7 +659,7 @@ compiler's, by reading, or not established). The plans for the work are
   not match what was printed; a request that matches nothing. Each is a failure, never a
   pass. Raw output and versions are kept in `formal/.results/`.
 - **Every model has mutants** (`formal/check.py`), and every guard in the Swift has a line in
-  `scripts/mutate.py` (266). A mutant that passes fails the run.
+  `scripts/mutate.py` (267). A mutant that passes fails the run.
 - **What the models and the review found** is listed in `formal/README.md` and in the
   commits of 2026-11-24. The lessons, for the next model: write each step where code asks a
   question and acts on the answer later as two steps; a guard in a model with no line in the
@@ -712,6 +712,20 @@ compiler's, by reading, or not established). The plans for the work are
   number there is opened, the next key's end was their sum (infinite), and the file could
   never be written again. Four fixed seeds and a dozen local runs had not. It is not a flaky
   test: a failure names its seed, and `NIMBUS_SEED=n` runs it alone.
+- **A test that fails only sometimes is a race: find it.** CI met two on the way to 0.4.0,
+  on a tree that had passed there and here. One was the tests' own: `box.value += x` on
+  their `Box` was a locked read and then a locked write, two engine threads logging at the
+  same instant lost one of the two lines, and `testADropLeavesItsStoryInTheLog` did not
+  find "lost the control connection" in a log that shows the receiver acting on it.
+  `Box.update { }` is one step, and a test holds it to that. The other was the engine's,
+  and new with the round machine's shell (0.3.1 did not have it): trust withdrawn while an
+  offer's question was up ended the drop, which closes its sockets and wakes the session's
+  thread, and only then marked the question as gone; that thread read "is it gone?" and
+  "what phase?" one after the other, saw an ended drop with nothing to take away, and left
+  the panel on screen. `ReceiveSession.step` now notes `.unask` with the phase, under one
+  lock, and `conduct` reads the two together. `testAQuestionIsTakenAwayHowever…` is the
+  loop that meets it: two runs in five failed here before the fix, none of 1,800 rounds
+  after. A flag one thread sets for another is written and read with what it is about.
 
 ## Platform facts (checked 2026-11-22, macOS 27)
 

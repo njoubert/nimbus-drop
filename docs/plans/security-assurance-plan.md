@@ -108,7 +108,8 @@ models assume. That stays "by reading, with a mutant on each side" (`formal/READ
 | Mutation | 266 guards in `scripts/mutate.py` (85 before) |
 | Found | 29 defects fixed, two of them in part, and five limits written down. From an independent review given the code and not the conclusions: twelve, one of them a crash on one accepted drop. From the containment tests: ten, two of them the review's leads. From building and checking the models: seven, one of them also the review's. From the fuzzers and from reading while fixing: three, one of them by the fuzzer's seed from the clock when CI ran it (a trust file that could not be written again). Listed in `formal/README.md`, `docs/security/filesystem-containment.md` and the commit messages. |
 | Data path | loopback, before and after, within noise on every line (CLAUDE.md, Measured) |
-| Not done | a run between two Macs; CryptoVerif; a Linux build of the core; content hashing (ruled out); the decisions in `docs/security/claims.md`, "Open for the owner" |
+| Between two Macs | by the command line, the same day, on `main`: drops both ways at the wire's speed and identical, also with either end killed mid-drop and through `nimbus-chaos`; pairing, Forget and Reset Identity; a flood of silent connections while a drop ran (CLAUDE.md, Measured) |
+| Not done | the app between two Macs; CryptoVerif; a Linux build of the core; content hashing (ruled out); the decisions in `docs/security/claims.md`, "Open for the owner" |
 
 What was built differs from the plan above in these ways:
 

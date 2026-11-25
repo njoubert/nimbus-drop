@@ -10,6 +10,11 @@
   the other Mac, the person there chooses where to save it, and it arrives checked and
   complete. Every drop is encrypted, and goes only to a Mac the two of you have paired.
   No internet is needed.<br>
+  <b>Fast:</b> it fills a gigabit wire, and over a Thunderbolt cable its encrypted stream
+  measures 36 to 38 Gbit/s.
+  <b>Formally verified where it counts:</b> from 0.4 the protocol is proved in a formal
+  model, and the code that makes each security decision is held equal to a model-checked
+  specification.<br>
   A menu bar icon that opens a small window. Swift, SwiftPM, AppKit and SwiftUI. One dependency: our own
   <a href="https://github.com/njoubert/nimbus-updater">nimbus-updater</a>, which keeps it up to date.
 </p>
@@ -30,6 +35,32 @@
 ./build.sh dmg            # release build → dist/NimbusDrop-<version>.dmg, drag-to-Applications disk image
 ./build.sh icon           # re-render docs/icon.png
 ```
+
+## Formal verification, from 0.4
+
+0.4 is the first release whose security rests on proofs and model checking as well as on
+tests:
+
+- **The protocol is proved.** The handshake, the keys derived from it and everything they
+  are used for, and the pairing with its two spoken codes: 43 lemmas proved in
+  [Tamarin](https://tamarin-prover.com), against an attacker who owns the network and, for
+  the pairing, hears the codes.
+- **The decisions in the code are the ones in the models.** Pairing, trust, the rounds of a
+  drop and who gets a place at the listener are each a pure state machine in Swift. On every
+  push each is held equal, transition for transition, to its TLA+ specification, and TLC
+  model-checks those specifications and the systems around them: a clock that lies, a
+  network that fails, two Macs asking at once.
+- **The checks are checked.** Every model has mutants that must fail (146 in TLA+, 15 in
+  Tamarin), every guard in the code has a mutation that a named test must notice (266), and
+  the runner refuses any run it cannot read in full.
+- **The keys stay in.** The code that holds keys cannot write to anything, and the code that
+  writes cannot read a key: the compiler holds that.
+
+`./build.sh verify` runs all of it. This is formal verification of the protocol and of the
+decision logic, not a proof of the whole app: the classes around the machines, the file
+handling and the window are tested, not proved, and it has not been audited.
+[What each claim rests on](docs/security/claims.md) ·
+[every way it is checked, and the gaps](formal/README.md) · [Security](#security)
 
 ## What it does
 
@@ -144,18 +175,25 @@ and which version and protocol this copy is.
 
 ## How fast
 
-The network is the limit. Measured 2026-11-22 between a MacBook Pro and a MacBook Air (both
-Apple silicon, internal SSDs):
+As fast as the link, until the link outruns the disks. Between a MacBook Pro and a MacBook
+Air (both Apple silicon, internal SSDs), encrypted as every drop is:
 
-| | |
-|---|---|
-| Gigabit Ethernet, 9.29 GB in 10,401 files (one 6 GB file, 400 × 8 MB, 10,000 small) | 927 Mbps (116 MB/s), the wire's ceiling |
-| The same, through a proxy that flipped 25 bits, cut 32 connections and throttled twice | arrived identical, 430 Mbps overall |
-| The same Mac to itself (no network), one 6 GB file | 3.2 GB/s with 8 connections, 3.9 GB/s with 1 |
-| The same Mac to itself, 400 × 8 MB files | 3.1 GB/s |
+| Link | What was sent | Rate |
+|---|---|---|
+| **Thunderbolt 4 cable** (`iperf3` says it carries 37.6 Gbit/s) | the speed test: what a drop sends, encrypted, with no disk at either end | **36 to 38 Gbit/s** each way on 2 to 32 connections, 31 on one |
+| Thunderbolt 4 cable | one 10.5 GB file, to a RAM disk | 20 to 23 Gbit/s |
+| Thunderbolt 4 cable | one 10.5 GB file, to the MacBook Pro's SSD | 17 Gbit/s (24 while moving) |
+| Thunderbolt 4 cable | one 10.5 GB file, to the MacBook Air's SSD, 86% full | 7.4 to 8.5 Gbit/s |
+| Gigabit Ethernet | 1.58 GB in 5,102 files | 928 Mbps (116 MB/s), the wire's ceiling |
+| Gigabit Ethernet | one 6.29 GB file | 905 Mbps |
+| Gigabit Ethernet, through a proxy that damaged 19 chunks, cut 36 connections and took the link away for 30 s | one 6.29 GB file | arrived identical, 568 Mbps overall |
 
-Those are protocol 2, before encryption. **Encrypted (protocol 3, 2026-11-23), the same Mac to
-itself**, which does the sealing and the opening on one machine:
+The engine and its encryption fill a Thunderbolt cable. A real drop over one reaches 20 to
+23 Gbit/s before a disk is involved, and from there goes as fast as the disks do. On gigabit
+the wire is the limit. (Thunderbolt measured 2026-11-23, gigabit 2026-11-24. Not measured:
+10 GbE and Wi-Fi.)
+
+**The same Mac to itself** (no network, so one machine does the sealing and the opening):
 
 | | |
 |---|---|
@@ -163,8 +201,9 @@ itself**, which does the sealing and the opening on one machine:
 | 200 × 8 MB files | 4.7 GB/s |
 | 10,000 files of 4 to 13 KB | 1.1 s |
 
-A 10 GbE link carries 1.25 GB/s. Encryption has not been measured between two Macs over a link
-faster than gigabit yet; on gigabit the wire stays the limit.
+Before encryption (protocol 2, 2026-11-22), for comparison: 927 Mbps over gigabit Ethernet
+with 9.29 GB in 10,401 files, and 3.2 GB/s from a Mac to itself on 8 connections. On gigabit,
+encryption cost nothing that shows.
 
 ## How it works
 
@@ -303,7 +342,8 @@ cannot write to anything, and the code that writes cannot read a key: the compil
 that. `docs/security/claims.md` lists every claim with the kind of evidence it has, and
 `formal/README.md` lists every way the app is checked, the gaps that are left, and what none of it claims. It is not an audit, and the app has not had
 one. The models, the tests written to hold them and an outside review between them found
-about thirty things, a crash on one accepted drop among them; all are fixed or written down.
+about thirty things, a crash on one accepted drop among them; all are fixed in 0.4 or written
+down.
 `SECURITY.md` says how to report another.
 
 ## Testing it against a bad network

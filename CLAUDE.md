@@ -818,14 +818,13 @@ compiler's, by reading, or not established). The plans for the work are
   `LinkName.display`), which is how to tell.
 - **A Mac with two interfaces on one subnet** (Wi-Fi and Ethernet) shows whichever address the
   resolve picked; the kernel's route decides which interface carries the data. On the owner's
-  MacBook Pro that is en9 (Ethernet), as it should be. **Which of the other Mac's addresses
-  a drop goes to, nothing decides.** The Air, on Wi-Fi and Ethernet in one subnet, answers
-  to both: from the Pro its name resolves to the two in an order that changes, and in one
-  sample of four to the Wi-Fi address alone (`dns-sd -G v4`, 2026-11-24). One drop that
-  hour ran at 460 to 600 Mbit/s from its first second with nothing lost; the Air's Wi-Fi
-  address measures 527 Mbit/s, and the sixty lookups after it all gave the wired one. That
-  drop's address was not recorded, so: likely, not shown. The sender's own line names its
-  own interface (`over … (en9)`) either way; `--verbose` prints the address a drop went to.
+  MacBook Pro that is en9 (Ethernet), as it should be. **The other Mac may have two
+  addresses as well.** The Air, on Wi-Fi and Ethernet in one subnet, answers to both: from
+  the Pro its name resolves to the two in an order that changes, and in one sample of four
+  to the Wi-Fi address alone (`dns-sd -G v4`, 2026-11-24). Its Wi-Fi address measures
+  527 Mbit/s against 935 on the wire. In 65 lookups the app took the wired one every time;
+  whether it can take the other is not shown. The sender's own line names its own interface
+  (`over … (en9)`) either way; `--verbose` prints the address a drop went to.
 - **Local Network privacy** applies to the bundled app (the Info.plist carries
   `NSLocalNetworkUsageDescription` and `NSBonjourServices`); a binary run from a terminal or
   over ssh is not asked. Denied, the browser reports a problem and the window says so.
@@ -919,7 +918,10 @@ Pro → MacBook Air M4, gigabit Ethernet, 8 connections, the command line at bot
 1.58 GB in 5,102 files in 13.7 s = 928 Mbps; one 6.29 GB file in 55.6 s = 905 Mbps; both
 together from the Air to the Pro, 7.87 GB in 67.8 s = 929 Mbps; the speed test 935 Mbps up
 and 923 down. Level with protocol 3 before the round (895 and 913 Mbps): the wire is the
-limit. Every tree compared by name, mode, time and content, identical each time.
+limit. Every tree compared by name, mode, time and content, identical each time. One drop
+ran at half the rate (460 to 600 Mbps, nothing lost) while the owner ran an internet speed
+test on the Pro: a figure here moves with what else the link is carrying, so ask before
+looking for a cause in the app.
 - **Killed and sent again.** The sender twice ("continuing: 2.25 GB already there", then
   3.96 GB); the receiver once, and started again (the sender gave up after its minute, the
   next send continued from 1.21 GB).

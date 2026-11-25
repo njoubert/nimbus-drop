@@ -818,7 +818,13 @@ compiler's, by reading, or not established). The plans for the work are
   `LinkName.display`), which is how to tell.
 - **A Mac with two interfaces on one subnet** (Wi-Fi and Ethernet) shows whichever address the
   resolve picked; the kernel's route decides which interface carries the data. On the owner's
-  MacBook Pro that is en9 (Ethernet), as it should be.
+  MacBook Pro that is en9 (Ethernet), as it should be. **The other Mac may have two
+  addresses as well.** The Air, on Wi-Fi and Ethernet in one subnet, answers to both: from
+  the Pro its name resolves to the two in an order that changes, and in one sample of four
+  to the Wi-Fi address alone (`dns-sd -G v4`, 2026-11-24). Its Wi-Fi address measures
+  527 Mbit/s against 935 on the wire. In 65 lookups the app took the wired one every time;
+  whether it can take the other is not shown. The sender's own line names its own interface
+  (`over … (en9)`) either way; `--verbose` prints the address a drop went to.
 - **Local Network privacy** applies to the bundled app (the Info.plist carries
   `NSLocalNetworkUsageDescription` and `NSBonjourServices`); a binary run from a terminal or
   over ssh is not asked. Denied, the browser reports a problem and the window says so.
@@ -907,6 +913,34 @@ and 42.1; 10,000 small files 764 and 774 Mbit/s (1.0 s and 0.9 s); the speed tes
 and `SafeTree` now holding every file to one thing on disk (an `fstat` it already made, and
 one more per file at the end).
 
+**The second round between two Macs (2026-11-24, `main` at `ddc0aab`, release build, MacBook
+Pro → MacBook Air M4, gigabit Ethernet, 8 connections, the command line at both ends):**
+1.58 GB in 5,102 files in 13.7 s = 928 Mbps; one 6.29 GB file in 55.6 s = 905 Mbps; both
+together from the Air to the Pro, 7.87 GB in 67.8 s = 929 Mbps; the speed test 935 Mbps up
+and 923 down. Level with protocol 3 before the round (895 and 913 Mbps): the wire is the
+limit. Every tree compared by name, mode, time and content, identical each time. One drop
+ran at half the rate (460 to 600 Mbps, nothing lost) while the owner ran an internet speed
+test on the Pro: a figure here moves with what else the link is carrying, so ask before
+looking for a cause in the app.
+- **Killed and sent again.** The sender twice ("continuing: 2.25 GB already there", then
+  3.96 GB); the receiver once, and started again (the sender gave up after its minute, the
+  next send continued from 1.21 GB).
+- **Through `nimbus-chaos`** (`corrupt=300M`, `kill=one` at 800 MB, `kill=data` at 1.5 GB,
+  everything cut and refused from 25 s to 55 s): 19 damaged chunks, 36 connections cut, one
+  reconnect, identical in 88.6 s.
+- **Identities from before the round.** Two paired under 0.3.1 opened with this build and
+  were still paired.
+- **Two new identities, each person played through a pipe.** Refused while unpaired, and
+  nobody asked; paired by codes, a wrong code first; a drop asked about (the question names
+  the drop and the key) and accepted, one declined; a speed test declined, then allowed;
+  Forget (the Air was told, and listed the Pro to pair again); paired again ("the same Mac
+  you paired with before"); Reset Identity (the Air was told, and refused a copy of the old
+  key by name); three wrong codes paired nothing.
+- **Silent connections at the Air's listener while a paired drop ran**, from the sender's
+  own address: 100 a second, then 400 (twice the limit for one address). The listener held
+  eight at any moment and closed the rest; the Air was still found and proved; the drop
+  arrived identical at 928 and 894 Mbps with no connection lost.
+
 **Not measured yet:** Wi-Fi, 10 GbE itself, a drop larger than the receiver's
 RAM (whether `F_NOCACHE` on either side helps there), and whether an explicit socket buffer size
 beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
@@ -917,8 +951,8 @@ beats macOS's auto-tuning on a fast link. Measure before tuning any of them.
   Retry and "Pair Again and Send" following the key and not the tile's name
   (`Peer.asItIsNow` is tested; the click is not); an offer or a speed-test question that
   ended before its panel was shown no longer showing one; Settings › Remove on the pair-again
-  list ending that Mac's running drop; the command line's question naming the drop. And
-  nothing of this round was run between two Macs.
+  list ending that Mac's running drop. Between two Macs this round has been run by the
+  command line (Measured), the question that names the drop among it; in the app it has not.
 
 - **Everything on screen in 0.3**: the pairing panel in every stage on two real Macs, the
   familiar-name alert, Known Macs (Rename, Forget), Reset Identity, the identity number, the

@@ -171,7 +171,9 @@ once.
 
 **19. Two real Macs.** Loopback is not a network. Before a release, drops go between two Macs
 with `nimbus-chaos` between them cutting and corrupting, and both trees are compared by
-checksum.
+checksum. Last done on 2026-11-24 with this build, by the command line: identical every
+time, also with either end killed mid-drop; pairing, Forget and Reset Identity; silent
+connections flooding the listener while a drop ran (CLAUDE.md, Measured).
 
 **20. Measurement.** Speed is the point of the app, so a change on the data path is measured
 before and after. Safety that made it slow would be a failure of the design.
@@ -248,7 +250,8 @@ described in `SECURITY.md`.
 ### In the order we would do the work
 
 1. Decide G2 (what a resume believes), and with it the tombstones and the hourly write.
-2. Run this build between two Macs and click through the app's glue (G9, G12).
+2. Click through the app's glue on two Macs (G9): the command line has run this build
+   between two, the app has not. Then a real radio and real loss (G12).
 3. Put the sanitizers and the mutation run in CI (G10); pin what the proofs job installs and keep what it prints (G11).
 4. Trace validation for the classes around the machines (G1).
 5. Coverage-guided fuzzing of the pure core and the parsers on Linux (G4).

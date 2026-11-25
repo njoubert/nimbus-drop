@@ -33,7 +33,7 @@ on a proof, where on a bounded search, where on a test, and where on someone's r
 | 5 | Random walks | Does anything the model leaves out change what the code does? | `Tests/NimbusCryptoTests` | 1.5 million steps a run, seeds printed |
 | 6 | A second implementation and published vectors | Does the cryptography compute what the specification says, byte for byte? | `scripts/vectors.py`, `VectorTests`, `CryptoTests`, `WycheproofTests` | a Python implementation, the Noise vector, 518 Wycheproof vectors |
 | | **The running application** | | | |
-| 7 | Tests that are attacks | Does each attack we know of fail, against a real listener and a real sender? | `Tests/NimbusDropCoreTests` | 232 tests |
+| 7 | Tests that are attacks | Does each attack we know of fail, against a real listener and a real sender? | `Tests/NimbusDropCoreTests` | 233 tests |
 | 8 | Containment tests | Can a drop touch anything outside what the person chose, or anything that was already there? | `ContainmentTests` | 33 tests |
 | 9 | Chaos tests | Through a failing network, does a drop arrive identical or stop, and never arrive altered? | `Tests/NimbusDropChaosTests`, `Sources/NimbusDropChaos` | 29 tests |
 | 10 | Fuzzing | Does input nobody thought of crash it, or get past a gate? | `FuzzTests`, `ReviewTests` | 8 seeded generators, one new seed every run |

@@ -258,7 +258,7 @@ Sources/NimbusDrop/         the app
 Tests/NimbusCryptoTests/    74 tests, depending on NimbusCrypto alone: the four machines attacked,
                             written out as the relations TLC checks (formal/tla/*Impl.tla), and
                             walked at random with seeds; Wycheproof's X25519 vectors (Vectors/)
-Tests/NimbusDropCoreTests/  232 tests. ContainmentTests (the whole tree read before and after a
+Tests/NimbusDropCoreTests/  233 tests. ContainmentTests (the whole tree read before and after a
                             drop), IndependentReviewTests and RoundReviewTests (what the review of
                             2026-11-24 found), TrustShellTests (the trust store's lock, disk and
                             order), SecretsTests (a whole session's log searched for key material),
@@ -712,6 +712,12 @@ compiler's, by reading, or not established). The plans for the work are
   number there is opened, the next key's end was their sum (infinite), and the file could
   never be written again. Four fixed seeds and a dozen local runs had not. It is not a flaky
   test: a failure names its seed, and `NIMBUS_SEED=n` runs it alone.
+- **A test's own bookkeeping can race.** `box.value += x` on the tests' `Box` was a locked
+  read and then a locked write: two engine threads logging at the same instant lost one of
+  the two lines, and CI failed on `main` for the release of 0.4.0 on a tree that had passed
+  there and here (`testADropLeavesItsStoryInTheLog`: "the log does not mention: lost the
+  control connection", which the log shows the receiver acting on). `Box.update { }` is one
+  step, and a test holds it to that. When a test fails only sometimes, find the race.
 
 ## Platform facts (checked 2026-11-22, macOS 27)
 

@@ -41,7 +41,7 @@ BUNDLE_ID=com.njoubert.nimbusdrop
 # (Launch Constraint Violation, 2026-10-11).
 DEV_BUNDLE_ID=$BUNDLE_ID.dev
 DEV_APP_NAME="$APP_NAME Dev"
-VERSION=0.3.1
+VERSION=0.4.0
 INSTALL_DIR=/Applications
 INSTALLED="$INSTALL_DIR/$APP_NAME.app"
 DEV_APP="dist/debug/$DEV_APP_NAME.app"

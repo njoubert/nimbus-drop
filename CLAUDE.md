@@ -936,6 +936,10 @@ looking for a cause in the app.
   Forget (the Air was told, and listed the Pro to pair again); paired again ("the same Mac
   you paired with before"); Reset Identity (the Air was told, and refused a copy of the old
   key by name); three wrong codes paired nothing.
+- **Beside the release before it.** This build at one end and the installed 0.3.1 at the
+  other, each way round (the binary inside the app, with `--name`, is a command line with an
+  identity of its own under the app's folder): the same steps, all passed. Check this before
+  a release that does not change the protocol's major; Macs update one at a time.
 - **Silent connections at the Air's listener while a paired drop ran**, from the sender's
   own address: 100 a second, then 400 (twice the limit for one address). The listener held
   eight at any moment and closed the rest; the Air was still found and proved; the drop
@@ -990,7 +994,10 @@ from the git-ignored `.signing` (copied from a sibling on this machine).
 Mac to 0.3 without asking whether the others are ready, and from then on it and a 0.2 Mac
 show each other as "Needs an update".
 
-Releases: **0.3.1 on 2026-11-23** (protocol 3.1: the speed test, asked about at the other
+Releases: **0.4.0 on 2026-11-24** (protocol 3.1, unchanged: the engine in layers, the four
+decision machines held equal to their models, `./build.sh verify`, and what the models, the
+tests and an independent review found, fixed; run between two Macs and against the installed
+0.3.1 both ways round before it went out), **0.3.1 on 2026-11-23** (protocol 3.1: the speed test, asked about at the other
 Mac; Forget tells the other Mac; Uninstall and the Services switch in Settings; a Mac on
 several interfaces is reached by the service order; a pairing that works pulses on the tile),
 **0.3.0 on 2026-11-23** (protocol 3: encrypted and authenticated, pairing, key
